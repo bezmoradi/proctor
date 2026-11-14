@@ -1,0 +1,4 @@
+# Local mode only.
+target:
+  base_url: http://127.0.0.1:18101
+  user_agent: proctor-matrix/0.0

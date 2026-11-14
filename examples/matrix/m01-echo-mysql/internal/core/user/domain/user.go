@@ -1,0 +1,108 @@
+package domain
+
+import (
+	"errors"
+	"unicode"
+	"unicode/utf8"
+)
+
+// MaxNameLength bounds a user's name so it can't overflow the datastore column;
+// kept in lockstep with the repositories' schema and enforced in the service, so
+// an over-long name is a client error (422) rather than a driver error (500).
+const MaxNameLength = 100
+
+// Pagination bounds. DefaultPageLimit is applied when a client omits ?limit;
+// MaxPageLimit caps it so a single request can never trigger an unbounded scan
+// or an unbounded payload. Both are enforced in the service, so every consumer
+// (REST, GraphQL, the web-app view, the CLI demo) inherits the same guardrail.
+const (
+	DefaultPageLimit = 20
+	MaxPageLimit     = 100
+)
+
+// Sentinel errors let adapters classify failures so HTTP handlers can map them
+// to the correct status code without leaking driver internals to clients.
+var (
+	ErrUserNotFound = errors.New("user not found")
+	ErrNameRequired = errors.New("name is required")
+	ErrNameTooLong  = errors.New("name is too long")
+	// ErrNameInvalid rejects a name carrying control characters. Go strings hold
+	// them happily but datastores do not — PostgreSQL cannot store a NUL byte in
+	// a text/varchar column at all — so without this rule ordinary client input
+	// reaches the driver and comes back as a 500 instead of a 422.
+	ErrNameInvalid = errors.New("name contains invalid characters")
+	// ErrEventPublishFailed marks a write whose datastore half succeeded but whose
+	// event never reached the broker. It exists so the failure can be reported as
+	// what it is: the row is committed and the database is healthy, so labelling
+	// this a datastore failure sends whoever is on call to the wrong dashboard.
+	// It is still a 500 — the write only half-completed. Note the row is NOT
+	// rolled back; making the two halves atomic needs an outbox, not a label.
+	ErrEventPublishFailed = errors.New("event publish failed")
+	// ErrInvalidCursor is returned when a pagination cursor can't be decoded by
+	// the repository (a malformed or tampered token). Handlers map it to HTTP
+	// 400 — it is a client mistake, distinct from a 422 validation failure.
+	ErrInvalidCursor = errors.New("invalid pagination cursor")
+)
+
+// IsValidationError reports whether err is a client input-validation failure,
+// which handlers map to HTTP 422 (Unprocessable Entity).
+func IsValidationError(err error) bool {
+	return errors.Is(err, ErrNameRequired) ||
+		errors.Is(err, ErrNameTooLong) ||
+		errors.Is(err, ErrNameInvalid)
+}
+
+// ValidateName is the one gate every write passes through. It lives here, beside
+// the constants and sentinels it enforces, so the rules cannot drift between
+// call sites (create vs update) or between service variants — a name rule added
+// in only one of those places is the kind of gap that silently ships. Add new
+// name rules here, never in a service.
+func ValidateName(name string) error {
+	if name == "" {
+		return ErrNameRequired
+	}
+
+	if utf8.RuneCountInString(name) > MaxNameLength {
+		return ErrNameTooLong
+	}
+
+	// A text column stores text; bytes that aren't valid UTF-8 are not text.
+	// JSON decoding sanitizes them away, but a form-encoded body delivers them
+	// raw (name=%FF), and ranging over such a string yields U+FFFD — which the
+	// control-character loop below would wave through to the driver.
+	if !utf8.ValidString(name) {
+		return ErrNameInvalid
+	}
+
+	// Control characters are rejected wholesale rather than just NUL: they carry
+	// no meaning in a name, and the set that a given datastore, log sink, or
+	// terminal chokes on varies. One rule beats a per-backend allowlist.
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return ErrNameInvalid
+		}
+	}
+
+	return nil
+}
+
+// The domain entities carry NO serialization tags (no `json:"..."`). Wire
+// formatting is a transport concern owned by the adapters — the REST layer maps
+// these to its own DTOs (see internal/adapters/api), GraphQL has its own schema
+// types, and the web view uses html/template field access. Keeping the core free
+// of transport tags is what lets the wire format change without touching domain.
+type User struct {
+	ID   string
+	Name string
+}
+
+// Page is one slice of a list plus an opaque cursor for the next slice.
+// NextCursor is empty when there are no more rows. Its contents are a private
+// detail of whichever repository produced it (a keyset id, a driver paging
+// token, ...) — a client must treat it as opaque and hand it back verbatim as
+// ?cursor= to continue. Page is a plain value type with no third-party imports,
+// so it lives in the core without breaking the architecture boundary.
+type Page struct {
+	Items      []User
+	NextCursor string
+}

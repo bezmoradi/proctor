@@ -1,0 +1,1260 @@
+# Written by Claude for the testing phase (2026-11-14); accepted under the
+# product owner's testing-phase rule. Revision 2, after mutation round 1:
+# every response body is asserted whole or by its exact key set, every write
+# and every refused write is followed by a database check, created names
+# carry ${run.id}, and invalid tokens are credential variants of admin.
+version: 1
+suite: users
+scenarios:
+  - id: PGU-001
+    name: A created user is stored once and can be read back
+    steps:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect:
+          status: 201
+          headers:
+            Content-Type: application/json
+          keys:
+            $: [message, data]
+          json:
+            $.message: Created user successfully
+        save: { user_id: $.data }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT id::text AS id, name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { id: "${user_id}", name: "Ada ${run.id}" }
+      - id: stored-once
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name = $1
+            args: ["Ada ${run.id}"]
+            expect:
+              first_row: { n: 1 }
+      - id: read
+        request: { method: GET, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 200
+          headers:
+            Content-Type: application/json
+          json:
+            $: { message: Fetched user successfully, data: { id: "${user_id}", name: "Ada ${run.id}" } }
+
+  - id: PGU-002
+    name: A user can't be created with an empty name, and nothing is stored
+    steps:
+      - id: create-empty
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name is required, error: Validation failed }
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name = ''
+            expect:
+              first_row: { n: 0 }
+
+  - id: PGU-003
+    name: Reading a user that doesn't exist returns 404
+    steps:
+      - id: read-unknown
+        request: { method: GET, path: /api/v1/users/2000000000, identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+
+  - id: PGU-004
+    name: A rename is returned and persisted
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "Grace ${run.id}" } }
+        expect:
+          status: 200
+          json:
+            $: { message: User updated successfully, data: { id: "${user_id}", name: "Grace ${run.id}" } }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT id::text AS id, name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { id: "${user_id}", name: "Grace ${run.id}" }
+      - id: read
+        request: { method: GET, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched user successfully, data: { id: "${user_id}", name: "Grace ${run.id}" } }
+
+  - id: PGU-005
+    name: A deleted user is gone from the API and the database
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: delete
+        request: { method: DELETE, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: "deleted user with ID of ${user_id} successfully" }
+      - id: gone-from-database
+        verify:
+          postgres:
+            connection: app
+            query: SELECT id FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect: { rows: 0 }
+      - id: read-deleted
+        request: { method: GET, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+
+  - id: PGU-006
+    name: Renaming one user leaves another unchanged
+    setup:
+      - id: create-a
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { a_id: $.data }
+      - id: create-b
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Bob ${run.id}" } }
+        expect: { status: 201 }
+        save: { b_id: $.data }
+    steps:
+      - id: rename-a
+        request: { method: PUT, path: "/api/v1/users/${a_id}", identity: admin, body: { name: "Grace ${run.id}" } }
+        expect:
+          status: 200
+          json:
+            $: { message: User updated successfully, data: { id: "${a_id}", name: "Grace ${run.id}" } }
+      - id: only-a-renamed
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name = $1
+            args: ["Grace ${run.id}"]
+            expect:
+              first_row: { n: 1 }
+      - id: b-stored-unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${b_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Bob ${run.id}" }
+      - id: read-b
+        request: { method: GET, path: "/api/v1/users/${b_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched user successfully, data: { id: "${b_id}", name: "Bob ${run.id}" } }
+
+  - id: PGU-007
+    name: Deleting one user leaves another in place
+    setup:
+      - id: create-a
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { a_id: $.data }
+      - id: create-b
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Bob ${run.id}" } }
+        expect: { status: 201 }
+        save: { b_id: $.data }
+    steps:
+      - id: delete-a
+        request: { method: DELETE, path: "/api/v1/users/${a_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: "deleted user with ID of ${a_id} successfully" }
+      - id: a-gone-b-kept
+        verify:
+          postgres:
+            connection: app
+            query: SELECT id::text AS id, name FROM users WHERE id IN ($1, $2) ORDER BY id
+            args: ["${a_id}", "${b_id}"]
+            expect:
+              rows: 1
+              first_row: { id: "${b_id}", name: "Bob ${run.id}" }
+      - id: read-b
+        request: { method: GET, path: "/api/v1/users/${b_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched user successfully, data: { id: "${b_id}", name: "Bob ${run.id}" } }
+
+  - id: PGU-008
+    name: Listing users without a token is refused
+    steps:
+      - id: list-anonymous
+        request: { method: GET, path: /api/v1/users, identity: anonymous }
+        expect:
+          status: 401
+          headers:
+            Www-Authenticate: Bearer realm="users-api-postgres"
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-009
+    name: An expired admin token is refused
+    steps:
+      - id: list-expired
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: expired }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-010
+    name: An admin token with a broken signature is refused
+    steps:
+      - id: list-bad-signature
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: invalid_signature }
+        expect:
+          status: 401
+          headers:
+            Www-Authenticate: Bearer realm="users-api-postgres", error="invalid_token"
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-011
+    name: An anonymous delete is refused and the user still exists
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: delete-anonymous
+        request: { method: DELETE, path: "/api/v1/users/${user_id}", identity: anonymous }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: still-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+      - id: still-there
+        request: { method: GET, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched user successfully, data: { id: "${user_id}", name: "Ada ${run.id}" } }
+
+  - id: PGU-012
+    name: PATCH is not supported on a user, and changes nothing
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: patch
+        request: { method: PATCH, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "Zed ${run.id}" } }
+        expect: { status: 405 }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-013
+    name: An admin token for another audience is refused
+    steps:
+      - id: list-wrong-audience
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: wrong_audience }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-014
+    name: An unsigned admin token (alg none) is refused
+    steps:
+      - id: list-unsigned
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: unsigned }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-015
+    name: A malformed token is refused
+    steps:
+      - id: list-malformed
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: malformed }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-016
+    name: An anonymous create is refused and nothing is stored
+    steps:
+      - id: create-anonymous
+        request: { method: POST, path: /api/v1/users, identity: anonymous, body: { name: "Eve ${run.id}" } }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name = $1
+            args: ["Eve ${run.id}"]
+            expect:
+              first_row: { n: 0 }
+
+  - id: PGU-017
+    name: An anonymous rename is refused and the name is unchanged
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename-anonymous
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: anonymous, body: { name: "Eve ${run.id}" } }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-018
+    name: A list page holds exactly the requested number of users, each with only id and name
+    setup:
+      - id: create-a
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-b
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Bob ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: first-page
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "1" } }
+        expect:
+          status: 200
+          keys:
+            $: [message, data, next_cursor]
+            $.data[0]: [id, name]
+          length:
+            $.data: 1
+          json:
+            $.message: Fetched users successfully
+
+  - id: PGU-019
+    name: An admin token from another issuer is refused
+    steps:
+      - id: list-wrong-issuer
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: wrong_issuer }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-020
+    name: A name of exactly 100 characters is accepted and stored whole
+    steps:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${run.id}" } }
+        expect:
+          status: 201
+          keys:
+            $: [message, data]
+          json:
+            $.message: Created user successfully
+        save: { user_id: $.data }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name, char_length(name) AS length FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${run.id}", length: 100 }
+
+  - id: PGU-021
+    name: A name of 101 characters is refused, and nothing is stored
+    steps:
+      - id: create-too-long
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${run.id}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name is too long, error: Validation failed }
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name IN ($1)
+            args: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${run.id}"]
+            expect:
+              first_row: { n: 0 }
+
+  - id: PGU-022
+    name: Spaces around a name are kept as sent
+    steps:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "  Ada ${run.id}  " } }
+        expect:
+          status: 201
+          json:
+            $.message: Created user successfully
+        save: { user_id: $.data }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "  Ada ${run.id}  " }
+      - id: read
+        request: { method: GET, path: "/api/v1/users/${user_id}", identity: admin }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched user successfully, data: { id: "${user_id}", name: "  Ada ${run.id}  " } }
+
+  - id: PGU-023
+    name: Names with a newline or a tab are refused, and nothing is stored
+    steps:
+      - id: create-newline
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Line1\nLine2 ${run.id}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name contains invalid characters, error: Validation failed }
+      - id: create-tab
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Tab\there ${run.id}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name contains invalid characters, error: Validation failed }
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name IN ($1, $2)
+            args: ["Line1\nLine2 ${run.id}", "Tab\there ${run.id}"]
+            expect:
+              first_row: { n: 0 }
+
+  - id: PGU-024
+    name: Pages follow ascending ID order, and the cursor continues after the last item
+    setup:
+      - id: create-a
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-b
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Bob ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-c
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Cy ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: first-two-ids
+        verify:
+          postgres:
+            connection: app
+            query: SELECT (SELECT id::text FROM users ORDER BY users.id LIMIT 1) AS first, (SELECT id::text FROM users ORDER BY users.id OFFSET 1 LIMIT 1) AS second
+            expect: { rows: 1 }
+        save: { first: first, second: second }
+      - id: page-1
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "1" } }
+        expect:
+          status: 200
+          length:
+            $.data: 1
+          keys:
+            $: [message, data, next_cursor]
+          json:
+            $.data[0].id: "${first}"
+        save: { cursor: $.next_cursor }
+      - id: page-2
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "1", cursor: "${cursor}" } }
+        expect:
+          status: 200
+          length:
+            $.data: 1
+          json:
+            $.data[0].id: "${second}"
+
+  - id: PGU-025
+    name: A page that reaches the end of the list has no next cursor
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: count
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users
+            expect: { rows: 1 }
+        save: { n: n }
+      - id: whole-list
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "${n}" } }
+        expect:
+          status: 200
+          length:
+            $.data: "${n}"
+          absent: [$.next_cursor]
+          keys:
+            $: [message, data]
+
+  - id: PGU-026
+    name: A limit over the maximum is capped at 100, not at the default page size
+    setup:
+      - id: create-01
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 1 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-02
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 2 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-03
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 3 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-04
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 4 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-05
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 5 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-06
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 6 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-07
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 7 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-08
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 8 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-09
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 9 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-10
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 10 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-11
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 11 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-12
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 12 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-13
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 13 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-14
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 14 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-15
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 15 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-16
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 16 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-17
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 17 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-18
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 18 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-19
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 19 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-20
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 20 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-21
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 21 ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: expected-size
+        verify:
+          postgres:
+            connection: app
+            query: SELECT LEAST(count(*), 100) AS n FROM users
+            expect: { rows: 1 }
+        save: { n: n }
+      - id: over-cap
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "150" } }
+        expect:
+          status: 200
+          length:
+            $.data: "${n}"
+          json:
+            $.message: Fetched users successfully
+
+  - id: PGU-027
+    name: A cursor that isn't valid is a client error
+    steps:
+      - id: not-base64
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { cursor: "!!!x" } }
+        expect:
+          status: 400
+          json:
+            $: { error: Invalid pagination cursor }
+      - id: not-an-id
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { cursor: YWJj } }
+        expect:
+          status: 400
+          json:
+            $: { error: Invalid pagination cursor }
+
+  - id: PGU-028
+    name: Deleting a user that doesn't exist returns 404
+    steps:
+      - id: delete-unknown
+        request: { method: DELETE, path: /api/v1/users/2000000000, identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+      - id: still-unknown
+        request: { method: GET, path: /api/v1/users/2000000000, identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+
+  - id: PGU-029
+    name: Renaming a user that doesn't exist returns 404 and creates nothing
+    steps:
+      - id: rename-unknown
+        request: { method: PUT, path: /api/v1/users/2000000000, identity: admin, body: { name: "Ghost ${run.id}" } }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name IN ($1)
+            args: ["Ghost ${run.id}"]
+            expect:
+              first_row: { n: 0 }
+
+  - id: PGU-030
+    name: A rename without a name is refused, and the name is unchanged
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename-empty
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name is required, error: Validation failed }
+      - id: rename-missing
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: {} }
+        expect:
+          status: 422
+          json:
+            $: { message: name is required, error: Validation failed }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-031
+    name: An ID 2^32 above an existing one doesn't reach that user
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: alias
+        verify:
+          postgres:
+            connection: app
+            query: SELECT (id + 4294967296)::text AS alias FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect: { rows: 1 }
+        save: { alias: alias }
+      - id: read-alias
+        request: { method: GET, path: "/api/v1/users/${alias}", identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+      - id: delete-alias
+        request: { method: DELETE, path: "/api/v1/users/${alias}", identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+      - id: still-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-032
+    name: An ID that isn't a whole number returns 404
+    steps:
+      - id: letters
+        request: { method: GET, path: /api/v1/users/abc, identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+      - id: decimal
+        request: { method: GET, path: /api/v1/users/1.5, identity: admin }
+        expect:
+          status: 404
+          json:
+            $: { error: Not found }
+
+  - id: PGU-033
+    name: A JSON body with a charset parameter is accepted
+    steps:
+      - id: create
+        request:
+          method: POST
+          path: /api/v1/users
+          identity: admin
+          headers: { Content-Type: application/json; charset=utf-8 }
+          body: { name: "Ada ${run.id}" }
+        expect:
+          status: 201
+          json:
+            $.message: Created user successfully
+        save: { user_id: $.data }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-034
+    name: A request from an origin that isn't allowed gets no CORS grant
+    steps:
+      - id: list-from-other-origin
+        request: { method: GET, path: /api/v1/users, identity: admin, headers: { Origin: "https://evil.example" } }
+        expect:
+          status: 200
+          headers:
+            Vary: Origin
+          absent_headers: [Access-Control-Allow-Origin, Access-Control-Allow-Credentials]
+          json:
+            $.message: Fetched users successfully
+
+  - id: PGU-035
+    name: A login with the right user name and a wrong password is refused
+    steps:
+      - id: login-wrong-password
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: a refused login leaves nothing the API or the users table shows
+        expect:
+          status: 401
+          absent: [$.token]
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-036
+    name: The sixth failed login for a user within a minute is throttled, not the fifth
+    steps:
+      - id: attempt-1
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the attempt counter isn't readable; the sixth attempt shows it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: attempt-2
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the attempt counter isn't readable; the sixth attempt shows it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: attempt-3
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the attempt counter isn't readable; the sixth attempt shows it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: attempt-4
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the attempt counter isn't readable; the sixth attempt shows it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: attempt-5
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the attempt counter isn't readable; the sixth attempt shows it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: attempt-6
+        request: { method: POST, path: /login, identity: anonymous, body: { username: "limit-${run.id}", password: wrong } }
+        no_state_check: the throttle has no other readable state
+        expect:
+          status: 429
+          json:
+            $: { error: too many login attempts }
+
+  - id: PGU-037
+    name: The Bearer scheme is accepted in lower case
+    steps:
+      - id: list-lowercase-scheme
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: lowercase_scheme }
+        expect:
+          status: 200
+          json:
+            $.message: Fetched users successfully
+
+  - id: PGU-038
+    name: An admin token without an expiry is refused
+    steps:
+      - id: list-no-expiry
+        request: { method: GET, path: /api/v1/users, identity: admin, credential: no_expiry }
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+
+  - id: PGU-039
+    name: A body over 1 MiB is refused with 413 on create and update, and changes nothing
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: create-oversized
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "${fill(1048577)}" } }
+        expect:
+          status: 413
+          json:
+            $: { error: Request body too large }
+      - id: rename-oversized
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "${fill(1048577)}" } }
+        expect:
+          status: 413
+          json:
+            $: { error: Request body too large }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-040
+    name: A body just under 1 MiB is read in full (the cap is 1,048,576 bytes)
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename-near-cap
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "${fill(1040000)}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name is too long, error: Validation failed }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-041
+    name: A create with an empty body is refused
+    steps:
+      - id: create-no-body
+        request: { method: POST, path: /api/v1/users, identity: admin, headers: { Content-Type: application/json } }
+        no_state_check: an empty body names nothing whose absence could be looked up
+        expect:
+          status: 400
+          json:
+            $: { error: Failed to read request body }
+
+  - id: PGU-042
+    name: A rename sent as text/plain is refused with 415, and changes nothing
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename-text
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, headers: { Content-Type: text/plain }, body: { name: "Eve ${run.id}" } }
+        expect:
+          status: 415
+          json:
+            $: { error: Content-Type must be application/json }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-043
+    name: Security headers are sent on the health check and on unknown routes too
+    steps:
+      - id: health
+        request: { method: GET, path: /healthz, identity: anonymous }
+        expect:
+          status: 200
+          headers:
+            X-Content-Type-Options: nosniff
+            Referrer-Policy: no-referrer
+            X-Frame-Options: DENY
+          json:
+            $: { status: ok }
+      - id: unknown-route
+        request: { method: GET, path: /no-such-route, identity: admin }
+        expect:
+          status: 404
+          headers:
+            X-Content-Type-Options: nosniff
+            X-Frame-Options: DENY
+      - id: app-route
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "1" } }
+        expect:
+          status: 200
+          headers:
+            X-Content-Type-Options: nosniff
+            Referrer-Policy: no-referrer
+            X-Frame-Options: DENY
+          json:
+            $.message: Fetched users successfully
+
+  - id: PGU-044
+    name: A page after the last user is empty, with data null and no cursor
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: cursor-after-last
+        verify:
+          postgres:
+            connection: app
+            query: SELECT rtrim(translate(encode(convert_to(max(id)::text, 'UTF8'), 'base64'), '+/', '-_'), '=') AS cursor FROM users
+            expect: { rows: 1 }
+        save: { cursor: cursor }
+      - id: empty-page
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { cursor: "${cursor}" } }
+        expect:
+          status: 200
+          json:
+            $: { message: Fetched users successfully, data: null }
+
+  - id: PGU-045
+    name: A rename is held to every name rule, not only to "required"
+    setup:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+        save: { user_id: $.data }
+    steps:
+      - id: rename-too-long
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa${run.id}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name is too long, error: Validation failed }
+      - id: rename-control-character
+        request: { method: PUT, path: "/api/v1/users/${user_id}", identity: admin, body: { name: "Bad\u0007 ${run.id}" } }
+        expect:
+          status: 422
+          json:
+            $: { message: name contains invalid characters, error: Validation failed }
+      - id: unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Ada ${run.id}" }
+
+  - id: PGU-046
+    name: The length limit counts characters, not bytes
+    steps:
+      - id: create
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé${run.id}" } }
+        expect:
+          status: 201
+          json:
+            $.message: Created user successfully
+        save: { user_id: $.data }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name, char_length(name) AS length FROM users WHERE id = $1
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé${run.id}", length: 100 }
+
+  - id: PGU-047
+    name: A two-item page's cursor continues after its last item
+    setup:
+      - id: create-a
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Ada ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-b
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Bob ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-c
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "Cy ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: first-three-ids
+        verify:
+          postgres:
+            connection: app
+            query: SELECT (SELECT id::text FROM users ORDER BY users.id OFFSET 1 LIMIT 1) AS second, (SELECT id::text FROM users ORDER BY users.id OFFSET 2 LIMIT 1) AS third
+            expect: { rows: 1 }
+        save: { second: second, third: third }
+      - id: page-1
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "2" } }
+        expect:
+          status: 200
+          length:
+            $.data: 2
+          json:
+            $.data[1].id: "${second}"
+        save: { cursor: $.next_cursor }
+      - id: page-2
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "1", cursor: "${cursor}" } }
+        expect:
+          status: 200
+          json:
+            $.data[0].id: "${third}"
+
+  - id: PGU-048
+    name: A limit of zero or below falls back to the default page size of 20
+    setup:
+      - id: create-01
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 1 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-02
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 2 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-03
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 3 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-04
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 4 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-05
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 5 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-06
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 6 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-07
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 7 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-08
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 8 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-09
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 9 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-10
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 10 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-11
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 11 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-12
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 12 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-13
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 13 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-14
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 14 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-15
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 15 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-16
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 16 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-17
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 17 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-18
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 18 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-19
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 19 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-20
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 20 ${run.id}" } }
+        expect: { status: 201 }
+      - id: create-21
+        request: { method: POST, path: /api/v1/users, identity: admin, body: { name: "User 21 ${run.id}" } }
+        expect: { status: 201 }
+    steps:
+      - id: expected-size
+        verify:
+          postgres:
+            connection: app
+            query: SELECT LEAST(count(*), 20) AS n FROM users
+            expect: { rows: 1 }
+        save: { n: n }
+      - id: negative-limit
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "-1" } }
+        expect:
+          status: 200
+          length:
+            $.data: "${n}"
+      - id: zero-limit
+        request: { method: GET, path: /api/v1/users, identity: admin, query: { limit: "0" } }
+        expect:
+          status: 200
+          length:
+            $.data: "${n}"
+
+  - id: PGU-049
+    name: A successful login resets the user's failed-attempt count
+    steps:
+      - id: wrong-1
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: wrong-2
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: wrong-3
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: right
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "${secret.admin_password}" } }
+        no_state_check: a login issues a token and changes nothing else readable
+        expect:
+          status: 200
+          headers:
+            Cache-Control: no-store
+          keys:
+            $: [token]
+      - id: wrong-4
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: wrong-5
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: wrong-6
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }
+      - id: wrong-7
+        request: { method: POST, path: /login, identity: anonymous, body: { username: admin, password: "wrong-${run.id}" } }
+        no_state_check: the attempt counter isn't readable; later attempts show it
+        expect:
+          status: 401
+          json:
+            $: { error: unauthorized }

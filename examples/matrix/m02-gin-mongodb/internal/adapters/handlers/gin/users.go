@@ -1,0 +1,126 @@
+package gin
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"m02-gin-mongodb/internal/adapters/api"
+	"m02-gin-mongodb/internal/core/user/domain"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (router *router) registerUserRoutes() {
+	r := router.engine.Group(router.globalPrefix + "/users")
+
+	// Register the collection routes on the bare group path ("" not "/") so the
+	// resolved path is /api/v1/users with no trailing slash — matching the other
+	// frameworks (gin would otherwise serve /api/v1/users/ and 301-redirect).
+	r.GET("", router.IndexHandler)
+	r.GET("/:id", router.ShowUserHandler)
+	r.POST("", router.CreateUserHandler)
+	r.PUT("/:id", router.UpdateUserHandler)
+	r.DELETE("/:id", router.DeleteUserHandler)
+}
+
+func (router *router) CreateUserHandler(c *gin.Context) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		status, label := api.DecodeFailure(err)
+		c.JSON(status, api.Response{Error: label})
+		return
+	}
+
+	result, err := router.service.Create(c.Request.Context(), body.Name)
+	if domain.IsValidationError(err) {
+		c.JSON(http.StatusUnprocessableEntity, api.Response{Message: err.Error(), Error: api.ValidationFailure})
+		return
+	}
+	if err != nil {
+		router.fail(c, "create user", err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, api.Response{Message: "Created user successfully", Data: result})
+}
+
+func (router *router) DeleteUserHandler(c *gin.Context) {
+	id := c.Param("id")
+
+	err := router.service.Delete(c.Request.Context(), id)
+	if errors.Is(err, domain.ErrUserNotFound) {
+		c.JSON(http.StatusNotFound, api.Response{Error: api.NotFoundError})
+		return
+	}
+	if err != nil {
+		router.fail(c, "delete user", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, api.Response{Message: fmt.Sprintf("deleted user with ID of %v successfully", id)})
+}
+
+func (router *router) IndexHandler(c *gin.Context) {
+	limit, cursor := api.PageParams(c.Request.URL.Query())
+
+	result, err := router.service.Index(c.Request.Context(), limit, cursor)
+	if errors.Is(err, domain.ErrInvalidCursor) {
+		c.JSON(http.StatusBadRequest, api.Response{Error: api.InvalidCursor})
+		return
+	}
+	if err != nil {
+		router.fail(c, "list users", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, api.Response{
+		Message:    "Fetched users successfully",
+		Data:       api.NewUsers(result.Items),
+		NextCursor: result.NextCursor,
+	})
+}
+
+func (router *router) ShowUserHandler(c *gin.Context) {
+	result, err := router.service.Show(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, domain.ErrUserNotFound) {
+		c.JSON(http.StatusNotFound, api.Response{Error: api.NotFoundError})
+		return
+	}
+	if err != nil {
+		router.fail(c, "fetch user", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, api.Response{Message: "Fetched user successfully", Data: api.NewUser(result)})
+}
+
+func (router *router) UpdateUserHandler(c *gin.Context) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		status, label := api.DecodeFailure(err)
+		c.JSON(status, api.Response{Error: label})
+		return
+	}
+
+	user, err := router.service.Update(c.Request.Context(), c.Param("id"), body.Name)
+	if domain.IsValidationError(err) {
+		c.JSON(http.StatusUnprocessableEntity, api.Response{Message: err.Error(), Error: api.ValidationFailure})
+		return
+	}
+	if errors.Is(err, domain.ErrUserNotFound) {
+		c.JSON(http.StatusNotFound, api.Response{Error: api.NotFoundError})
+		return
+	}
+	if err != nil {
+		router.fail(c, "update user", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, api.Response{Message: "User updated successfully", Data: api.NewUser(user)})
+}

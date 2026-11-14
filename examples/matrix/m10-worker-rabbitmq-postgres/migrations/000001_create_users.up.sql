@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100),
+    event_id VARCHAR(36) UNIQUE
+);
+
+

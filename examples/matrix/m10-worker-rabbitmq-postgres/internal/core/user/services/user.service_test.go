@@ -1,0 +1,253 @@
+package services
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+
+	"m10-worker-rabbitmq-postgres/internal/core/user/domain"
+)
+
+func TestCreate(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should return an ID", func(t *testing.T) {
+		repo.insert = func(ctx context.Context, name string) (string, error) {
+			return "1", nil
+		}
+
+		res, _ := us.Create(ctx, "John")
+		if res != "1" {
+			t.Errorf("should return 1 but it returned %v", res)
+		}
+	})
+
+	t.Run("should return an error", func(t *testing.T) {
+		repo.insert = func(ctx context.Context, name string) (string, error) {
+			return "", errors.New("error inserting a new record")
+		}
+
+		_, err := us.Create(ctx, "John")
+		if err == nil {
+			t.Error("should return error but it didn't")
+		}
+	})
+
+	t.Run("should return an error if name is empty", func(t *testing.T) {
+		_, err := us.Create(ctx, "")
+		if !errors.Is(err, domain.ErrNameRequired) {
+			t.Errorf("expected domain.ErrNameRequired but received %v", err)
+		}
+	})
+}
+
+func TestCreateOnce(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should pass the key and name to the repository", func(t *testing.T) {
+		var gotKey, gotName string
+		repo.insertOnce = func(ctx context.Context, key string, name string) error {
+			gotKey, gotName = key, name
+			return nil
+		}
+
+		if err := us.CreateOnce(ctx, "key-1", "John"); err != nil {
+			t.Fatalf("should return nil but it returned %v", err)
+		}
+		if gotKey != "key-1" || gotName != "John" {
+			t.Errorf("should insert key-1/John but inserted %q/%q", gotKey, gotName)
+		}
+	})
+
+	t.Run("should return an error if name is empty", func(t *testing.T) {
+		if err := us.CreateOnce(ctx, "key-2", ""); !errors.Is(err, domain.ErrNameRequired) {
+			t.Errorf("expected domain.ErrNameRequired but received %v", err)
+		}
+	})
+}
+
+func TestUpdate(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should return the updated user", func(t *testing.T) {
+		repo.update = func(ctx context.Context, id string, name string) error {
+			return nil
+		}
+
+		res, err := us.Update(ctx, "1", "John")
+		if err != nil || res != (domain.User{ID: "1", Name: "John"}) {
+			t.Errorf("should return user 1 named John but it returned %v, %v", res, err)
+		}
+	})
+
+	t.Run("should return not found", func(t *testing.T) {
+		repo.update = func(ctx context.Context, id string, name string) error {
+			return domain.ErrUserNotFound
+		}
+
+		_, err := us.Update(ctx, "1", "John")
+		if !errors.Is(err, domain.ErrUserNotFound) {
+			t.Errorf("expected domain.ErrUserNotFound but received %v", err)
+		}
+	})
+
+	t.Run("should return an error", func(t *testing.T) {
+		repo.update = func(ctx context.Context, id string, name string) error {
+			return errors.New("error updating a record")
+		}
+
+		_, err := us.Update(ctx, "1", "John")
+		if err == nil {
+			t.Error("should return error but it didn't")
+		}
+	})
+
+	t.Run("should return an error if new name is empty", func(t *testing.T) {
+		_, err := us.Update(ctx, "1", "")
+		if !errors.Is(err, domain.ErrNameRequired) {
+			t.Errorf("expected domain.ErrNameRequired but received %v", err)
+		}
+	})
+}
+
+func TestDelete(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should delete", func(t *testing.T) {
+		repo.delete = func(ctx context.Context, id string) error {
+			return nil
+		}
+
+		if err := us.Delete(ctx, "1"); err != nil {
+			t.Errorf("should return nil but it returned %v", err)
+		}
+	})
+
+	t.Run("should return not found", func(t *testing.T) {
+		repo.delete = func(ctx context.Context, id string) error {
+			return domain.ErrUserNotFound
+		}
+
+		if err := us.Delete(ctx, "1"); !errors.Is(err, domain.ErrUserNotFound) {
+			t.Errorf("expected domain.ErrUserNotFound but received %v", err)
+		}
+	})
+}
+
+func TestShow(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should return user by ID", func(t *testing.T) {
+		user := domain.User{ID: "1", Name: "John"}
+		repo.fetch = func(ctx context.Context, id string) (domain.User, error) {
+			return user, nil
+		}
+
+		res, _ := us.Show(ctx, "1")
+		if res.ID != "1" {
+			t.Errorf("should return 1 but it returned %v", res)
+		}
+	})
+
+	t.Run("should return an error", func(t *testing.T) {
+		repo.fetch = func(ctx context.Context, id string) (domain.User, error) {
+			return domain.User{}, errors.New("user not found")
+		}
+
+		_, err := us.Show(ctx, "1")
+		if err == nil {
+			t.Error("should return error but it didn't")
+		}
+	})
+}
+
+func TestIndex(t *testing.T) {
+	ctx := context.Background()
+	repo := fakeRepository{}
+	us := NewUserService(&repo)
+
+	t.Run("should return users", func(t *testing.T) {
+		expectedResult := domain.Page{Items: []domain.User{
+			{ID: "1", Name: "John"},
+			{ID: "2", Name: "Jane"},
+		}}
+
+		repo.fetchAll = func(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+			return expectedResult, nil
+		}
+
+		result, _ := us.Index(ctx, 0, "")
+		if !reflect.DeepEqual(result, expectedResult) {
+			t.Errorf("should return users but returned %v", result)
+		}
+	})
+
+	t.Run("should return an empty list", func(t *testing.T) {
+		repo.fetchAll = func(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+			return domain.Page{}, nil
+		}
+
+		result, _ := us.Index(ctx, 0, "")
+		if len(result.Items) != 0 {
+			t.Errorf("should return 0 but received %v", len(result.Items))
+		}
+	})
+
+	t.Run("should return an error", func(t *testing.T) {
+		repo.fetchAll = func(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+			return domain.Page{}, errors.New("error fetching users")
+		}
+
+		_, err := us.Index(ctx, 0, "")
+		if err == nil {
+			t.Error("should return an error but it didn't")
+		}
+	})
+}
+
+// fakeRepository implements the repository port for these tests: each method
+// calls the matching func, which a test sets for its case. Being defined here,
+// it keeps the service tests free of any adapter.
+type fakeRepository struct {
+	insert     func(ctx context.Context, name string) (string, error)
+	insertOnce func(ctx context.Context, key string, name string) error
+	update     func(ctx context.Context, id string, name string) error
+	delete     func(ctx context.Context, id string) error
+	fetch      func(ctx context.Context, id string) (domain.User, error)
+	fetchAll   func(ctx context.Context, limit int, cursor string) (domain.Page, error)
+}
+
+func (f *fakeRepository) Insert(ctx context.Context, name string) (string, error) {
+	return f.insert(ctx, name)
+}
+
+func (f *fakeRepository) InsertOnce(ctx context.Context, key string, name string) error {
+	return f.insertOnce(ctx, key, name)
+}
+
+func (f *fakeRepository) Update(ctx context.Context, id string, name string) error {
+	return f.update(ctx, id, name)
+}
+
+func (f *fakeRepository) Delete(ctx context.Context, id string) error {
+	return f.delete(ctx, id)
+}
+
+func (f *fakeRepository) Fetch(ctx context.Context, id string) (domain.User, error) {
+	return f.fetch(ctx, id)
+}
+
+func (f *fakeRepository) FetchAll(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+	return f.fetchAll(ctx, limit, cursor)
+}

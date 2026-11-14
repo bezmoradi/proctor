@@ -1,0 +1,21 @@
+version: 1
+project: users-api-postgres
+manifest: manifest.yaml
+identities:
+  admin:
+    type: bearer
+    # Invalid credentials for negative tests, minted by the disposable
+    # environment (AUTH-06); Proctor never makes or alters a token.
+    variants: [expired, no_expiry, invalid_signature, wrong_audience, wrong_issuer, unsigned, malformed]
+    # Another valid spelling of the same credential: the scheme in lower case.
+    accepted_variants: [lowercase_scheme]
+  anonymous: { type: none }
+# Values requests may send as ${secret.name}; never shown in reports.
+secrets: [admin_password]
+connections:
+  postgres:
+    # The verification role may read only these objects (DB-04, DB-07).
+    app: { schemas: [public], objects: [users] }
+readiness:
+  path: /readyz
+  startup_timeout: 15s

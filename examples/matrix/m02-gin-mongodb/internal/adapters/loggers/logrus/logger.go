@@ -1,0 +1,75 @@
+package logrus
+
+import (
+	"io"
+	"m02-gin-mongodb/internal/core/shared"
+	"os"
+
+	"github.com/sirupsen/logrus"
+)
+
+type logger struct {
+	logger *logrus.Logger
+}
+
+func New(fileName ...string) shared.Logger {
+	var out io.Writer
+	if len(fileName) > 0 {
+		file, err := os.OpenFile(fileName[0], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			panic(err)
+		}
+		out = file
+	} else {
+		out = os.Stdout
+	}
+	l := &logrus.Logger{
+		Level: logrus.InfoLevel,
+		Out:   out,
+	}
+	l.Formatter = &logrus.TextFormatter{FullTimestamp: true}
+	return logger{logger: l}
+}
+
+func (l logger) Info(message string, args ...any) {
+	if len(args) > 0 {
+		l.logger.WithFields(prepareArgs(args...)).Info(message)
+	} else {
+		l.logger.Info(message)
+	}
+}
+
+func (l logger) Warn(message string, args ...any) {
+	if len(args) > 0 {
+		l.logger.WithFields(prepareArgs(args...)).Warn(message)
+	} else {
+		l.logger.Warn(message)
+	}
+}
+
+func (l logger) Error(message string, args ...any) {
+	if len(args) > 0 {
+		l.logger.WithFields(prepareArgs(args...)).Error(message)
+	} else {
+		l.logger.Error(message)
+	}
+}
+
+func (l logger) Fatal(err error) {
+	l.logger.Fatal(err)
+}
+
+func prepareArgs(args ...any) logrus.Fields {
+	fields := logrus.Fields{}
+	if len(args)%2 != 0 {
+		args = args[:len(args)-1]
+	}
+	for i := 0; i < len(args); i += 2 {
+		key, ok := args[i].(string)
+		if !ok {
+			continue
+		}
+		fields[key] = args[i+1]
+	}
+	return fields
+}

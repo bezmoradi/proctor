@@ -1,0 +1,249 @@
+package postgres
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"time"
+
+	"users-api-postgres/internal/core/user/domain"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const tableName = "users"
+
+// parseID converts a client-supplied id to the width the id column actually is:
+// `id SERIAL` is int4 (see migrations/), not a Go int. strconv.Atoi parses 64
+// bits, so it waves through every value in (2^31-1, 2^63-1) — those reach
+// Postgres, overflow int4, and come back as SQLSTATE 22003, i.e. a 500 where
+// the honest answer is "no such row". Parse at the column's real width and an
+// out-of-range id is simply a miss. Widen the bit size here if you widen the
+// column to bigint.
+func parseID(id string) (int32, bool) {
+	parsed, err := strconv.ParseInt(id, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return int32(parsed), true
+}
+
+// connectTimeout bounds the startup ping, so a wrong host or a firewalled port
+// stops the app within seconds instead of on the first request.
+const connectTimeout = 5 * time.Second
+
+// Repository stores users in Postgres.
+type Repository struct {
+	db *pgxpool.Pool
+}
+
+// New connects with the POSTGRES_* environment and pings the server, so a wrong
+// host, port or password stops the app at startup. POSTGRES_SSLMODE must be set:
+// verify-full for a real server, disable only for the local compose database.
+func New() (*Repository, error) {
+	sslmode := os.Getenv("POSTGRES_SSLMODE")
+	if sslmode == "" {
+		return nil, errors.New("POSTGRES_SSLMODE is not set: use verify-full for a real server, disable for the local compose database")
+	}
+
+	// url.URL escapes the credentials, so a password containing @, : or / can't
+	// change which host or database the pool connects to.
+	dsn := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(os.Getenv("POSTGRES_USERNAME"), os.Getenv("POSTGRES_PASSWORD")),
+		Host:     net.JoinHostPort(os.Getenv("POSTGRES_HOST"), os.Getenv("POSTGRES_PORT")),
+		Path:     "/" + os.Getenv("POSTGRES_DATABASE"),
+		RawQuery: url.Values{"sslmode": {sslmode}}.Encode(),
+	}
+
+	db, err := pgxpool.New(context.Background(), dsn.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid Postgres configuration: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if err := db.Ping(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cannot reach Postgres: %w", err)
+	}
+
+	// Schema is owned by the versioned migrations in migrations/ (run `make
+	// migrate-up`), not created here — so the app never races on DDL at startup.
+	return &Repository{db: db}, nil
+}
+
+// Ping reports whether Postgres answers; /readyz calls it.
+func (r *Repository) Ping(ctx context.Context) error {
+	return r.db.Ping(ctx)
+}
+
+// Close releases the connection pool.
+func (r *Repository) Close() error {
+	r.db.Close()
+	return nil
+}
+
+func (r *Repository) Insert(ctx context.Context, name string) (string, error) {
+	var insertedID int64
+	err := r.db.QueryRow(
+		ctx,
+		fmt.Sprintf(
+			"INSERT INTO %v (name) VALUES ($1) RETURNING id",
+			tableName,
+		),
+		name,
+	).Scan(&insertedID)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.FormatInt(insertedID, 10), nil
+}
+
+func (r *Repository) Update(ctx context.Context, id string, newName string) error {
+	// An id the column can't hold can never match a row.
+	numericID, ok := parseID(id)
+	if !ok {
+		return domain.ErrUserNotFound
+	}
+
+	commandTag, err := r.db.Exec(
+		ctx,
+		fmt.Sprintf(
+			"UPDATE %v SET name = $1 WHERE id = $2",
+			tableName,
+		),
+		newName,
+		numericID,
+	)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	// An id the column can't hold can never match a row.
+	numericID, ok := parseID(id)
+	if !ok {
+		return domain.ErrUserNotFound
+	}
+
+	commandTag, err := r.db.Exec(
+		ctx,
+		fmt.Sprintf(
+			"DELETE FROM %v WHERE id = $1",
+			tableName,
+		),
+		numericID,
+	)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) Fetch(ctx context.Context, id string) (domain.User, error) {
+	// An id the column can't hold can never match a row.
+	numericID, ok := parseID(id)
+	if !ok {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+
+	var user domain.User
+
+	err := r.db.QueryRow(
+		ctx,
+		fmt.Sprintf(
+			"SELECT id, name FROM %v WHERE id = $1",
+			tableName,
+		),
+		numericID,
+	).Scan(&user.ID, &user.Name)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.User{}, domain.ErrUserNotFound
+		}
+		return domain.User{}, err
+	}
+
+	return user, nil
+}
+
+func (r *Repository) FetchAll(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+	// Self-defense: the service always clamps limit into [1, max], but a direct
+	// caller must not be able to make this method panic on page.Items[limit-1].
+	if limit < 1 {
+		limit = 1
+	}
+
+	// Keyset pagination: the cursor is the last id from the previous page,
+	// base64-encoded. Ordering by the integer primary key gives a stable,
+	// gap-free walk; id > 0 selects everything for the first (cursor-less) page.
+	var afterID int32
+	if cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		// A cursor outside the id column's range was never one we issued, so
+		// it's a malformed token (400), not something to hand to the driver.
+		parsed, ok := parseID(string(decoded))
+		if !ok {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		afterID = parsed
+	}
+
+	// Fetch one extra row to learn whether a further page exists.
+	rows, err := r.db.Query(
+		ctx,
+		fmt.Sprintf(
+			"SELECT id, name FROM %v WHERE id > $1 ORDER BY id ASC LIMIT $2",
+			tableName,
+		),
+		afterID,
+		limit+1,
+	)
+	if err != nil {
+		return domain.Page{}, err
+	}
+	defer rows.Close()
+
+	var users []domain.User
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(&user.ID, &user.Name); err != nil {
+			return domain.Page{}, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.Page{}, err
+	}
+
+	page := domain.Page{Items: users}
+	if len(users) > limit {
+		page.Items = users[:limit]
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(page.Items[limit-1].ID))
+	}
+
+	return page, nil
+}

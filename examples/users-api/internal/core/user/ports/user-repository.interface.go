@@ -1,0 +1,18 @@
+package ports
+
+import (
+	"context"
+
+	"users-api/internal/core/user/domain"
+)
+
+// UserRepositoryInterface is the datastore port. Fetch, Update and Delete return
+// domain.ErrUserNotFound when no user has the id, whether the id is absent or
+// one the store could never hold.
+type UserRepositoryInterface interface {
+	Delete(ctx context.Context, id string) error
+	Fetch(ctx context.Context, id string) (domain.User, error)
+	FetchAll(ctx context.Context, limit int, cursor string) (domain.Page, error)
+	Insert(ctx context.Context, name string) (string, error)
+	Update(ctx context.Context, id string, value string) error
+}

@@ -1,0 +1,55 @@
+package zap
+
+import (
+	"m08-http-dynamodb-kafka/internal/core/shared"
+	"os"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+type logger struct {
+	logger *zap.SugaredLogger
+}
+
+func New(fileName ...string) shared.Logger {
+	if len(fileName) > 0 {
+		config := zap.NewProductionEncoderConfig()
+		config.EncodeTime = zapcore.ISO8601TimeEncoder
+		fileEncoder := zapcore.NewJSONEncoder(config)
+		logFile, err := os.OpenFile(fileName[0], os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err != nil {
+			panic(err)
+		}
+		writer := zapcore.AddSync(logFile)
+		defaultLogLevel := zapcore.DebugLevel
+		core := zapcore.NewTee(
+			zapcore.NewCore(fileEncoder, writer, defaultLogLevel),
+		)
+		l := zap.New(core)
+		return logger{
+			logger: l.Sugar(),
+		}
+	}
+	l, _ := zap.NewProduction()
+
+	return logger{
+		logger: l.Sugar(),
+	}
+}
+
+func (l logger) Info(message string, args ...any) {
+	l.logger.Infow(message, args...)
+}
+
+func (l logger) Warn(message string, args ...any) {
+	l.logger.Warnw(message, args...)
+}
+
+func (l logger) Error(message string, args ...any) {
+	l.logger.Errorw(message, args...)
+}
+
+func (l logger) Fatal(err error) {
+	l.logger.Fatal(err.Error())
+}

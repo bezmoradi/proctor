@@ -1,0 +1,141 @@
+package gin
+
+import (
+	"errors"
+	"net/http"
+
+	"m09-webapp-gin-badgerdb/internal/core/user/domain"
+	"m09-webapp-gin-badgerdb/internal/web"
+
+	"github.com/gin-gonic/gin"
+)
+
+// internalFailure is what a server-side fault tells the browser. The underlying
+// error is deliberately never echoed: it can carry datastore credentials, host
+// names, and query text. Log it if you need it; do not render it.
+const internalFailure = "internal server error"
+
+func (router *router) registerUserRoutes() {
+	r := router.engine.Group(router.globalPrefix)
+
+	// Register the collection routes on the bare group path ("" not "/") so the
+	// resolved path is /users with no trailing slash — matching the other
+	// frameworks (gin would otherwise serve /users/ and 301-redirect).
+	r.GET("", router.IndexHandler)
+	r.GET("/:id", router.ShowUserHandler)
+	r.POST("", router.CreateUserHandler)
+	r.PUT("/:id", router.UpdateUserHandler)
+	r.DELETE("/:id", router.DeleteUserHandler)
+
+	router.engine.GET("/assets/*filepath", gin.WrapH(web.Assets()))
+
+}
+
+func (router *router) IndexHandler(c *gin.Context) {
+	// Forward-only paging: the "Next" link carries an opaque ?cursor. limit 0
+	// lets the service apply its default page size.
+	cursor := c.Request.URL.Query().Get("cursor")
+
+	result, err := router.service.Index(c.Request.Context(), 0, cursor)
+	if errors.Is(err, domain.ErrInvalidCursor) {
+		web.RenderError(c.Writer, http.StatusBadRequest, "This page link is not valid. Start again from the first page.")
+		return
+	}
+	if err != nil {
+		router.fail(c, "list users", err)
+		return
+	}
+
+	if err := web.Render(c.Writer, "users.html", result); err != nil {
+		router.fail(c, "render page", err)
+	}
+}
+
+func (router *router) ShowUserHandler(c *gin.Context) {
+	result, err := router.service.Show(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, domain.ErrUserNotFound) {
+		web.RenderError(c.Writer, http.StatusNotFound, "No user has this ID.")
+		return
+	}
+	if err != nil {
+		router.fail(c, "fetch user", err)
+		return
+	}
+
+	if err := web.Render(c.Writer, "user.html", result); err != nil {
+		router.fail(c, "render page", err)
+	}
+}
+
+func (router *router) CreateUserHandler(c *gin.Context) {
+	var form struct {
+		Name string `form:"name"`
+	}
+
+	if err := c.ShouldBind(&form); err != nil {
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+			c.String(http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		c.String(http.StatusBadRequest, "malformed form body")
+		return
+	}
+
+	_, err := router.service.Create(c.Request.Context(), form.Name)
+	if domain.IsValidationError(err) {
+		// A domain sentinel's own text is written by us and safe to show.
+		c.String(http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err != nil {
+		router.fail(c, "create user", err)
+		return
+	}
+
+	c.Status(http.StatusCreated)
+}
+
+func (router *router) UpdateUserHandler(c *gin.Context) {
+	var form struct {
+		Name string `form:"name"`
+	}
+
+	if err := c.ShouldBind(&form); err != nil {
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+			c.String(http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		c.String(http.StatusBadRequest, "malformed form body")
+		return
+	}
+
+	_, err := router.service.Update(c.Request.Context(), c.Param("id"), form.Name)
+	if domain.IsValidationError(err) {
+		c.String(http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if errors.Is(err, domain.ErrUserNotFound) {
+		c.String(http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		router.fail(c, "update user", err)
+		return
+	}
+
+	c.Status(http.StatusOK)
+}
+
+func (router *router) DeleteUserHandler(c *gin.Context) {
+	err := router.service.Delete(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, domain.ErrUserNotFound) {
+		c.String(http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		router.fail(c, "delete user", err)
+		return
+	}
+
+	c.Status(http.StatusOK)
+}

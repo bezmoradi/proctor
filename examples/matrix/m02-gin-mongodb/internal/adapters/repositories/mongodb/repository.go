@@ -1,0 +1,237 @@
+package mongodb
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"m02-gin-mongodb/internal/core/user/domain"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+const collectionName = "users"
+
+type mongodbUser struct {
+	ID   bson.ObjectID `json:"id" bson:"_id"`
+	Name string        `json:"name" bson:"name"`
+}
+
+// connectTimeout bounds the startup ping, so a wrong host or a firewalled port
+// stops the app within seconds instead of on the first request.
+const connectTimeout = 5 * time.Second
+
+// Repository stores users in MongoDB.
+type Repository struct {
+	client     *mongo.Client
+	collection *mongo.Collection
+}
+
+func mapMongodbToUser(m mongodbUser) domain.User {
+	return domain.User{
+		ID:   m.ID.Hex(),
+		Name: m.Name,
+	}
+}
+
+// New connects with MONGODB_URI, a full connection string (credentials, hosts,
+// replica set, tls=true and so on), and pings the server, so a wrong address or
+// password stops the app at startup. MONGODB_NAME is the database.
+func New() (*Repository, error) {
+	uri := os.Getenv("MONGODB_URI")
+	if uri == "" {
+		return nil, errors.New("MONGODB_URI is not set")
+	}
+	database := os.Getenv("MONGODB_NAME")
+	if database == "" {
+		return nil, errors.New("MONGODB_NAME is not set")
+	}
+
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		return nil, fmt.Errorf("invalid MongoDB configuration: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(context.Background())
+		return nil, fmt.Errorf("cannot reach MongoDB: %w", err)
+	}
+
+	r := &Repository{
+		client:     client,
+		collection: client.Database(database).Collection(collectionName),
+	}
+
+	return r, nil
+}
+
+// Ping reports whether MongoDB answers; /readyz calls it.
+func (r *Repository) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx, nil)
+}
+
+// Close disconnects from MongoDB.
+func (r *Repository) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	return r.client.Disconnect(ctx)
+}
+
+func (r *Repository) Insert(ctx context.Context, name string) (string, error) {
+	result, err := r.collection.InsertOne(
+		ctx,
+		bson.M{
+			"name": name,
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	insertedID, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		return "", fmt.Errorf("unexpected type for InsertedID")
+	}
+
+	return insertedID.Hex(), nil
+}
+
+func (r *Repository) Update(ctx context.Context, id string, name string) error {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		// A malformed id can never match a document.
+		return domain.ErrUserNotFound
+	}
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.D{
+			{Key: "_id", Value: objectID},
+		}, bson.D{
+			{
+				Key: "$set",
+				Value: bson.D{
+					{Key: "name", Value: name},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	// MatchedCount, not ModifiedCount: setting the name a user already has
+	// modifies nothing but still finds the user.
+	if result.MatchedCount == 0 {
+		return domain.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		// A malformed id can never match a document.
+		return domain.ErrUserNotFound
+	}
+
+	result, err := r.collection.DeleteOne(ctx, bson.D{
+		{Key: "_id", Value: objectID},
+	})
+	if err != nil {
+		return err
+	}
+	if result.DeletedCount == 0 {
+		return domain.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) Fetch(ctx context.Context, id string) (domain.User, error) {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		// A malformed id can never match a document.
+		return domain.User{}, domain.ErrUserNotFound
+	}
+
+	var user mongodbUser
+	filter := bson.D{
+		{Key: "_id", Value: objectID},
+	}
+
+	err = r.collection.FindOne(ctx, filter).Decode(&user)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return domain.User{}, domain.ErrUserNotFound
+		}
+		return domain.User{}, err
+	}
+
+	return mapMongodbToUser(user), nil
+}
+
+func (r *Repository) FetchAll(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+	// Self-defense: the service always clamps limit into [1, max], but a direct
+	// caller must not be able to make this method panic on page.Items[limit-1].
+	if limit < 1 {
+		limit = 1
+	}
+
+	// Keyset pagination on _id: an ObjectID embeds a creation timestamp, so
+	// ascending _id order is roughly chronological and stable. The cursor is the
+	// last _id (hex) from the previous page, base64-encoded.
+	filter := bson.M{}
+	if cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		afterID, err := bson.ObjectIDFromHex(string(decoded))
+		if err != nil {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		after := bson.M{"$gt": afterID}
+		filter = bson.M{"_id": after}
+	}
+
+	// Fetch one extra document to learn whether a further page exists.
+	sort := bson.M{"_id": 1}
+	opts := options.Find().
+		SetSort(sort).
+		SetLimit(int64(limit) + 1)
+
+	mongoCursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return domain.Page{}, err
+	}
+	defer func() { _ = mongoCursor.Close(ctx) }()
+
+	var users []domain.User
+	for mongoCursor.Next(ctx) {
+		var user mongodbUser
+		if err := mongoCursor.Decode(&user); err != nil {
+			return domain.Page{}, err
+		}
+		users = append(users, mapMongodbToUser(user))
+	}
+
+	if err := mongoCursor.Err(); err != nil {
+		return domain.Page{}, err
+	}
+
+	page := domain.Page{Items: users}
+	if len(users) > limit {
+		page.Items = users[:limit]
+		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(page.Items[limit-1].ID))
+	}
+
+	return page, nil
+}

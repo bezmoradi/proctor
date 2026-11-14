@@ -1,0 +1,74 @@
+package log
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"unicode"
+
+	"m09-webapp-gin-badgerdb/internal/core/shared"
+)
+
+type logger struct {
+	logger *log.Logger
+}
+
+func New(fileName ...string) shared.Logger {
+	if len(fileName) > 0 {
+		file, err := os.OpenFile(fileName[0], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			panic(err)
+		}
+		return logger{logger: log.New(file, "", log.LstdFlags)}
+	}
+
+	return logger{logger: log.New(os.Stdout, "", log.LstdFlags)}
+}
+
+func (l logger) Info(message string, args ...any) {
+	l.logger.Println(prepareArgs(message, "INFO", args...))
+}
+
+func (l logger) Warn(message string, args ...any) {
+	l.logger.Println(prepareArgs(message, "WARN", args...))
+}
+
+func (l logger) Error(message string, args ...any) {
+	l.logger.Println(prepareArgs(message, "ERROR", args...))
+}
+
+func (l logger) Fatal(err error) {
+	l.logger.Println("FATAL " + token(err.Error()))
+	os.Exit(1)
+}
+
+// prepareArgs renders one log line: LEVEL message key=value ... Every part goes
+// through token, so a value holding a space, quote or newline (a request path, a
+// username) can't forge another field or a second log line.
+func prepareArgs(message string, logType string, args ...any) string {
+	if len(args)%2 != 0 {
+		args = args[:len(args)-1]
+	}
+	var msg strings.Builder
+	msg.WriteString(logType + " " + token(message))
+	for i := 0; i < len(args); i += 2 {
+		msg.WriteString(" " + token(fmt.Sprint(args[i])) + "=" + token(fmt.Sprint(args[i+1])))
+	}
+	return msg.String()
+}
+
+// token returns s unchanged when it is plain text, and Go-quoted when it is empty
+// or contains a space, '=', '"' or a non-printable character.
+func token(s string) string {
+	if s == "" {
+		return `""`
+	}
+	for _, r := range s {
+		if r == ' ' || r == '=' || r == '"' || !unicode.IsPrint(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
+}

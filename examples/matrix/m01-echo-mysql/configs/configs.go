@@ -1,0 +1,21 @@
+package configs
+
+import (
+	"path/filepath"
+
+	"m01-echo-mysql/tools"
+
+	"github.com/joho/godotenv"
+)
+
+// LoadEnv loads variables from a .env file when one is available (a development
+// convenience). A compiled binary deployed without its source tree has no
+// go.mod/.env — that is expected: real environment variables take precedence
+// and are used directly, so this never panics or fails the program.
+func LoadEnv() {
+	if rootDir, err := tools.FindRootDir(); err == nil {
+		_ = godotenv.Load(filepath.Join(rootDir, ".env"))
+	}
+	// Fall back to a .env in the working directory if present; ignore if absent.
+	_ = godotenv.Load()
+}

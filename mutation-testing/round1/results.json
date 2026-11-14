@@ -1,0 +1,1804 @@
+{
+  "app": {
+    "AM-01": {
+      "baseline": {
+        "db_rows": [],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "ERROR",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005",
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "ERROR",
+          "PGU-006": "FAIL",
+          "PGU-007": "ERROR",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Create returns 201 with an ID but inserts nothing"
+    },
+    "AM-02": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada"
+        ],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "ERROR",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "ERROR",
+          "PGU-005": "ERROR",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada",
+          "4:Ada",
+          "5:Ada",
+          "6:Ada"
+        ],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005",
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "ERROR",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "ERROR",
+          "PGU-005": "ERROR",
+          "PGU-006": "ERROR",
+          "PGU-007": "ERROR",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "ERROR",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Create inserts the row, then answers 500"
+    },
+    "AM-03": {
+      "baseline": {
+        "db_rows": [
+          "1:ADA",
+          "2:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:ADA",
+          "2:Grace",
+          "4:Grace",
+          "5:BOB",
+          "7:BOB",
+          "8:ADA"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001",
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "FAIL",
+          "PGU-007": "FAIL",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "DB",
+      "title": "Create stores the name in upper case"
+    },
+    "AM-04": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-004"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "4:Ada",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-004"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Update answers 200 but changes nothing"
+    },
+    "AM-05": {
+      "baseline": {
+        "db_rows": [
+          "1:Grace",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Grace",
+          "2:Grace",
+          "4:Grace",
+          "5:Grace",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-006"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "FAIL",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "DB",
+      "title": "Update renames every user (WHERE clause broken)"
+    },
+    "AM-06": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "3:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-005"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "FAIL",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "3:Ada",
+          "4:Grace",
+          "5:Bob",
+          "6:Ada",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-005"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "FAIL",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Delete answers 200 but deletes nothing"
+    },
+    "AM-07": {
+      "baseline": {
+        "db_rows": [],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-007"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "FAIL",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "DB",
+      "title": "Delete removes every user (WHERE clause broken)"
+    },
+    "AM-08": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-003",
+          "PGU-005"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "FAIL",
+          "PGU-004": "PASS",
+          "PGU-005": "FAIL",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-003",
+          "PGU-005"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "FAIL",
+          "PGU-004": "PASS",
+          "PGU-005": "FAIL",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "A nonexistent user is returned with 200 and an empty name"
+    },
+    "AM-09": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:",
+          "3:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-002"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "FAIL",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:",
+          "3:Grace",
+          "5:Grace",
+          "6:Bob",
+          "8:Bob",
+          "9:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-002"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "FAIL",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "An empty name is accepted"
+    },
+    "AM-10": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada"
+        ],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "ERROR",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "ERROR",
+          "PGU-005": "ERROR",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada",
+          "4:Ada",
+          "5:Ada",
+          "6:Ada"
+        ],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-004",
+          "PGU-005",
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "ERROR",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "ERROR",
+          "PGU-005": "ERROR",
+          "PGU-006": "ERROR",
+          "PGU-007": "ERROR",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "ERROR",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "Create answers 200 instead of 201"
+    },
+    "AM-11": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-008"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "FAIL"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-008",
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "FAIL",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "Auth",
+      "title": "A request without a token is let through"
+    },
+    "AM-12": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-009"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "FAIL",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "Auth",
+      "title": "Expired tokens are accepted"
+    },
+    "AM-13": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-010"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "FAIL",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "Auth",
+      "title": "Tokens with an invalid signature are accepted"
+    },
+    "AM-14": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "Auth+DB",
+      "title": "A request without a token gets 401, but the action is still performed"
+    },
+    "AM-15": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "Create returns the ID as a JSON number instead of a string"
+    },
+    "AM-16": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "Reading a user answers with Content-Type text/plain"
+    },
+    "AM-17": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "User responses leak a password_hash field"
+    },
+    "AM-18": {
+      "baseline": {
+        "db_rows": [],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Data is kept in memory; nothing reaches PostgreSQL (the API agrees with itself)"
+    },
+    "AM-19": {
+      "baseline": {
+        "db_rows": [],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "FAIL",
+          "PGU-007": "ERROR",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST+DB",
+      "title": "Create inserts nothing and returns ID 1, which an old row already uses"
+    },
+    "AM-20": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "The list ignores limit and returns up to 1000 users"
+    },
+    "AM-21": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-012"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "FAIL"
+        }
+      },
+      "layer": "REST",
+      "title": "PATCH is routed and answers 200 instead of 405"
+    },
+    "AM-22": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada",
+          "4:Grace",
+          "5:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "3:Ada",
+          "4:Grace",
+          "5:Ada",
+          "7:Ada",
+          "8:Grace",
+          "9:Bob",
+          "10:Bob",
+          "11:Ada",
+          "13:Bob",
+          "14:Bob",
+          "15:Ada",
+          "16:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "DB",
+      "title": "Every create inserts the row twice"
+    },
+    "AM-23": {
+      "baseline": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-004"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "PASS",
+          "PGU-008": "PASS"
+        }
+      },
+      "hardened": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-004",
+          "PGU-006"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "FAIL",
+          "PGU-005": "PASS",
+          "PGU-006": "FAIL",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "layer": "REST",
+      "title": "Update persists the new name but answers with a stale one"
+    },
+    "AM-24": {
+      "baseline": {
+        "db_rows": [],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-002",
+          "PGU-003",
+          "PGU-004",
+          "PGU-005",
+          "PGU-008"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "NOT_RUN",
+          "PGU-002": "NOT_RUN",
+          "PGU-003": "NOT_RUN",
+          "PGU-004": "NOT_RUN",
+          "PGU-005": "NOT_RUN",
+          "PGU-008": "NOT_RUN"
+        }
+      },
+      "hardened": {
+        "db_rows": [],
+        "exit_code": 2,
+        "not_passed": [
+          "PGU-001",
+          "PGU-002",
+          "PGU-003",
+          "PGU-004",
+          "PGU-005",
+          "PGU-006",
+          "PGU-007",
+          "PGU-008",
+          "PGU-009",
+          "PGU-010",
+          "PGU-011",
+          "PGU-012"
+        ],
+        "result": "error",
+        "scenarios": {
+          "PGU-001": "NOT_RUN",
+          "PGU-002": "NOT_RUN",
+          "PGU-003": "NOT_RUN",
+          "PGU-004": "NOT_RUN",
+          "PGU-005": "NOT_RUN",
+          "PGU-006": "NOT_RUN",
+          "PGU-007": "NOT_RUN",
+          "PGU-008": "NOT_RUN",
+          "PGU-009": "NOT_RUN",
+          "PGU-010": "NOT_RUN",
+          "PGU-011": "NOT_RUN",
+          "PGU-012": "NOT_RUN"
+        }
+      },
+      "layer": "Environment",
+      "title": "PostgreSQL stops after the application started"
+    }
+  },
+  "controls": {
+    "baseline": {
+      "db_rows": [
+        "1:Ada",
+        "2:Grace"
+      ],
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": {
+        "PGU-001": "PASS",
+        "PGU-002": "PASS",
+        "PGU-003": "PASS",
+        "PGU-004": "PASS",
+        "PGU-005": "PASS",
+        "PGU-008": "PASS"
+      }
+    },
+    "hardened": {
+      "db_rows": [
+        "1:Ada",
+        "2:Grace",
+        "4:Grace",
+        "5:Bob",
+        "7:Bob",
+        "8:Ada"
+      ],
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": {
+        "PGU-001": "PASS",
+        "PGU-002": "PASS",
+        "PGU-003": "PASS",
+        "PGU-004": "PASS",
+        "PGU-005": "PASS",
+        "PGU-006": "PASS",
+        "PGU-007": "PASS",
+        "PGU-008": "PASS",
+        "PGU-009": "PASS",
+        "PGU-010": "PASS",
+        "PGU-011": "PASS",
+        "PGU-012": "PASS"
+      }
+    }
+  },
+  "date": "2026-11-14",
+  "proctor_commit_note": "uncommitted working tree",
+  "spec": {
+    "HP-01": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-17",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-001"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "FAIL",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-001"
+      ],
+      "title": "Probe: PGU-001 asserts the whole $.data object instead of two fields",
+      "validate_exit": 0
+    },
+    "SM-01": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-03",
+      "paired_mutant": {
+        "db_rows": [
+          "1:ADA",
+          "2:Grace",
+          "4:Grace",
+          "5:BOB",
+          "7:BOB",
+          "8:ADA"
+        ],
+        "exit_code": 1,
+        "not_passed": [
+          "PGU-006",
+          "PGU-007",
+          "PGU-011"
+        ],
+        "result": "failed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "FAIL",
+          "PGU-007": "FAIL",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "FAIL",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-001"
+      ],
+      "title": "PGU-001 asserts only the ID on read-back, not the name",
+      "validate_exit": 0
+    },
+    "SM-02": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-04",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Ada",
+          "4:Ada",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-004"
+      ],
+      "title": "PGU-004 drops the read after the rename",
+      "validate_exit": 0
+    },
+    "SM-03": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-14",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-011"
+      ],
+      "title": "PGU-011 drops the check that the user still exists",
+      "validate_exit": 0
+    },
+    "SM-04": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "5:Bob",
+          "6:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-05",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Grace",
+          "2:Grace",
+          "5:Bob",
+          "6:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "removed PGU-006"
+      ],
+      "title": "PGU-006 (other users unchanged by a rename) removed",
+      "validate_exit": 0
+    },
+    "SM-05": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-16",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-001"
+      ],
+      "title": "Content-Type assertion removed from PGU-001",
+      "validate_exit": 0
+    },
+    "SM-06": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-06",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "3:Ada",
+          "4:Grace",
+          "5:Bob",
+          "6:Ada",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-009": "PASS",
+          "PGU-010": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-005"
+      ],
+      "title": "PGU-005's deletion moved to a verification step that checks only the response message",
+      "validate_exit": 0
+    },
+    "SM-07": {
+      "diff_exit": 0,
+      "pair": null,
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "modified PGU-001"
+      ],
+      "title": "A 2xx verification step keeps only its status (PGU-001 read)",
+      "validate_exit": 3
+    },
+    "SM-08": {
+      "diff_exit": 0,
+      "original_app": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "pair": "AM-12",
+      "paired_mutant": {
+        "db_rows": [
+          "1:Ada",
+          "2:Grace",
+          "4:Grace",
+          "5:Bob",
+          "7:Bob",
+          "8:Ada"
+        ],
+        "exit_code": 0,
+        "not_passed": [],
+        "result": "passed",
+        "scenarios": {
+          "PGU-001": "PASS",
+          "PGU-002": "PASS",
+          "PGU-003": "PASS",
+          "PGU-004": "PASS",
+          "PGU-005": "PASS",
+          "PGU-006": "PASS",
+          "PGU-007": "PASS",
+          "PGU-008": "PASS",
+          "PGU-011": "PASS",
+          "PGU-012": "PASS"
+        }
+      },
+      "protected_changes": 1,
+      "scenarios_changed": [
+        "removed PGU-009",
+        "removed PGU-010"
+      ],
+      "title": "PGU-009 and PGU-010 (invalid tokens) removed",
+      "validate_exit": 0
+    }
+  }
+}

@@ -1,0 +1,12 @@
+version: 1
+project: users-api-postgres
+manifest: manifest.yaml
+identities:
+  admin: { type: bearer }
+  # Invalid credentials, provisioned by the environment like any identity.
+  expired: { type: bearer }
+  tampered: { type: bearer }
+  anonymous: { type: none }
+readiness:
+  path: /readyz
+  startup_timeout: 15s

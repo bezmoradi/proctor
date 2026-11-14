@@ -1,0 +1,29 @@
+package domain
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestIsValidationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "name_required", err: ErrNameRequired, want: true},
+		{name: "name_too_long", err: ErrNameTooLong, want: true},
+		{name: "name_invalid", err: ErrNameInvalid, want: true},
+		{name: "wrapped_validation", err: fmt.Errorf("create user: %w", ErrNameTooLong), want: true},
+		{name: "not_found_is_not_validation", err: ErrUserNotFound, want: false},
+		{name: "nil_is_not_validation", err: nil, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsValidationError(test.err); got != test.want {
+				t.Errorf("%s: IsValidationError(%v) = %v, want %v", test.name, test.err, got, test.want)
+			}
+		})
+	}
+}

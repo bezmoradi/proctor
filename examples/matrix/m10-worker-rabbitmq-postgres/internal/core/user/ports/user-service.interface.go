@@ -1,0 +1,16 @@
+package ports
+
+import (
+	"context"
+
+	"m10-worker-rabbitmq-postgres/internal/core/user/domain"
+)
+
+type UserServiceInterface interface {
+	Create(ctx context.Context, name string) (string, error)
+	CreateOnce(ctx context.Context, key string, name string) error
+	Delete(ctx context.Context, id string) error
+	Index(ctx context.Context, limit int, cursor string) (domain.Page, error)
+	Show(ctx context.Context, id string) (domain.User, error)
+	Update(ctx context.Context, id string, name string) (domain.User, error)
+}

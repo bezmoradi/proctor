@@ -1,0 +1,165 @@
+package badgerdb
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"m09-webapp-gin-badgerdb/internal/core/user/domain"
+
+	"github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
+)
+
+// Repository stores users in an embedded Badger database under ./badger.
+type Repository struct {
+	db *badger.DB
+}
+
+// New opens (or creates) the Badger database. Badger allows one process per
+// directory, so a second instance fails here.
+func New() (*Repository, error) {
+	options := badger.DefaultOptions("./badger")
+	options.Logger = nil
+	db, err := badger.Open(options)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Repository{db: db}, nil
+}
+
+// Ping reports whether the database is open; /readyz calls it.
+func (r *Repository) Ping(context.Context) error {
+	if r.db.IsClosed() {
+		return errors.New("badger database is closed")
+	}
+	return nil
+}
+
+// Close flushes pending writes and releases the directory lock.
+func (r *Repository) Close() error {
+	return r.db.Close()
+}
+
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	return r.db.Update(func(txn *badger.Txn) error {
+		if _, err := txn.Get([]byte(id)); err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return domain.ErrUserNotFound
+			}
+			return err
+		}
+		return txn.Delete([]byte(id))
+	})
+}
+
+func (r *Repository) Fetch(ctx context.Context, id string) (domain.User, error) {
+	var value []byte
+	err := r.db.View(func(txn *badger.Txn) error {
+		i, err := txn.Get([]byte(id))
+		if err != nil {
+			return err
+		}
+		value, err = i.ValueCopy(value)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return domain.User{}, domain.ErrUserNotFound
+		}
+		return domain.User{}, err
+	}
+	return domain.User{ID: id, Name: string(value)}, nil
+}
+
+func (r *Repository) FetchAll(ctx context.Context, limit int, cursor string) (domain.Page, error) {
+	// Self-defense: the service always clamps limit into [1, max], but a direct
+	// caller must not be able to make this method panic on page.Items[limit-1].
+	if limit < 1 {
+		limit = 1
+	}
+
+	// Badger iterates keys in sorted order. The cursor is the last key of the
+	// previous page, base64-encoded.
+	var afterKey []byte
+	if cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		// Keys are UUIDs, so anything else is a forged or corrupted cursor.
+		// Without this, any base64 text decodes to bytes that Seek happily
+		// accepts, silently returning a page instead of rejecting the input.
+		if _, err := uuid.Parse(string(decoded)); err != nil {
+			return domain.Page{}, domain.ErrInvalidCursor
+		}
+		afterKey = decoded
+	}
+
+	page := domain.Page{}
+	err := r.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 10
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		// Seek is inclusive (>=), so to resume strictly after the cursor key we
+		// seek to cursor+0x00. With no cursor we start from the first key.
+		if afterKey == nil {
+			it.Rewind()
+		} else {
+			it.Seek(append(afterKey, 0x00))
+		}
+
+		for ; it.Valid(); it.Next() {
+			// The page is full and at least one more row exists, so the last
+			// returned key is a valid continuation point (we resume strictly
+			// after it, matching the keyset semantics of the SQL adapters).
+			if len(page.Items) == limit {
+				page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(page.Items[limit-1].ID))
+				break
+			}
+
+			item := it.Item()
+			k := item.KeyCopy(nil)
+			err := item.Value(func(v []byte) error {
+				page.Items = append(page.Items, domain.User{ID: string(k), Name: string(v)})
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Page{}, err
+	}
+
+	return page, nil
+}
+
+func (r *Repository) Insert(ctx context.Context, name string) (string, error) {
+	id := uuid.New()
+
+	err := r.db.Update(func(txn *badger.Txn) error {
+		err := txn.Set([]byte(id.String()), []byte(name))
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
+}
+
+func (r *Repository) Update(ctx context.Context, id string, value string) error {
+	return r.db.Update(func(txn *badger.Txn) error {
+		if _, err := txn.Get([]byte(id)); err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return domain.ErrUserNotFound
+			}
+			return err
+		}
+		return txn.Set([]byte(id), []byte(value))
+	})
+}

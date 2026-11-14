@@ -1,0 +1,62 @@
+package gorilla
+
+import (
+	"encoding/json"
+
+	"m03-gorilla-sqlite/internal/adapters/api"
+	"m03-gorilla-sqlite/internal/core/shared"
+	"m03-gorilla-sqlite/internal/core/user/ports"
+	"net/http"
+
+	"github.com/gorilla/mux"
+)
+
+type router struct {
+	engine       *mux.Router
+	globalPrefix string
+	service      ports.UserServiceInterface
+	logger       shared.Logger
+}
+
+func NewRouter(service ports.UserServiceInterface, logger shared.Logger) http.Handler {
+	r := &router{
+		engine:       mux.NewRouter(),
+		globalPrefix: "/api/v1",
+		service:      service,
+		logger:       logger,
+	}
+	r.registerUserRoutes()
+	return r.engine
+}
+
+// fail logs the underlying cause and writes the opaque response the client sees.
+// The two live in one place so they cannot drift apart: every internal failure is
+// recorded for an operator exactly once, and the client is still told nothing that
+// could describe the datastore. Never write a 500 without going through here.
+func (router router) fail(w http.ResponseWriter, operation string, err error) {
+	router.logger.Error(operation+" failed", "error", err)
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(api.Response{Error: failureLabel(err)})
+}
+
+// failureLabel names which subsystem failed. Both cases are 500s, but a broker
+// failure reported as a datastore failure sends whoever is on call to a healthy
+// database. The underlying error is still only in the log, never the response.
+func failureLabel(err error) api.ErrorMessageType {
+	return api.DatabaseOperationFailure
+}
+
+func (router router) registerUserRoutes() {
+	subrouter := router.engine.PathPrefix(router.globalPrefix + "/users").Subrouter()
+
+	subrouter.HandleFunc("", router.IndexHandler).Methods("GET")
+	subrouter.HandleFunc("/{id}", router.ShowUserHandler).Methods("GET")
+	subrouter.HandleFunc("", router.CreateUserHandler).Methods("POST")
+	subrouter.HandleFunc("/{id}", router.UpdateUserHandler).Methods("PUT")
+	subrouter.HandleFunc("/{id}", router.DeleteUserHandler).Methods("DELETE")
+}
+
+// pathID returns the {id} path parameter.
+func pathID(r *http.Request) string {
+	return mux.Vars(r)["id"]
+}
