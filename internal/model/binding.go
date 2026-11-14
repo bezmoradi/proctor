@@ -19,8 +19,8 @@ type Binding struct {
 
 // BindingImage holds the REP-11 digests, each "sha256:" and 64 hex digits.
 type BindingImage struct {
-	BuiltDigest   string `yaml:"built_digest"`
-	RunningDigest string `yaml:"running_digest"`
+	BuiltDigest   string `yaml:"built_digest" json:"built_digest"`
+	RunningDigest string `yaml:"running_digest" json:"running_digest"`
 }
 
 // BindingSecret names the variable holding one secret.

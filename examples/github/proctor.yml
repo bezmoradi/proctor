@@ -1,0 +1,112 @@
+# Proctor reference workflow (prd.md §16.2), OD-01 option B, as tested on GitHub
+# on 2026-11-14 (see README.md beside it). This file is protected by CODEOWNERS,
+# and the required check is the `verdict` job.
+name: proctor
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+env:
+  # The pinned Proctor binary (§16.2 item 3). Changing either value is a
+  # change to this file, which needs code-owner approval.
+  # Replace both placeholders: where you publish the pinned binary, and its digest.
+  PROCTOR_URL: https://example.com/proctor-<version>-linux-amd64
+  PROCTOR_SHA256: <sha256 of that binary>
+
+jobs:
+  # Item 1: the application image is built in its own job, from the tested
+  # commit. Nothing from the checkout runs in the verification job.
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the application image
+        id: image
+        run: |
+          docker build -t app:tested .
+          docker save app:tested -o "$RUNNER_TEMP/image.tar"
+          echo "digest=$(docker image inspect --format '{{.Id}}' app:tested)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  verify:
+    needs: build
+    runs-on: ubuntu-24.04
+    # Item 5: identity, CODEOWNERS errors, earlier attempts; nothing else.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      # Item 2: history for INT-09. Only Git objects are read from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      # Item 4: start the application from the built image, by digest.
+      - name: Start the application
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+        run: |
+          docker load -i "$RUNNER_TEMP/image/image.tar"
+          test "$(docker image inspect --format '{{.Id}}' app:tested)" = "$BUILT"
+          docker run -d --name app -p 127.0.0.1:18080:8080 "$BUILT"
+          echo "RUNNING=$(docker inspect --format '{{.Image}}' app)" >> "$GITHUB_ENV"
+      # Item 3: download, then verify right before use.
+      - name: Download Proctor
+        run: curl -fsSL --proto '=https' -o "$RUNNER_TEMP/proctor" "$PROCTOR_URL"
+      - name: Run Proctor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUILT: ${{ needs.build.outputs.digest }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'environment: github-actions\ntarget: { base_url: "http://127.0.0.1:18080", user_agent: proctor-ci/0 }\nimage: { built_digest: "%s", running_digest: "%s" }\n' "$BUILT" "$RUNNING" > "$RUNNER_TEMP/binding.yaml"
+          echo "$PROCTOR_SHA256  $RUNNER_TEMP/proctor" | sha256sum -c -
+          chmod 0555 "$RUNNER_TEMP/proctor"
+          echo "executing proctor with sha256 $(sha256sum "$RUNNER_TEMP/proctor" | cut -d' ' -f1)"
+          "$RUNNER_TEMP/proctor" run --authoritative --config proctor/proctor.yaml \
+            --binding "$RUNNER_TEMP/binding.yaml" --pr-head "$PR_HEAD" --report "$RUNNER_TEMP/report.json"
+      # Item 6: the report is evidence; a missing one fails this step.
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proctor-report
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: error
+
+  # Item 7: the required check. It always runs and fails unless every
+  # prerequisite succeeded; GitHub reports skipped jobs as successful, so
+  # the check is never a job that can be skipped.
+  verdict:
+    needs: [build, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Every prerequisite succeeded
+        env:
+          BUILD: ${{ needs.build.result }}
+          VERIFY: ${{ needs.verify.result }}
+        run: |
+          echo "build: $BUILD, verify: $VERIFY"
+          test "$BUILD" = success
+          test "$VERIFY" = success

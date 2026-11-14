@@ -73,6 +73,8 @@ func usage(w io.Writer) {
   proctor diff      [--repo DIR] [--config PATH] --base REV --head REV [--json]
   proctor diff      [--repo DIR] [--config PATH] --head TEST_MERGE --pr-head REV [--json]
   proctor run       [--repo DIR] [--config PATH] --binding FILE [--request-timeout 10s] [--query-timeout 5s] [--json]
+  proctor run       --authoritative [--repo DIR] [--config PATH] --binding FILE --report FILE
+                    (--pr-head REV | --base REV) [--commit REV] [--request-timeout 10s] [--query-timeout 5s] [--json]
   proctor version
 
 Exit codes: 0 passed, 1 failed, 2 error, 3 invalid, 4 integrity violation.
@@ -150,6 +152,10 @@ func resultName(code int) string {
 	switch code {
 	case exitOK:
 		return "passed"
+	case 1:
+		return "failed"
+	case exitError:
+		return "error"
 	case exitInvalid:
 		return "invalid"
 	default:

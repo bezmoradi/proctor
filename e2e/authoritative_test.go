@@ -205,6 +205,7 @@ type authResult struct {
 		Base         string            `json:"base"`
 		SHA256       map[string]string `json:"sha256"`
 		Environment  string            `json:"environment"`
+		Image        map[string]string `json:"image"`
 		CIRunID      string            `json:"ci_run_id"`
 		RunID        string            `json:"run_id"`
 		StartedAt    string            `json:"started_at"`
@@ -249,6 +250,9 @@ func TestAuthoritativeRun(t *testing.T) {
 	pv := rep.Provenance
 	if pv.TestedCommit != p.merge || pv.Base != p.base || pv.PRHead != p.head || len(pv.Parents) != 2 {
 		t.Errorf("provenance %+v; want tested %s base %s head %s", pv, p.merge, p.base, p.head)
+	}
+	if pv.Image["built_digest"] != digest || pv.Image["running_digest"] != digest {
+		t.Errorf("provenance image %v", pv.Image)
 	}
 	if pv.Repository != "acme/shop" || pv.Environment != "ci" || pv.CIRunID != "777" || pv.RunID == "" || pv.StartedAt == "" || pv.EndedAt == "" {
 		t.Errorf("provenance %+v", pv)
@@ -361,6 +365,23 @@ func TestAuthoritativeRefusals(t *testing.T) {
 				t.Errorf("the application got %d requests; nothing may run while a check fails", n)
 			}
 		})
+	}
+}
+
+// §13.3: an authoritative run whose scenario fails reports "failed" with
+// exit 1, like a local run.
+func TestAuthoritativeFailure(t *testing.T) {
+	withTokens(t)
+	app := newApp(t, projectsApp("Someone else's project", 0))
+	g := newGitHub(t)
+	p := newPRRepo(t, nil)
+	ciEnv(t, g.env(p, true, ""))
+	code, out, rep, _ := authRun(t, p, authBinding(t, app.srv.URL, digest, digest))
+	if code != 1 || rep.Result != "failed" || rep.ExitCode != 1 {
+		t.Fatalf("exit %d, result %q\n%s", code, rep.Result, out)
+	}
+	if !strings.Contains(out, "RESULT: FAILED (exit 1, authoritative)") {
+		t.Errorf("output:\n%s", out)
 	}
 }
 

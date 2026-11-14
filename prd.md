@@ -230,7 +230,7 @@ Required settings:
 
 - **Protected target branch** with pull requests required.
 - **CODEOWNERS** covering the protected root, the verification dependency definitions, all of `/.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, and the CODEOWNERS file itself. GitHub: "you also need to define an owner for the CODEOWNERS file itself". Pull requests use the base branch's CODEOWNERS for review requests. Keep exactly one CODEOWNERS file; GitHub uses the first it finds in `.github/`, the root, then `docs/`.
-- **Require review from Code Owners.** A CODEOWNERS file alone requests reviews; it does not require them.
+- **Require review from Code Owners**, with **at least one required approval**. A CODEOWNERS file alone requests reviews; it does not require them. With the required approval count at 0, GitHub doesn't enforce code-owner review at all: in the Phase 0 trust test (2026-11-14, `examples/github/README.md`), a pull request that skipped verification and one that weakened a specification both became mergeable. With 1, every pull request needs an approval, including ones that change no protected file.
 - **Dismiss stale pull request approvals when new commits are pushed**, and **Require approval of the most recent reviewable push** (approval must come from someone other than the pusher).
 - **Do not allow bypassing the above settings.** Without it, branch protection doesn't apply to administrators. In rulesets, keep the bypass list to named roles or teams.
 - **Required status check** on the aggregator job (§16.2), with its expected source pinned to the GitHub Actions app. Pinning doesn't stop a workflow from producing the check, but it stops statuses posted with a person's or another app's token: "If the status is set by any other person or integration, merging won't be allowed."
@@ -1105,6 +1105,17 @@ Integrity is the product's distinguishing feature, so it is proven first. Each p
 Build the integrity layer and the reference workflow against a minimal HTTP example application, with a throwaway subset of the specification schema (scenarios with HTTP steps and IDs only; schema v1 comes in Phase 2). Run the scenarios with a first version of Proctor's own runner, HTTP only.
 
 Deliverables: manifest and INT-01 to INT-05, INT-07 to INT-11, INT-13 to INT-16; `proctor diff`; `proctor run` on the native runner for the Phase 0 subset; authoritative mode (§5.2); the reference workflow (§16.2) using the mechanism chosen in OD-01, confirmed in a test organization; provenance in the JSON report (§13.1).
+
+Status on 2026-11-14:
+
+- **Built and tested by the black-box tests:** every deliverable above, including authoritative mode and the provenance report.
+- **Confirmed on GitHub, for OD-01 option B:** AT-W-02 (by the executed binary's digest only), W-03, W-05 to W-10, W-12, W-13 and W-14, in a temporary public repository (`examples/github/README.md`). That test also found that code-owner review needs at least one required approval (§6.3).
+- **Not yet shown:**
+  - an approved pull request becoming mergeable, which needs a second account;
+  - AT-W-01 in full;
+  - AT-W-04 (REP-10 isn't built);
+  - AT-W-11 (option A needs Enterprise Cloud);
+  - AT-W-17 to AT-W-19.
 
 Acceptance: the Phase 0 tests in Appendix C, including AT-I and AT-W.
 

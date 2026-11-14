@@ -1,0 +1,6 @@
+# Every protected verification input (prd.md §6.3), including this file.
+/proctor/        @your-org/verification-owners
+/.github/        @your-org/verification-owners
+/.gitattributes  @your-org/verification-owners
+/.gitmodules     @your-org/verification-owners
+/.lfsconfig      @your-org/verification-owners
