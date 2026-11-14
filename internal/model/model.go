@@ -1,12 +1,12 @@
 // Package model holds the protected file formats: proctor.yaml, the manifest
 // and specifications.
 //
-// The specification format here is the Phase 0 subset from prd-revised.md
+// The specification format here is the Phase 0 subset from prd.md
 // §20: scenarios of HTTP steps with stable IDs. Schema v1 (tables, time
 // checks, PostgreSQL, Temporal and logs) comes in Phase 2 and later.
 package model
 
-// Config is proctor.yaml (prd-revised.md §14). Fields beyond those Phase 0
+// Config is proctor.yaml (prd.md §14). Fields beyond those Phase 0
 // uses are modelled so that strict decoding accepts the documented example.
 type Config struct {
 	Version         int                     `yaml:"version"`
@@ -89,7 +89,7 @@ type ReportPolicy struct {
 	ExcerptBytes int      `yaml:"excerpt_bytes"`
 }
 
-// Manifest is manifest.yaml (prd-revised.md §7.2). There is no `required`
+// Manifest is manifest.yaml (prd.md §7.2). There is no `required`
 // field: every listed specification is required (INT-06 retired).
 type Manifest struct {
 	Version        int             `yaml:"version"`

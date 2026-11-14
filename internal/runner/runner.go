@@ -1,6 +1,6 @@
 // Package runner executes specifications: scenarios of HTTP steps and
 // read-only PostgreSQL checks against the target and connections named by an
-// environment binding (prd-revised.md §11.1, §11.2, §11.7, §13.3, FIX-04,
+// environment binding (prd.md §11.1, §11.2, §11.7, §13.3, FIX-04,
 // INT-03).
 //
 // It is Proctor's own runner (§19, SEC-13). Scenarios run one at a time in

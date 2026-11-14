@@ -1,6 +1,6 @@
 package model
 
-// Binding is an environment binding (prd-revised.md §14): where the
+// Binding is an environment binding (prd.md §14): where the
 // application under test runs and where credentials come from. It is
 // supplied by the run, not protected, and never holds a credential itself;
 // it names environment variables instead (SEC-02).

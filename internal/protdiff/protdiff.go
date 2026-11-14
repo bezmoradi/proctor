@@ -1,5 +1,5 @@
 // Package protdiff lists changes to protected inputs between two commits
-// (INT-08 and INT-09 in prd-revised.md).
+// (INT-08 and INT-09 in prd.md).
 //
 // It compares the two commits' trees entry by entry, by blob ID and mode,
 // and never uses Git's rename detection: a removed path and an added path

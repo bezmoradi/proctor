@@ -1,4 +1,4 @@
-// Package strictyaml decodes protected YAML (INT-15 in prd-revised.md).
+// Package strictyaml decodes protected YAML (INT-15 in prd.md).
 //
 // It accepts exactly one document and rejects the YAML features that let a
 // reviewer see something other than what runs: duplicate keys, anchors,

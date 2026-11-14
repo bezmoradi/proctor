@@ -1,5 +1,5 @@
 // Package cli implements the proctor command line for Phase 0: validate,
-// integrity, diff and run in local mode (prd-revised.md §16.1).
+// integrity, diff and run in local mode (prd.md §16.1).
 //
 // Exit codes follow §13.3: 0 passed, 1 a behavioral assertion failed, 2
 // an execution or infrastructure error, 3 invalid configuration or

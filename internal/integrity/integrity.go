@@ -1,5 +1,5 @@
 // Package integrity loads the protected verification inputs and runs the
-// static integrity checks of prd-revised.md §7: INT-01, INT-02, INT-04
+// static integrity checks of prd.md §7: INT-01, INT-02, INT-04
 // (static part), INT-05, INT-11 (local part), INT-12, INT-13, INT-14,
 // INT-15 and INT-16.
 //

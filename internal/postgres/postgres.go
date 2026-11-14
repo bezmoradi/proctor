@@ -1,5 +1,5 @@
 // Package postgres is Proctor's read-only PostgreSQL verification adapter
-// (prd-revised.md §11.7, DB-01 to DB-07).
+// (prd.md §11.7, DB-01 to DB-07).
 //
 // Every query is sent with driver parameter binding (DB-01) inside its own
 // transaction opened READ ONLY at READ COMMITTED, with a transaction-local

@@ -97,6 +97,6 @@ Three scenarios need state that only a disposable environment gives:
 
 - **Logs (LOG-01):** both write `log/slog` text lines to standard error, not JSON Lines files.
 - **Authorization tables (§11.3, AUTH-*):** there is one identity, `admin`, and users have no owner, so there is no "allowed for its own resource, denied for another's" case.
-- **The probe endpoints `acceptance-tests.md` uses** (`/probe/echo`, `/probe/headers`, `/probe/redirect-external`): not present.
+- **The probe endpoints the acceptance tests use (`prd.md` Appendix C)** (`/probe/echo`, `/probe/headers`, `/probe/redirect-external`): not present.
 - **Temporal (TMP-*):** gopamin doesn't generate Temporal workers.
 - **Language independence (§17):** both are Go; Node.js and Python examples are still needed.

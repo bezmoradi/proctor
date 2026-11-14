@@ -11,7 +11,7 @@ import (
 
 // These tests run the built proctor binary against throwaway Git
 // repositories, from the outside (black-box only; no function-level tests).
-// Each case names the prd-revised.md rule it covers.
+// Each case names the prd.md rule it covers.
 
 const configYAML = `version: 1
 project: example

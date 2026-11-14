@@ -1,6 +1,6 @@
 // Package expr holds the small expression language of the Phase 0
 // specification subset: JSONPath selectors, ${name} variable references and
-// type-strict value comparison (prd-revised.md HTTP-02, HTTP-03, OD-10).
+// type-strict value comparison (prd.md HTTP-02, HTTP-03, OD-10).
 //
 // The JSONPath subset is $, .name and [index]. Schema v1 replaces it with an
 // RFC 9535 implementation (OD-10); until then anything outside the subset is

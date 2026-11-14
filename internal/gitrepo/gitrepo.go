@@ -1,5 +1,5 @@
 // Package gitrepo reads commits, trees, blobs and attributes through the git
-// CLI, never through the working tree (INT-07 in prd-revised.md).
+// CLI, never through the working tree (INT-07 in prd.md).
 //
 // Every call runs git with system and global configuration disabled and
 // replace objects ignored, so the user's or runner's Git setup can't change
