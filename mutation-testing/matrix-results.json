@@ -1,0 +1,545 @@
+{
+  "m01-echo-mysql": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M01-001",
+        "M01-004",
+        "M01-005",
+        "M01-006"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M01-004"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M01-005"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M01-002"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M01-001",
+        "M01-004",
+        "M01-006",
+        "M01-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m02-gin-mongodb": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M02-001",
+        "M02-004",
+        "M02-005",
+        "M02-006"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M02-004"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M02-005"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M02-002"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M02-001",
+        "M02-004",
+        "M02-006",
+        "M02-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m03-gorilla-sqlite": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M03-001",
+        "M03-004",
+        "M03-005",
+        "M03-006",
+        "M03-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M03-004"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M03-005"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M03-002"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M03-001",
+        "M03-004",
+        "M03-006",
+        "M03-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m04-httprouter-mariadb": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M04-001",
+        "M04-004",
+        "M04-005",
+        "M04-006"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M04-004"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M04-005"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M04-002"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M04-001",
+        "M04-004",
+        "M04-006",
+        "M04-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m05-graphql-postgres": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M05-001",
+        "M05-004",
+        "M05-005",
+        "M05-006"
+      ],
+      "result": "failed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M05-004"
+      ],
+      "result": "failed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M05-005"
+      ],
+      "result": "failed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M05-002"
+      ],
+      "result": "failed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "XM-05": {
+      "status": "not_applicable"
+    },
+    "XM-06": {
+      "exit_code": 1,
+      "not_passed": [
+        "M05-001"
+      ],
+      "result": "failed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 6,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m06-chi-cassandra-rabbitmq": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M06-001",
+        "M06-004",
+        "M06-005",
+        "M06-006",
+        "M06-010"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M06-004"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M06-005"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M06-002"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M06-001",
+        "M06-004",
+        "M06-006",
+        "M06-007",
+        "M06-010"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m07-echo-postgres-redis": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-001",
+        "M07-004",
+        "M07-005",
+        "M07-006",
+        "M07-007",
+        "M07-010"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-004"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-005"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-002"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-001",
+        "M07-004",
+        "M07-007"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 1,
+      "not_passed": [
+        "M07-001"
+      ],
+      "result": "failed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 10,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  },
+  "m08-http-dynamodb-kafka": {
+    "XM-01": {
+      "exit_code": 1,
+      "not_passed": [
+        "M08-001",
+        "M08-004",
+        "M08-005",
+        "M08-006"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-02": {
+      "exit_code": 1,
+      "not_passed": [
+        "M08-004"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-03": {
+      "exit_code": 1,
+      "not_passed": [
+        "M08-005"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-04": {
+      "exit_code": 1,
+      "not_passed": [
+        "M08-002"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-05": {
+      "exit_code": 1,
+      "not_passed": [
+        "M08-001",
+        "M08-004",
+        "M08-006",
+        "M08-007"
+      ],
+      "result": "failed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "XM-06": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "original": {
+      "exit_code": 0,
+      "not_passed": [],
+      "result": "passed",
+      "scenarios": 7,
+      "status": "ran"
+    },
+    "validate_exit": 0
+  }
+}
