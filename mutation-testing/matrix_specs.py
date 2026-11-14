@@ -18,7 +18,7 @@ MATRIX = os.path.join(REPO, "examples", "matrix")
 
 REST = {
     "m01-echo-mysql": {"prefix": "M01", "port": 18101, "unknown": "2000000000", "store": "MySQL"},
-    "m02-gin-mongodb": {"prefix": "M02", "port": 18102, "unknown": "ffffffffffffffffffffffff", "store": "MongoDB"},
+    "m02-gin-mongodb": {"prefix": "M02", "port": 18102, "unknown": "ffffffffffffffffffffffff", "store": "MongoDB", "content_type": "application/json; charset=utf-8"},
     "m03-gorilla-sqlite": {"prefix": "M03", "port": 18103, "unknown": "2000000000", "store": "SQLite"},
     "m04-httprouter-mariadb": {"prefix": "M04", "port": 18104, "unknown": "2000000000", "store": "MariaDB"},
     "m06-chi-cassandra-rabbitmq": {"prefix": "M06", "port": 18106, "unknown": "00000000-0000-4000-8000-000000000000", "store": "Cassandra", "jwt": True},
@@ -69,7 +69,7 @@ def spec(c):
         expect:
           status: 200
           headers:
-            Content-Type: application/json
+            Content-Type: {c.get("content_type", "application/json")}
           json:
             $: {{ message: Fetched user successfully, data: {{ id: "${{{id_ref}}}", name: "{name}" }} }}
 """

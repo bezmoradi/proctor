@@ -21,7 +21,7 @@ scenarios:
         expect:
           status: 200
           headers:
-            Content-Type: application/json
+            Content-Type: application/json; charset=utf-8
           json:
             $: { message: Fetched user successfully, data: { id: "${user_id}", name: "Ada ${run.id}" } }
 
@@ -71,7 +71,7 @@ scenarios:
         expect:
           status: 200
           headers:
-            Content-Type: application/json
+            Content-Type: application/json; charset=utf-8
           json:
             $: { message: Fetched user successfully, data: { id: "${user_id}", name: "Grace ${run.id}" } }
 
