@@ -127,7 +127,10 @@ def services_up(name):
         # Some images pass their healthcheck while still initializing (MySQL
         # answers ping before it accepts logins), so retry for a minute.
         for attempt in range(30):
-            p = sh(["make", "migrate-up"], cwd=os.path.join(MATRIX, name), env=dict(os.environ, **env_for(name)), timeout=900, check=False)
+            # The Makefile includes .env, which overrides the environment, so
+            # the moved ports go on the command line. They hold no secrets.
+            overrides = [f"{k}={v}" for k, v in sorted(c.get("env", {}).items())]
+            p = sh(["make", "migrate-up"] + overrides, cwd=os.path.join(MATRIX, name), env=dict(os.environ, **env_for(name)), timeout=900, check=False)
             if p.returncode == 0:
                 break
             time.sleep(2)
@@ -182,6 +185,8 @@ def build(name, mutant):
     shutil.copytree(os.path.join(MATRIX, name), dst, ignore=shutil.ignore_patterns("proctor", "*.db", "data"))
     for rel, old, new in (mutant or {}).get("edits", []):
         p = os.path.join(dst, rel)
+        if not os.path.exists(p):
+            return None  # this combination has no such file
         text = open(p).read()
         if text.count(old) != 1:
             return None  # the defect's code doesn't exist in this combination
@@ -202,6 +207,13 @@ def sign(header, claims):
 def start(name, app_dir):
     c = COMBOS[name]
     e = env_for(name)
+    if c["port"]:
+        # A leftover process on the port would answer instead of this build,
+        # and every result would silently describe the wrong application.
+        import socket
+        with socket.socket() as so:
+            if so.connect_ex(("127.0.0.1", c["port"])) == 0:
+                raise SystemExit(f"{name}: port {c['port']} is already in use; stop the process holding it")
     log = open(os.path.join(WORK, name, f"app-{os.path.basename(app_dir)}.log"), "w")
     proc = subprocess.Popen([os.path.join(app_dir, "bin")], cwd=app_dir, env=dict(os.environ, **e), stdout=log, stderr=log)
     if c["port"]:
@@ -213,6 +225,9 @@ def start(name, app_dir):
                 if proc.poll() is not None:
                     break
                 time.sleep(0.1)
+        if proc.poll() is not None:
+            log.close()
+            raise SystemExit(f"{name}: {os.path.basename(app_dir)} exited at startup:\n" + open(log.name).read()[-800:])
     return proc, log
 
 

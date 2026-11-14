@@ -1,0 +1,188 @@
+# GraphQL reads are POSTs, which EXE-07 treats as writes; each read that
+# ends a scenario therefore needs a no_state_check waiver. That is a finding
+# of the matrix check (mutation-testing/matrix-results.md), not a property
+# of the API.
+version: 1
+suite: users
+scenarios:
+  - id: M05-001
+    name: A created user is stored once and can be read back
+    steps:
+      - id: create
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($name: String!) { create(name: $name) }", variables: { name: "Ada ${run.id}" } }
+        expect:
+          status: 200
+          keys:
+            $: [data]
+          present: [$.data.create]
+        save: { user_id: $.data.create }
+      - id: stored-once
+        verify:
+          postgres:
+            connection: app
+            query: SELECT id::text AS id, name FROM users WHERE name = $1
+            args: ["Ada ${run.id}"]
+            expect:
+              rows: 1
+              first_row: { id: "${user_id}", name: "Ada ${run.id}" }
+      - id: read
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "query($id: String) { user(id: $id) { id name } }", variables: { id: "${user_id}" } }
+        no_state_check: a GraphQL read; Proctor classifies every POST as a write
+        expect:
+          status: 200
+          json:
+            $: { data: { user: { id: "${user_id}", name: "Ada ${run.id}" } } }
+
+  - id: M05-002
+    name: A user can't be created with an empty name
+    steps:
+      - id: create-empty
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation { create(name: \"\") }" }
+        expect:
+          status: 200
+          json:
+            $.data: { create: null }
+            $.errors[0].message: name is required
+            $.errors[0].path: [create]
+      - id: nothing-stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE name = ''
+            expect:
+              first_row: { n: 0 }
+
+  - id: M05-003
+    name: Reading a user that doesn't exist returns an error and no user
+    steps:
+      - id: read-unknown
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "{ user(id: \"2000000000\") { id name } }" }
+        no_state_check: a GraphQL read; Proctor classifies every POST as a write
+        expect:
+          status: 200
+          json:
+            $.data: { user: null }
+            $.errors[0].message: user not found
+
+  - id: M05-004
+    name: A rename is returned and persisted
+    steps:
+      - id: create
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($name: String!) { create(name: $name) }", variables: { name: "Ada ${run.id}" } }
+        expect:
+          status: 200
+          present: [$.data.create]
+        save: { user_id: $.data.create }
+      - id: rename
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($id: String!, $name: String) { update(id: $id, name: $name) { id name } }", variables: { id: "${user_id}", name: "Grace ${run.id}" } }
+        expect:
+          status: 200
+          json:
+            $: { data: { update: { id: "${user_id}", name: "Grace ${run.id}" } } }
+      - id: stored
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1::bigint
+            args: ["${user_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Grace ${run.id}" }
+
+  - id: M05-005
+    name: A deleted user is gone
+    steps:
+      - id: create
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($name: String!) { create(name: $name) }", variables: { name: "Ada ${run.id}" } }
+        expect:
+          status: 200
+          present: [$.data.create]
+        save: { user_id: $.data.create }
+      - id: delete
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($id: String!) { delete(id: $id) }", variables: { id: "${user_id}" } }
+        expect:
+          status: 200
+          json:
+            $: { data: { delete: true } }
+      - id: gone
+        verify:
+          postgres:
+            connection: app
+            query: SELECT count(*) AS n FROM users WHERE id = $1::bigint
+            args: ["${user_id}"]
+            expect:
+              first_row: { n: 0 }
+
+  - id: M05-006
+    name: Renaming one user leaves another unchanged
+    steps:
+      - id: create-a
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($name: String!) { create(name: $name) }", variables: { name: "Ada ${run.id}" } }
+        expect:
+          status: 200
+          present: [$.data.create]
+        save: { a_id: $.data.create }
+      - id: create-b
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($name: String!) { create(name: $name) }", variables: { name: "Bob ${run.id}" } }
+        expect:
+          status: 200
+          present: [$.data.create]
+        save: { b_id: $.data.create }
+      - id: rename-a
+        request:
+          method: POST
+          path: /graphql
+          identity: anonymous
+          body: { query: "mutation($id: String!, $name: String) { update(id: $id, name: $name) { id name } }", variables: { id: "${a_id}", name: "Grace ${run.id}" } }
+        expect:
+          status: 200
+          present: [$.data.update]
+      - id: b-unchanged
+        verify:
+          postgres:
+            connection: app
+            query: SELECT name FROM users WHERE id = $1::bigint
+            args: ["${b_id}"]
+            expect:
+              rows: 1
+              first_row: { name: "Bob ${run.id}" }

@@ -14,8 +14,16 @@ Run from the repository root, with PROCTOR_E2E_POSTGRES_DSN set:
 
     MT_SELF_WORK=/tmp/selfmut python3 -I mutation-testing/selfmut.py [workers]
 
-Results go to mutation-testing/self-mutation-results.json, saved as they
-arrive, so an interrupted run can be resumed (finished mutants are kept).
+Results go to mutation-testing/self-mutation-results.json (MT_SELF_OUT
+overrides), saved as they arrive, so an interrupted run can be resumed
+(finished mutants are kept).
+
+MT_SELF_SURVIVORS=<results.json> runs only the mutants that survived in that
+earlier run, matched to the current source by file, operator and text (IDs
+change when the code does), to check that new tests kill them:
+
+    MT_SELF_SURVIVORS=mutation-testing/self-mutation-results.json \
+      MT_SELF_OUT=/tmp/rerun.json python3 -I mutation-testing/selfmut.py
 """
 
 import concurrent.futures
@@ -29,7 +37,7 @@ import threading
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(REPO, "mutation-testing", "self-mutation-results.json")
+OUT = os.environ.get("MT_SELF_OUT") or os.path.join(REPO, "mutation-testing", "self-mutation-results.json")
 COPY = ["cmd", "internal", "e2e", "go.mod", "go.sum"]
 
 
@@ -86,6 +94,11 @@ def main():
     work = os.environ.get("MT_SELF_WORK") or "/tmp/proctor-selfmut"
     os.makedirs(work, exist_ok=True)
     all_sites = sites()
+    if os.environ.get("MT_SELF_SURVIVORS"):
+        earlier = json.load(open(os.environ["MT_SELF_SURVIVORS"]))["mutants"].values()
+        keys = {(m["file"], m["op"], m["old"], m["new"]) for m in earlier if m["status"] == "survived"}
+        all_sites = [s for s in all_sites if (s["file"], s["op"], s["old"], s["new"]) in keys]
+        print(f"rerunning {len(all_sites)} sites matching {len(keys)} earlier survivors", flush=True)
     results = json.load(open(OUT)) if os.path.exists(OUT) else {"mutants": {}, "controls": []}
     todo = [s for s in all_sites if s["id"] not in results["mutants"] or results["mutants"][s["id"]]["old"] != s["old"]]
     jobs = []

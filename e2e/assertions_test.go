@@ -267,6 +267,46 @@ scenarios:
 			}
 		})
 	}
+	// A saved value came from the application in this run (usually an ID
+	// it assigned), so sending it and matching it later is run-scoped;
+	// ${fill(N)} is not.
+	saved := func(value string) string {
+		return `version: 1
+suite: s
+scenarios:
+  - id: S-1
+    name: create, then link
+    steps:
+      - id: create
+        request: { method: POST, path: /api/projects, identity: alice, body: { name: "n ${run.id}" } }
+        expect:
+          status: 201
+          present: [$.id]
+        save: { id: $.id }
+      - id: link
+        request: { method: POST, path: /api/links, identity: alice, body: { project: ` + value + ` } }
+        expect:
+          status: 201
+          json:
+            $.project: ` + value + `
+      - id: read
+        request: { method: GET, path: /api/links/l1, identity: alice }
+        expect:
+          status: 200
+          json:
+            $.project: ` + value + `
+`
+	}
+	t.Run("a saved value is run-scoped", func(t *testing.T) {
+		code, out, errOut := specRepo(t, "", saved(`"${id}"`)).proctor("validate")
+		expect(t, code, out, errOut, 0)
+		code, out, errOut = specRepo(t, "", saved(`"p-${id}"`)).proctor("validate")
+		expect(t, code, out, errOut, 0)
+	})
+	t.Run("fill alone isn't run-scoped", func(t *testing.T) {
+		code, out, errOut := specRepo(t, "", saved(`"${fill(3)}"`)).proctor("validate")
+		expect(t, code, out, errOut, 3, "FIX-05")
+	})
 	t.Run("run refuses it before sending anything", func(t *testing.T) {
 		code, out, errOut, app := runOne(t, fixedApp(`{"name":"Fixed"}`), spec("Fixed", ""))
 		expect(t, code, out, errOut, 3, "FIX-05")

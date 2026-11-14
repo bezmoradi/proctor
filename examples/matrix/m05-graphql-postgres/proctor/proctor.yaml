@@ -1,0 +1,14 @@
+# Written by hand for the gopamin combination matrix (testing phase,
+# 2026-11-14): a GraphQL API over PostgreSQL. Every operation is a POST to
+# /graphql, so the database checks carry the state checks (EXE-07).
+version: 1
+project: m05-graphql-postgres
+manifest: manifest.yaml
+identities:
+  anonymous: { type: none }
+connections:
+  postgres:
+    app: { schemas: [public], objects: [users] }
+readiness:
+  path: /readyz
+  startup_timeout: 30s

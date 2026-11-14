@@ -446,7 +446,7 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 		var msgs []string
 		if st.Request != nil && st.Request.Body != nil {
 			for _, v := range stringLeaves(st.Request.Body) {
-				if v == "" || strings.Contains(v, "${"+expr.RunID+"}") {
+				if v == "" || strings.Contains(v, "${"+expr.RunID+"}") || refersToSaved(v) {
 					continue
 				}
 				for _, later := range all[i+1:] {
@@ -484,6 +484,20 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 			r.add(Invalid, "HTTP-09", p, "%s step %s asserts a list length on a request with no query parameters; the list may include records the scenario didn't create (filter the request, or waive HTTP-09 with the reason it can't)", where, st.ID)
 		}
 	}
+}
+
+// refersToSaved reports whether v contains a ${name} reference to a value
+// saved earlier in the scenario. Such a value came from the application's
+// own response in this run (usually an ID it assigned), so it is already
+// scoped to the run; ${secret.name} and ${fill(N)} are not.
+func refersToSaved(v string) bool {
+	for _, m := range refAny.FindAllString(v, -1) {
+		name := m[2 : len(m)-1]
+		if name != expr.RunID && !expr.IsFill(name) && !expr.IsSecret(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func expects(st model.Step, v string) bool {
