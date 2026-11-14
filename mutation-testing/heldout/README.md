@@ -6,7 +6,7 @@ Each file was written by an independent agent that could read the example applic
 |---|---|---|---|---|
 | `set-a.json` | HM-01 to HM-25 | 2026-11-14, after round 2's specification revision | 6 of 25 | see `../mutation-test-results.md` |
 | `set-b.json` | HN-01 to HN-25 | 2026-11-14, after scenarios PGU-020 to PGU-037 were added for set A | 11 of 25 | see `../mutation-test-results.md` |
-| `set-c.json` | HP-01 to HP-30 | 2026-11-14, after set B's scenarios (PGU-038 to PGU-049) were added | 17 of 30 (`set-c-first-run.json`; the unmodified app passed in the same run) | not changed since |
+| `set-c.json` | HP-01 to HP-30 | 2026-11-14, after the scenarios added for sets A and B; run against the final set PGU-001 to PGU-049 | 17 of 30 (`set-c-first-run.json`; the unmodified app passed in the same run) | not changed since |
 
 "Detected now" is no longer a held-out measurement: scenarios were added after each set's first run to catch what it missed. The next set written the same way gives the next held-out score.
 
