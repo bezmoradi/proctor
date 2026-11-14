@@ -4,3 +4,5 @@
 .env
 # Self-mutation scratch copies
 /mutation-testing/selfmut-work/
+# Python bytecode
+__pycache__/
