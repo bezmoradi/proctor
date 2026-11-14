@@ -9,6 +9,18 @@ type Binding struct {
 	Connections BindingConnections         `yaml:"connections"`
 	Identities  map[string]BindingIdentity `yaml:"identities"`
 	Secrets     map[string]BindingSecret   `yaml:"secrets"`
+	// Environment names the environment in the report (§13.1).
+	Environment string `yaml:"environment"`
+	// Image carries the two digests the trusted workflow supplies in
+	// authoritative mode (REP-11): the image the build job produced and
+	// the image the running application was started from.
+	Image *BindingImage `yaml:"image"`
+}
+
+// BindingImage holds the REP-11 digests, each "sha256:" and 64 hex digits.
+type BindingImage struct {
+	BuiltDigest   string `yaml:"built_digest"`
+	RunningDigest string `yaml:"running_digest"`
 }
 
 // BindingSecret names the variable holding one secret.

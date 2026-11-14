@@ -301,26 +301,44 @@ func orDash(s string) string {
 	return s
 }
 
-// run executes the specification set in local mode (§5.1): it reads the
+// run executes the specification set. In local mode (§5.1) it reads the
 // protected files from the working tree, so its result is not evidence for
-// a commit. Exit codes 0 to 4 (§13.3).
+// a commit; --authoritative (§5.2) reads them from a commit instead. Exit
+// codes 0 to 4 (§13.3).
 func run(args []string, stdout, stderr io.Writer) int {
 	var c common
-	var bindingPath string
+	var bindingPath, commit, base, prHead, report string
+	var authoritative bool
 	var timeout, qtimeout time.Duration
 	fs := newFlags("run", stderr, &c)
-	fs.StringVar(&bindingPath, "binding", "", "environment binding file (required in local mode)")
+	fs.StringVar(&bindingPath, "binding", "", "environment binding file (required)")
 	fs.DurationVar(&timeout, "request-timeout", 10*time.Second, "time limit for each request")
 	fs.DurationVar(&qtimeout, "query-timeout", 5*time.Second, "time limit for each database query")
+	fs.BoolVar(&authoritative, "authoritative", false, "check a commit for the trusted CI job (§5.2)")
+	fs.StringVar(&commit, "commit", "HEAD", "with --authoritative: the tested commit")
+	fs.StringVar(&base, "base", "", "with --authoritative: the base commit, when the pull request head is tested directly")
+	fs.StringVar(&prHead, "pr-head", "", "with --authoritative: the pull request head, when the tested commit is GitHub's test merge")
+	fs.StringVar(&report, "report", "", "with --authoritative: where to write the JSON report (required)")
 	if fs.Parse(args) != nil || fs.NArg() > 0 {
-		return exitInvalid
-	}
-	if bindingPath == "" {
-		fmt.Fprintln(stderr, "proctor run: --binding is required in local mode")
 		return exitInvalid
 	}
 	if timeout <= 0 || qtimeout <= 0 {
 		fmt.Fprintln(stderr, "proctor run: --request-timeout and --query-timeout must be positive")
+		return exitInvalid
+	}
+	if authoritative {
+		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: commit, base: base, prHead: prHead, report: report, timeout: timeout, qtimeout: qtimeout}, stdout, stderr)
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	for _, name := range []string{"commit", "base", "pr-head", "report"} {
+		if set[name] {
+			fmt.Fprintf(stderr, "proctor run: --%s is only for --authoritative\n", name)
+			return exitInvalid
+		}
+	}
+	if bindingPath == "" {
+		fmt.Fprintln(stderr, "proctor run: --binding is required in local mode")
 		return exitInvalid
 	}
 	repo, err := gitrepo.Open(c.repo)
@@ -377,7 +395,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		})
 		return out.ExitCode
 	}
-	writeRun(stdout, rep, out)
+	writeRun(stdout, rep, out, "local, non-authoritative")
 	return out.ExitCode
 }
 
@@ -396,8 +414,10 @@ func configError(stdout, stderr io.Writer, asJSON bool, rep *integrity.Report, m
 	return exitInvalid
 }
 
-func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome) {
-	fmt.Fprintf(w, "PROCTOR RUN  (local, non-authoritative)\n\n")
+func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode string) {
+	if mode != "authoritative" {
+		fmt.Fprintf(w, "PROCTOR RUN  (%s)\n\n", mode)
+	}
 	fmt.Fprintf(w, "Target:          %s\n", out.Target)
 	fmt.Fprintf(w, "Configuration:   %s\n", rep.ConfigPath)
 	if out.Readiness != "" {
@@ -461,7 +481,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome) {
 	s := out.Summary
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
 		s.Scenarios, s.Passed, s.Failed, s.Errors, s.NotRun, s.Assertions)
-	fmt.Fprintf(w, "RESULT: %s (exit %d)\n", strings.ToUpper(out.Result), out.ExitCode)
+	fmt.Fprintf(w, "RESULT: %s (exit %d, %s)\n", strings.ToUpper(out.Result), out.ExitCode, mode)
 }
 
 func causeText(c string) string {

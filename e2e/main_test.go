@@ -11,7 +11,10 @@ import (
 )
 
 // proctorBin is the binary under test, built once from ./cmd/proctor.
-var proctorBin string
+// proctorOIDCBin is the same code built to trust an OIDC issuer named by
+// PROCTOR_TEST_OIDC_ISSUER, so the authoritative tests can sign tokens
+// with their own key; the release build trusts only GitHub's issuer.
+var proctorBin, proctorOIDCBin string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "proctor-e2e-")
@@ -26,11 +29,17 @@ func TestMain(m *testing.M) {
 	if os.Getenv("PROCTOR_E2E_RACE") == "1" {
 		args = append(args, "-race")
 	}
-	build := exec.Command("go", append(args, "./cmd/proctor")...)
-	build.Dir = ".."
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "building proctor: %v\n%s", err, out)
-		os.Exit(1)
+	proctorOIDCBin = filepath.Join(dir, "proctor-oidc-test")
+	for _, cmdArgs := range [][]string{
+		append(append([]string{}, args...), "./cmd/proctor"),
+		append(append([]string{"build", "-o", proctorOIDCBin, "-ldflags", "-X proctor/internal/github.Issuer=env"}, args[3:]...), "./cmd/proctor"),
+	} {
+		build := exec.Command("go", cmdArgs...)
+		build.Dir = ".."
+		if out, err := build.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "building proctor: %v\n%s", err, out)
+			os.Exit(1)
+		}
 	}
 	code := m.Run()
 	os.RemoveAll(dir)
@@ -41,8 +50,13 @@ func TestMain(m *testing.M) {
 // code, standard output and standard error.
 func runProctor(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
+	return runBinary(t, proctorBin, args...)
+}
+
+func runBinary(t *testing.T, bin string, args ...string) (int, string, string) {
+	t.Helper()
 	var out, errOut bytes.Buffer
-	cmd := exec.Command(proctorBin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err := cmd.Run()
 	var exit *exec.ExitError

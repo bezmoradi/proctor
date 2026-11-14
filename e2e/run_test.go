@@ -174,7 +174,7 @@ func TestRunPasses(t *testing.T) {
 	}
 
 	code, text, _ := r.proctor("run", "--binding", bindingFor(t, app.srv.URL))
-	expect(t, code, text, "", 0, "(local, non-authoritative)", "PASS     PA-001", "RESULT: PASSED (exit 0)")
+	expect(t, code, text, "", 0, "(local, non-authoritative)", "PASS     PA-001", "RESULT: PASSED (exit 0, local, non-authoritative)")
 }
 
 // §13.3, INT-03: a failed assertion fails the scenario; its later steps are
