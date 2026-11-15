@@ -38,6 +38,19 @@ for t in $targets; do
 	echo "built $bin"
 done
 
+goroot=$(go env GOROOT)
+golicense=""
+for f in "$goroot/LICENSE" "$goroot/../LICENSE"; do
+	if [ -f "$f" ]; then
+		golicense=$f
+		break
+	fi
+done
+if [ -z "$golicense" ]; then
+	echo "release: the Go toolchain's LICENSE wasn't found near $goroot" >&2
+	exit 1
+fi
+
 notices="$out/proctor-$version-NOTICES.txt"
 {
 	echo "Proctor $version, built from commit $commit with $(go version | cut -d' ' -f3)"
@@ -46,7 +59,7 @@ notices="$out/proctor-$version-NOTICES.txt"
 	cat LICENSE
 	echo
 	echo "==== Go standard library ($(go version | cut -d' ' -f3)) ===="
-	cat "$(go env GOROOT)/LICENSE"
+	cat "$golicense"
 	go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' ./cmd/proctor | sort -u |
 		while read -r path ver dir; do
 			found=0
