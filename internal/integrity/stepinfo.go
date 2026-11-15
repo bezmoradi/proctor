@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"proctor/internal/expr"
@@ -249,11 +250,15 @@ func (r *Report) checkRunScoped(p, where string, ds []described) {
 					continue
 				}
 				for _, later := range ds[i+1:] {
-					if asserts(later.at.step, v) {
-						fired["FIX-05"] = true
-						msgs = append(msgs, fmt.Sprintf("%s step %s sends %q and step %s expects it, but it doesn't contain ${run.id} or a saved value, so data from an earlier run could match (use ${run.id} in the value, or waive FIX-05 with the reason it can't vary)", where, st.ID, v, later.at.step.ID))
-						break
+					if !asserts(later.at.step, v) {
+						continue
 					}
+					fired["FIX-05"] = true
+					if observedBefore(ds, i, later, v) {
+						continue
+					}
+					msgs = append(msgs, fmt.Sprintf("%s step %s sends %q and step %s expects it, but it doesn't contain ${run.id} or a saved value, so data from an earlier run could match (use ${run.id} in the value; or, before step %s, add a step that does the same %s with the same inputs as step %s and expects each path where step %s expects it to hold something else: equal with another literal, absent, or none; or waive FIX-05 with the reason it can't vary)", where, st.ID, v, later.at.step.ID, st.ID, later.at.step.Do, later.at.step.ID, later.at.step.ID))
+					break
 				}
 			}
 		}
@@ -329,4 +334,253 @@ func asserts(st *model.Step, v string) bool {
 		}
 	}
 	return false
+}
+
+type site struct {
+	kind  string
+	path  string
+	text  string
+	claim map[string]any
+}
+
+const (
+	siteValue  = "value"
+	siteMember = "member"
+	siteText   = "text"
+	siteClaim  = "claim"
+)
+
+func sitesOf(ex *model.Expect, v string) ([]site, bool) {
+	if ex == nil {
+		return nil, true
+	}
+	var out []site
+	ok := true
+	for _, p := range sortedKeys(ex.Equal) {
+		ok = valueSites(p, ex.Equal[p], v, &out) && ok
+	}
+	for _, p := range sortedKeys(ex.Unordered) {
+		for _, e := range ex.Unordered[p] {
+			if contains(stringLeaves(e), v) {
+				out = append(out, site{kind: siteMember, path: p})
+				break
+			}
+		}
+	}
+	for _, m := range []map[string]model.Claims[map[string]any]{ex.Any, ex.None} {
+		for _, p := range sortedKeys(m) {
+			for _, c := range m[p].All() {
+				if contains(stringLeaves(c), v) {
+					out = append(out, site{kind: siteClaim, path: p, claim: c})
+				}
+			}
+		}
+	}
+	for _, p := range sortedKeys(ex.Counts) {
+		for _, cm := range ex.Counts[p].All() {
+			if contains(stringLeaves(cm.Where), v) {
+				out = append(out, site{kind: siteClaim, path: p, claim: cm.Where})
+			}
+		}
+	}
+	for _, p := range sortedKeys(ex.Contains) {
+		if t, isText := ex.Contains[p].(string); isText && t != "" && strings.Contains(v, t) {
+			out = append(out, site{kind: siteText, path: p, text: t})
+		}
+	}
+	return out, ok
+}
+
+func valueSites(p string, x any, v string, out *[]site) bool {
+	switch t := x.(type) {
+	case string:
+		if t == v {
+			*out = append(*out, site{kind: siteValue, path: p})
+		}
+	case map[string]any:
+		ok := true
+		for _, k := range sortedKeys(t) {
+			sub := p + "." + k
+			if parsed, err := expr.ParsePath(sub); err != nil || parsed.String() != sub {
+				if contains(stringLeaves(t[k]), v) {
+					ok = false
+				}
+				continue
+			}
+			ok = valueSites(sub, t[k], v, out) && ok
+		}
+		return ok
+	case []any:
+		ok := true
+		for i, e := range t {
+			ok = valueSites(fmt.Sprintf("%s[%d]", p, i), e, v, out) && ok
+		}
+		return ok
+	}
+	return true
+}
+
+func observedBefore(ds []described, act int, later described, v string) bool {
+	if strings.Contains(v, "${") || later.at.ref.Scenario != ds[act].at.ref.Scenario {
+		return false
+	}
+	sites, ok := sitesOf(later.at.step.Expect, v)
+	if !ok || len(sites) == 0 {
+		return false
+	}
+	for _, s := range sites {
+		proven := false
+		for _, earlier := range ds[:act] {
+			if earlier.at.ref.Scenario != ds[act].at.ref.Scenario || !sameRequest(earlier.at.step, later.at.step) || !earlier.observes() || earlier.at.step.Never != nil {
+				continue
+			}
+			if s.ruledOutBy(earlier.at.step.Expect, v) {
+				proven = true
+				break
+			}
+		}
+		if !proven {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRequest(a, b *model.Step) bool {
+	return a.Do == b.Do && a.On == b.On && reflect.DeepEqual(a.With, b.With)
+}
+
+func (s site) ruledOutBy(ex *model.Expect, v string) bool {
+	for _, a := range ex.Absent {
+		if pathWithin(s.path, a) {
+			return true
+		}
+	}
+	for _, a := range sortedKeys(ex.Equal) {
+		if !pathWithin(s.path, a) {
+			continue
+		}
+		rel, err := expr.ParsePath("$" + strings.TrimPrefix(s.path, a))
+		if err != nil {
+			continue
+		}
+		got, found := rel.Select(ex.Equal[a])
+		if found && hasRef(got) {
+			continue
+		}
+		if !found || s.differs(got, v) {
+			return true
+		}
+	}
+	if s.kind != siteClaim {
+		return false
+	}
+	for _, n := range sortedKeys(ex.None) {
+		if n != s.path {
+			continue
+		}
+		for _, c := range ex.None[n].All() {
+			if claimWithin(c, s.claim) {
+				return true
+			}
+		}
+	}
+	for _, n := range sortedKeys(ex.Counts) {
+		if n != s.path {
+			continue
+		}
+		for _, cm := range ex.Counts[n].All() {
+			if cm.Where != nil && zero(cm.Is) && claimWithin(cm.Where, s.claim) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s site) differs(got any, v string) bool {
+	switch s.kind {
+	case siteValue:
+		t, isText := got.(string)
+		return !isText || t != v
+	case siteText:
+		t, isText := got.(string)
+		return !isText || !strings.Contains(t, s.text)
+	case siteMember:
+		list, isList := got.([]any)
+		if !isList {
+			return true
+		}
+		for _, e := range list {
+			if contains(stringLeaves(e), v) {
+				return false
+			}
+		}
+		return true
+	case siteClaim:
+		list, isList := got.([]any)
+		if !isList {
+			return true
+		}
+		fixed := map[string]any{}
+		for k, x := range s.claim {
+			if !hasRef(x) {
+				fixed[k] = x
+			}
+		}
+		for _, e := range list {
+			if matchesClaim(fixed, e) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func matchesClaim(claim map[string]any, el any) bool {
+	for k, want := range claim {
+		sub := k
+		if !strings.HasPrefix(sub, "$") {
+			sub = "$." + sub
+		}
+		p, err := expr.ParsePath(sub)
+		if err != nil {
+			return true
+		}
+		got, ok := p.Select(el)
+		if !ok || !expr.Equal(want, got) {
+			return false
+		}
+	}
+	return true
+}
+
+func pathWithin(p, root string) bool {
+	return p == root || strings.HasPrefix(p, root+".") || strings.HasPrefix(p, root+"[")
+}
+
+func hasRef(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(t, "${")
+	case map[string]any:
+		for k, x := range t {
+			if strings.Contains(k, "${") || hasRef(x) {
+				return true
+			}
+		}
+	case []any:
+		for _, x := range t {
+			if hasRef(x) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func zero(v any) bool {
+	n, isInt := v.(int)
+	return isInt && n == 0
 }

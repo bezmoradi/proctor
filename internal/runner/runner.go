@@ -75,6 +75,7 @@ var CoreVersion = "dev"
 type Assertion struct {
 	Kind     string `json:"kind"`
 	Target   string `json:"target,omitempty"`
+	Claim    *int   `json:"claim,omitempty"`
 	Expected any    `json:"expected,omitempty"`
 	Actual   any    `json:"actual,omitempty"`
 	Present  bool   `json:"present"`

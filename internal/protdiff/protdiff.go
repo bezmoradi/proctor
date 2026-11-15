@@ -508,9 +508,18 @@ type assertion struct {
 	path    string
 	value   any
 	valued  bool
+	claim   int
+	multi   bool
 }
 
 func (a assertion) label() string { return a.matcher + " " + a.path }
+
+func (a assertion) name(multi bool) string {
+	if !multi {
+		return a.label()
+	}
+	return fmt.Sprintf("%s claim[%d]", a.label(), a.claim)
+}
 
 func (a assertion) shown() string {
 	if !a.valued {
@@ -525,37 +534,81 @@ func assertionsOf(ex *model.Expect) []assertion {
 	}
 	var out []assertion
 	for p, v := range ex.Equal {
-		out = append(out, assertion{"equal", p, v, true})
+		out = append(out, assertion{matcher: "equal", path: p, value: v, valued: true})
 	}
 	for _, p := range ex.Present {
-		out = append(out, assertion{"present", p, nil, false})
+		out = append(out, assertion{matcher: "present", path: p})
 	}
 	for _, p := range ex.Absent {
-		out = append(out, assertion{"absent", p, nil, false})
+		out = append(out, assertion{matcher: "absent", path: p})
 	}
 	for p, v := range ex.Keys {
-		out = append(out, assertion{"keys", p, v, true})
+		out = append(out, assertion{matcher: "keys", path: p, value: v, valued: true})
 	}
 	for p, v := range ex.Length {
-		out = append(out, assertion{"length", p, v, true})
+		out = append(out, assertion{matcher: "length", path: p, value: v, valued: true})
 	}
 	for p, v := range ex.Unordered {
-		out = append(out, assertion{"unordered", p, v, true})
+		out = append(out, assertion{matcher: "unordered", path: p, value: v, valued: true})
 	}
-	for p, v := range ex.Any {
-		out = append(out, assertion{"any", p, v, true})
-	}
-	for p, v := range ex.None {
-		out = append(out, assertion{"none", p, v, true})
+	for _, m := range []struct {
+		name   string
+		claims map[string]model.Claims[map[string]any]
+	}{{"any", ex.Any}, {"none", ex.None}} {
+		for p, c := range m.claims {
+			for i, v := range c.All() {
+				out = append(out, assertion{matcher: m.name, path: p, value: v, valued: true, claim: i, multi: c.Multi})
+			}
+		}
 	}
 	for p, v := range ex.Contains {
-		out = append(out, assertion{"contains", p, v, true})
+		out = append(out, assertion{matcher: "contains", path: p, value: v, valued: true})
 	}
-	for p, v := range ex.Counts {
-		out = append(out, assertion{"count", p, v, true})
+	for p, c := range ex.Counts {
+		for i, v := range c.All() {
+			out = append(out, assertion{matcher: "count", path: p, value: v, valued: true, claim: i, multi: c.Multi})
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].label() < out[j].label() })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].label() != out[j].label() {
+			return out[i].label() < out[j].label()
+		}
+		return out[i].claim < out[j].claim
+	})
 	return out
+}
+
+type claimPair struct {
+	base, head assertion
+	matched    bool
+}
+
+func pairClaims(base, head []assertion) []claimPair {
+	pairs := make([]claimPair, len(base))
+	used := make([]bool, len(head))
+	for i, b := range base {
+		pairs[i].base = b
+		for j, h := range head {
+			if !used[j] && canonical(b.value) == canonical(h.value) {
+				pairs[i].head, pairs[i].matched, used[j] = h, true, true
+				break
+			}
+		}
+	}
+	j := 0
+	for i := range pairs {
+		if pairs[i].matched {
+			continue
+		}
+		for j < len(head) && used[j] {
+			j++
+		}
+		if j == len(head) {
+			break
+		}
+		pairs[i].head, pairs[i].matched, used[j] = head[j], true, true
+	}
+	return pairs
 }
 
 func stepAssertions(st model.Step) []string {
@@ -754,40 +807,62 @@ func orDefault(every string) string {
 }
 
 func (d *stepDiff) compareAssertions(b, h *model.Expect, verify bool) {
-	head := map[string]assertion{}
+	head := map[string][]assertion{}
 	onPath := map[string][]string{}
 	for _, a := range assertionsOf(h) {
-		head[a.label()] = a
-		onPath[a.path] = append(onPath[a.path], a.label())
-	}
-	weaker := func(a assertion, format string, args ...any) {
-		if verify {
-			d.weaken("assertion_weakened", 0, format, args...)
-			return
+		if _, seen := head[a.label()]; !seen {
+			onPath[a.path] = append(onPath[a.path], a.label())
 		}
-		d.change(a.label(), a.shown(), canonical(head[a.label()].value))
+		head[a.label()] = append(head[a.label()], a)
 	}
+	base := map[string][]assertion{}
+	var order []string
 	for _, a := range assertionsOf(b) {
-		if c, ok := head[a.label()]; ok {
-			d.compareValues(a, c, weaker)
-			continue
+		if _, seen := base[a.label()]; !seen {
+			order = append(order, a.label())
 		}
-		if cover := coveringEqual(a, h); cover != "" {
-			d.change(a.label(), a.shown(), "(covered by equal "+cover+")")
-			continue
-		}
-		switch {
-		case !verify:
-			d.change(a.label(), a.shown(), "(not asserted)")
-		case len(onPath[a.path]) > 0:
-			d.weaken("assertion_weakened", 0, "%s became %s", a.label(), strings.Join(onPath[a.path], " and "))
-		default:
-			d.weaken("assertion_removed", 1, "%s is no longer asserted", a.label())
+		base[a.label()] = append(base[a.label()], a)
+	}
+	for _, label := range order {
+		hs := head[label]
+		multi := len(base[label]) > 1 || len(hs) > 1 || base[label][0].multi || (len(hs) > 0 && hs[0].multi)
+		for _, pr := range pairClaims(base[label], hs) {
+			a := pr.base
+			name := a.name(multi)
+			if pr.matched {
+				c := pr.head
+				d.compareValues(a, c, name, func(format string, args ...any) {
+					if verify {
+						d.weaken("assertion_weakened", 0, format, args...)
+						return
+					}
+					d.change(name, a.shown(), c.shown())
+				})
+				continue
+			}
+			if cover := coveringEqual(a, h); cover != "" {
+				d.change(name, a.shown(), "(covered by equal "+cover+")")
+				continue
+			}
+			var others []string
+			for _, l := range onPath[a.path] {
+				if l != label {
+					others = append(others, l)
+				}
+			}
+			switch {
+			case !verify:
+				d.change(name, a.shown(), "(not asserted)")
+			case len(others) > 0 && len(hs) == 0:
+				d.weaken("assertion_weakened", 0, "%s became %s", name, strings.Join(others, " and "))
+			default:
+				d.weaken("assertion_removed", 1, "%s is no longer asserted", name)
+			}
 		}
 	}
 }
 
-func (d *stepDiff) compareValues(b, h assertion, weaker func(assertion, string, ...any)) {
+func (d *stepDiff) compareValues(b, h assertion, name string, weaker func(string, ...any)) {
 	switch b.matcher {
 	case "unordered":
 		bv, hv := sortedCanon(b.value.([]any)), sortedCanon(h.value.([]any))
@@ -795,15 +870,15 @@ func (d *stepDiff) compareValues(b, h assertion, weaker func(assertion, string, 
 			return
 		}
 		if lost := missing(bv, hv); len(hv) < len(bv) && len(lost) == len(bv)-len(hv) {
-			weaker(b, "%s no longer lists %s", b.label(), strings.Join(lost, ", "))
+			weaker("%s no longer lists %s", name, strings.Join(lost, ", "))
 			return
 		}
-		d.change(b.label(), "["+strings.Join(bv, ",")+"]", "["+strings.Join(hv, ",")+"]")
+		d.change(name, "["+strings.Join(bv, ",")+"]", "["+strings.Join(hv, ",")+"]")
 	case "keys":
 		bk, hk := append([]string(nil), b.value.([]string)...), append([]string(nil), h.value.([]string)...)
 		sort.Strings(bk)
 		sort.Strings(hk)
-		d.change(b.label(), canonical(bk), canonical(hk))
+		d.change(name, canonical(bk), canonical(hk))
 	case "any", "none":
 		bm, hm := b.value.(map[string]any), h.value.(map[string]any)
 		if canonical(bm) == canonical(hm) {
@@ -815,23 +890,23 @@ func (d *stepDiff) compareValues(b, h assertion, weaker func(assertion, string, 
 		}
 		if subMap(small, large) {
 			if b.matcher == "any" {
-				weaker(b, "%s now matches an element on fewer fields: %s became %s", b.label(), canonical(bm), canonical(hm))
+				weaker("%s now matches an element on fewer fields: %s became %s", name, canonical(bm), canonical(hm))
 			} else {
-				weaker(b, "%s now forbids only elements that also match more fields: %s became %s", b.label(), canonical(bm), canonical(hm))
+				weaker("%s now forbids only elements that also match more fields: %s became %s", name, canonical(bm), canonical(hm))
 			}
 			return
 		}
-		d.change(b.label(), canonical(bm), canonical(hm))
+		d.change(name, canonical(bm), canonical(hm))
 	case "contains":
 		bt, bok := b.value.(string)
 		ht, hok := h.value.(string)
 		if bok && hok && bt != ht && strings.Contains(bt, ht) {
-			weaker(b, "%s now looks for less of the text: %s became %s", b.label(), canonical(bt), canonical(ht))
+			weaker("%s now looks for less of the text: %s became %s", name, canonical(bt), canonical(ht))
 			return
 		}
-		d.change(b.label(), b.shown(), h.shown())
+		d.change(name, b.shown(), h.shown())
 	default:
-		d.change(b.label(), b.shown(), h.shown())
+		d.change(name, b.shown(), h.shown())
 	}
 }
 

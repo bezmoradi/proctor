@@ -193,7 +193,11 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 			if a.Result == runner.Pass {
 				continue
 			}
-			fmt.Fprintf(w, "                    %s %s\n", safe(strings.TrimSpace(a.Kind+" "+a.Target))+":", safe(describe(a)))
+			label := strings.TrimSpace(a.Kind + " " + a.Target)
+			if a.Claim != nil {
+				label += fmt.Sprintf(" claim[%d]", *a.Claim)
+			}
+			fmt.Fprintf(w, "                    %s %s\n", safe(label)+":", safe(describe(a)))
 		}
 	}
 }

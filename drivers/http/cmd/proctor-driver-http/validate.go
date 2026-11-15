@@ -13,16 +13,16 @@ import (
 const statusPath = "$.status"
 
 type expectation struct {
-	Equal     map[string]any            `json:"equal"`
-	Present   []string                  `json:"present"`
-	Absent    []string                  `json:"absent"`
-	Keys      map[string][]string       `json:"keys"`
-	Length    map[string]any            `json:"length"`
-	Unordered map[string][]any          `json:"unordered"`
-	Any       map[string]map[string]any `json:"any"`
-	None      map[string]map[string]any `json:"none"`
-	Contains  map[string]any            `json:"contains"`
-	Count     map[string]any            `json:"count"`
+	Equal     map[string]any      `json:"equal"`
+	Present   []string            `json:"present"`
+	Absent    []string            `json:"absent"`
+	Keys      map[string][]string `json:"keys"`
+	Length    map[string]any      `json:"length"`
+	Unordered map[string][]any    `json:"unordered"`
+	Any       map[string]any      `json:"any"`
+	None      map[string]any      `json:"none"`
+	Contains  map[string]any      `json:"contains"`
+	Count     map[string]any      `json:"count"`
 }
 
 func (e expectation) count() int {
@@ -112,6 +112,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		}
 	}
 	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None, ex.Contains, ex.Count})
+	v.checkClaims(ex)
 	v.checkStatus(ex, p)
 	if method == "HEAD" {
 		v.checkHead(ex, p.Save)
@@ -171,6 +172,27 @@ func (v *validation) onlyInBodyOrHeaders(at string, value any) {
 		if (isFill(n) || isSecret(n)) && !reported[n] {
 			reported[n] = true
 			v.add("HTTP-02", at, "${%s} may be used only in a request body or request headers", n)
+		}
+	}
+}
+
+func (v *validation) checkClaims(ex expectation) {
+	for _, m := range []struct {
+		name   string
+		claims map[string]any
+	}{{"any", ex.Any}, {"none", ex.None}, {"count", ex.Count}} {
+		for _, k := range sortedKeys(m.claims) {
+			switch c := m.claims[k].(type) {
+			case map[string]any, nil:
+			case []any:
+				for i, item := range c {
+					if _, isObject := item.(map[string]any); !isObject {
+						v.add("EXE-03", "$.expect."+m.name, "%s of %s: claim[%d] must be an object, not %s", m.name, k, i, show(item))
+					}
+				}
+			default:
+				v.add("EXE-03", "$.expect."+m.name, "%s of %s must be an object or a list of objects, not %s", m.name, k, show(c))
+			}
 		}
 	}
 }

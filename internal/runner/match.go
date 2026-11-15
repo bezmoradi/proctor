@@ -27,6 +27,7 @@ type check struct {
 	want   any
 	subs   []subCheck
 	n      int
+	claim  *int
 }
 
 func newCheck(kind, target string) check {
@@ -93,13 +94,16 @@ func (r *Runner) prepare(ex *model.Expect, vars expr.Vars) ([]check, error) {
 			m = ex.None
 		}
 		for _, key := range sortedKeys(m) {
-			c := newCheck(kind, key)
-			want, err := whereChecks(&c, m[key], vars)
-			if err != nil {
-				return nil, fmt.Errorf("%s %s: %v", kind, key, err)
+			for i, claim := range m[key].All() {
+				c := newCheck(kind, key)
+				c.claim = claimIndex(m[key].Multi, i)
+				want, err := whereChecks(&c, claim, vars)
+				if err != nil {
+					return nil, fmt.Errorf("%s %s%s: %v", kind, key, claimLabel(c.claim), err)
+				}
+				c.want = want
+				out = append(out, c)
 			}
-			c.want = want
-			out = append(out, c)
 		}
 	}
 	for _, key := range sortedKeys(ex.Contains) {
@@ -116,19 +120,35 @@ func (r *Runner) prepare(ex *model.Expect, vars expr.Vars) ([]check, error) {
 		out = append(out, c)
 	}
 	for _, key := range sortedKeys(ex.Counts) {
-		cm := ex.Counts[key]
-		c := newCheck("count", key)
-		where, err := whereChecks(&c, cm.Where, vars)
-		if err != nil {
-			return nil, fmt.Errorf("count %s: %v", key, err)
+		for i, cm := range ex.Counts[key].All() {
+			c := newCheck("count", key)
+			c.claim = claimIndex(ex.Counts[key].Multi, i)
+			where, err := whereChecks(&c, cm.Where, vars)
+			if err != nil {
+				return nil, fmt.Errorf("count %s%s: %v", key, claimLabel(c.claim), err)
+			}
+			if c.n, err = lengthValue(cm.Is, vars); err != nil {
+				return nil, fmt.Errorf("count %s%s: is: %v", key, claimLabel(c.claim), err)
+			}
+			c.want = map[string]any{"where": where, "is": c.n}
+			out = append(out, c)
 		}
-		if c.n, err = lengthValue(cm.Is, vars); err != nil {
-			return nil, fmt.Errorf("count %s: is: %v", key, err)
-		}
-		c.want = map[string]any{"where": where, "is": c.n}
-		out = append(out, c)
 	}
 	return out, nil
+}
+
+func claimIndex(multi bool, i int) *int {
+	if !multi {
+		return nil
+	}
+	return &i
+}
+
+func claimLabel(claim *int) string {
+	if claim == nil {
+		return ""
+	}
+	return fmt.Sprintf(" claim[%d]", *claim)
 }
 
 func whereChecks(c *check, m map[string]any, vars expr.Vars) (map[string]any, error) {
@@ -224,7 +244,7 @@ func matchesAll(subs []subCheck, el any) bool {
 const notPresent = "not present in the fact"
 
 func (r *Runner) judge(c check, fact any, red []string) Assertion {
-	a := Assertion{Kind: c.kind, Target: c.target, Result: Pass}
+	a := Assertion{Kind: c.kind, Target: c.target, Claim: c.claim, Result: Pass}
 	elem := c.target + "[0]"
 	fail := func(msg string) { a.Result, a.Message = Fail, msg }
 	if c.perr != nil {

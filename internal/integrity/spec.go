@@ -374,35 +374,71 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 	}
 	for _, m := range []struct {
 		name string
-		vals map[string]map[string]any
+		vals map[string]model.Claims[map[string]any]
 	}{{"any", ex.Any}, {"none", ex.None}} {
 		for _, k := range sortedKeys(m.vals) {
 			note(m.name, k)
-			for _, sub := range sortedKeys(m.vals[k]) {
-				if strings.TrimSpace(sub) == "" {
-					r.add(Invalid, "EXE-03", p, "%s: %s of %s has an empty field name", where, m.name, k)
+			claims := m.vals[k]
+			if claims.Multi && len(claims.List) == 0 {
+				r.add(Invalid, "EXE-03", p, "%s: %s of %s lists no claims", where, m.name, k)
+			}
+			seen := map[string]int{}
+			for i, claim := range claims.All() {
+				of := m.name + " of " + k + claimLabel(claims.Multi, i)
+				if j, dup := seen[canonicalJSON(claim)]; dup {
+					r.add(Invalid, "EXE-03", p, "%s: %s repeats claim[%d]", where, of, j)
 				}
-				if err := checkJSONValue(m.vals[k][sub]); err != nil {
-					r.add(Invalid, "EXE-03", p, "%s: %s of %s: expected value for %s isn't a JSON value: %v", where, m.name, k, sub, err)
+				seen[canonicalJSON(claim)] = i
+				for _, sub := range sortedKeys(claim) {
+					if strings.TrimSpace(sub) == "" {
+						r.add(Invalid, "EXE-03", p, "%s: %s has an empty field name", where, of)
+					}
+					if err := checkJSONValue(claim[sub]); err != nil {
+						r.add(Invalid, "EXE-03", p, "%s: %s: expected value for %s isn't a JSON value: %v", where, of, sub, err)
+					}
+				}
+			}
+		}
+	}
+	for _, k := range sortedKeys(ex.None) {
+		anyClaims, ok := ex.Any[k]
+		if !ok {
+			continue
+		}
+		for i, n := range ex.None[k].All() {
+			for j, a := range anyClaims.All() {
+				if claimWithin(n, a) {
+					r.add(Invalid, "EXE-03", p, "%s: none of %s%s forbids every element that any of %s%s requires, so the step can never pass", where, k, claimLabel(ex.None[k].Multi, i), k, claimLabel(anyClaims.Multi, j))
 				}
 			}
 		}
 	}
 	for _, k := range sortedKeys(ex.Counts) {
 		note("count", k)
-		cm := ex.Counts[k]
-		if cm.Where == nil {
-			r.add(Invalid, "EXE-03", p, "%s: count of %s needs where, the fields an element must have to be counted", where, k)
+		claims := ex.Counts[k]
+		if claims.Multi && len(claims.List) == 0 {
+			r.add(Invalid, "EXE-03", p, "%s: count of %s lists no claims", where, k)
 		}
-		for _, sub := range sortedKeys(cm.Where) {
-			if strings.TrimSpace(sub) == "" {
-				r.add(Invalid, "EXE-03", p, "%s: count of %s has an empty field name in where", where, k)
+		seen := map[string]int{}
+		for i, cm := range claims.All() {
+			of := "count of " + k + claimLabel(claims.Multi, i)
+			if j, dup := seen[canonicalJSON(cm.Where)]; dup && cm.Where != nil {
+				r.add(Invalid, "EXE-03", p, "%s: %s counts the same where as claim[%d]", where, of, j)
 			}
-			if err := checkJSONValue(cm.Where[sub]); err != nil {
-				r.add(Invalid, "EXE-03", p, "%s: count of %s: expected value for %s isn't a JSON value: %v", where, k, sub, err)
+			seen[canonicalJSON(cm.Where)] = i
+			if cm.Where == nil {
+				r.add(Invalid, "EXE-03", p, "%s: %s needs where, the fields an element must have to be counted", where, of)
 			}
+			for _, sub := range sortedKeys(cm.Where) {
+				if strings.TrimSpace(sub) == "" {
+					r.add(Invalid, "EXE-03", p, "%s: %s has an empty field name in where", where, of)
+				}
+				if err := checkJSONValue(cm.Where[sub]); err != nil {
+					r.add(Invalid, "EXE-03", p, "%s: %s: expected value for %s isn't a JSON value: %v", where, of, sub, err)
+				}
+			}
+			r.checkWhole(p, where, of+": is", cm.Is)
 		}
-		r.checkWhole(p, where, "count of "+k+": is", cm.Is)
 	}
 	for _, k := range sortedKeys(in) {
 		if !contains(in[k], "absent") {
@@ -445,16 +481,20 @@ func expectValues(ex *model.Expect) []any {
 	for _, k := range sortedKeys(ex.Unordered) {
 		out = append(out, ex.Unordered[k])
 	}
-	for _, m := range []map[string]map[string]any{ex.Any, ex.None} {
+	for _, m := range []map[string]model.Claims[map[string]any]{ex.Any, ex.None} {
 		for _, k := range sortedKeys(m) {
-			out = append(out, m[k])
+			for _, claim := range m[k].All() {
+				out = append(out, claim)
+			}
 		}
 	}
 	for _, k := range sortedKeys(ex.Contains) {
 		out = append(out, ex.Contains[k])
 	}
 	for _, k := range sortedKeys(ex.Counts) {
-		out = append(out, ex.Counts[k].Where, ex.Counts[k].Is)
+		for _, cm := range ex.Counts[k].All() {
+			out = append(out, cm.Where, cm.Is)
+		}
 	}
 	return out
 }
@@ -470,10 +510,12 @@ func assertedValues(ex *model.Expect) []any {
 	for _, k := range sortedKeys(ex.Unordered) {
 		out = append(out, ex.Unordered[k])
 	}
-	for _, m := range []map[string]map[string]any{ex.Any, ex.None} {
+	for _, m := range []map[string]model.Claims[map[string]any]{ex.Any, ex.None} {
 		for _, k := range sortedKeys(m) {
-			for _, sub := range sortedKeys(m[k]) {
-				out = append(out, m[k][sub])
+			for _, claim := range m[k].All() {
+				for _, sub := range sortedKeys(claim) {
+					out = append(out, claim[sub])
+				}
 			}
 		}
 	}
@@ -481,11 +523,38 @@ func assertedValues(ex *model.Expect) []any {
 		out = append(out, ex.Contains[k])
 	}
 	for _, k := range sortedKeys(ex.Counts) {
-		for _, sub := range sortedKeys(ex.Counts[k].Where) {
-			out = append(out, ex.Counts[k].Where[sub])
+		for _, cm := range ex.Counts[k].All() {
+			for _, sub := range sortedKeys(cm.Where) {
+				out = append(out, cm.Where[sub])
+			}
 		}
 	}
 	return out
+}
+
+func claimLabel(multi bool, i int) string {
+	if !multi {
+		return ""
+	}
+	return fmt.Sprintf(" claim[%d]", i)
+}
+
+func claimWithin(small, large map[string]any) bool {
+	for k, v := range small {
+		w, ok := large[k]
+		if !ok || canonicalJSON(v) != canonicalJSON(w) {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
 }
 
 var refPattern = regexp.MustCompile(`\$\{([^}]*)\}`)
