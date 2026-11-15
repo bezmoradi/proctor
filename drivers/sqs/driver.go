@@ -24,9 +24,10 @@ import (
 	"proctor/protocol/schema"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	Name          = "sqs"
-	Version       = "0.1.0"
 	OpSend        = "send"
 	OpPeek        = "peek"
 	OpDepth       = "depth"

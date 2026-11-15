@@ -17,6 +17,8 @@ import (
 	"proctor/simulators/ses"
 )
 
+var Version = "0.0.0-dev"
+
 type list []string
 
 func (l *list) String() string { return strings.Join(*l, ",") }
@@ -56,7 +58,7 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(shut)
 	}()
-	logger.Printf("listening on http://%s (verified identities: %s)", ln.Addr(), describe(identities))
+	logger.Printf("version %s listening on http://%s (verified identities: %s)", Version, ln.Addr(), describe(identities))
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

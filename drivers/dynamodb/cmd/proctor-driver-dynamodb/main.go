@@ -13,9 +13,10 @@ import (
 	"proctor/protocol"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	driverName     = "dynamodb"
-	driverVersion  = "0.1.0"
 	opGet          = "get"
 	opQuery        = "query"
 	opPut          = "put"
@@ -103,7 +104,7 @@ type driver struct {
 func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.HelloResult, error) {
 	return protocol.HelloResult{
 		Name:     driverName,
-		Version:  driverVersion,
+		Version:  Version,
 		Protocol: protocol.Version,
 		Operations: []protocol.Operation{
 			{Name: opGet, Kind: protocol.KindObserve, ArgsSchema: getArgs, FactSchema: getFact, Credential: protocol.CredentialNone},

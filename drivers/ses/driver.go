@@ -22,9 +22,10 @@ import (
 	"proctor/protocol/schema"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	Name         = "ses"
-	Version      = "0.1.0"
 	OpSent       = "sent"
 	SentPath     = "/__proctor/sent"
 	MaxResponse  = 15 << 20

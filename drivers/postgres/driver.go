@@ -17,9 +17,10 @@ import (
 	"proctor/protocol/schema"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	Name       = "postgres"
-	Version    = "0.1.0"
 	OpQuery    = "query"
 	dsnSuffix  = "_dsn"
 	proofShown = 50

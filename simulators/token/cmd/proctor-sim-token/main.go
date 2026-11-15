@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	exitOK      = 0
 	exitRuntime = 1
@@ -95,7 +97,7 @@ func run(args []string, stderr io.Writer) int {
 	if s.secret != nil {
 		secretMode = "required from " + *secretEnv
 	}
-	logger.Printf("simulated platform-service token check listening on %s, %d tokens loaded, internal secret %s", ln.Addr(), len(claims), secretMode)
+	logger.Printf("simulated platform-service token check version %s listening on %s, %d tokens loaded, internal secret %s", Version, ln.Addr(), len(claims), secretMode)
 
 	for {
 		select {

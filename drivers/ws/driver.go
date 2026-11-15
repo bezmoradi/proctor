@@ -13,9 +13,10 @@ import (
 	"proctor/protocol"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	Name       = "ws"
-	Version    = "0.1.0"
 	OpConnect  = "connect"
 	OpSend     = "send"
 	OpMessages = "messages"

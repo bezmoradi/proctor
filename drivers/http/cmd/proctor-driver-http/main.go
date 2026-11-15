@@ -13,9 +13,10 @@ import (
 	"proctor/protocol"
 )
 
+var Version = "0.0.0-dev"
+
 const (
 	driverName     = "http"
-	driverVersion  = "0.1.0"
 	opRequest      = "request"
 	maxBodyBytes   = 10 << 20
 	bodyTextBytes  = 64 << 10
@@ -84,7 +85,7 @@ type driver struct {
 func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.HelloResult, error) {
 	return protocol.HelloResult{
 		Name:     driverName,
-		Version:  driverVersion,
+		Version:  Version,
 		Protocol: protocol.Version,
 		Operations: []protocol.Operation{{
 			Name:       opRequest,
