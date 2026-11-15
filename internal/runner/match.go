@@ -26,6 +26,7 @@ type check struct {
 	perr   error
 	want   any
 	subs   []subCheck
+	n      int
 }
 
 func newCheck(kind, target string) check {
@@ -93,25 +94,62 @@ func (r *Runner) prepare(ex *model.Expect, vars expr.Vars) ([]check, error) {
 		}
 		for _, key := range sortedKeys(m) {
 			c := newCheck(kind, key)
-			want := map[string]any{}
-			for _, sk := range sortedKeys(m[key]) {
-				v, err := vars.Value(m[key][sk])
-				if err != nil {
-					return nil, fmt.Errorf("%s %s: %s: %v", kind, key, sk, err)
-				}
-				sp := sk
-				if !strings.HasPrefix(sp, "$") {
-					sp = "$." + sp
-				}
-				p, perr := expr.ParsePath(sp)
-				c.subs = append(c.subs, subCheck{key: sk, path: p, perr: perr, want: v})
-				want[sk] = v
+			want, err := whereChecks(&c, m[key], vars)
+			if err != nil {
+				return nil, fmt.Errorf("%s %s: %v", kind, key, err)
 			}
 			c.want = want
 			out = append(out, c)
 		}
 	}
+	for _, key := range sortedKeys(ex.Contains) {
+		text, isText := ex.Contains[key].(string)
+		if !isText {
+			return nil, fmt.Errorf("contains %s: the expected text must be text", key)
+		}
+		want, err := vars.Text(text, nil)
+		if err != nil {
+			return nil, fmt.Errorf("contains %s: %v", key, err)
+		}
+		c := newCheck("contains", key)
+		c.want = want
+		out = append(out, c)
+	}
+	for _, key := range sortedKeys(ex.Counts) {
+		cm := ex.Counts[key]
+		c := newCheck("count", key)
+		where, err := whereChecks(&c, cm.Where, vars)
+		if err != nil {
+			return nil, fmt.Errorf("count %s: %v", key, err)
+		}
+		if c.n, err = lengthValue(cm.Is, vars); err != nil {
+			return nil, fmt.Errorf("count %s: is: %v", key, err)
+		}
+		c.want = map[string]any{"where": where, "is": c.n}
+		out = append(out, c)
+	}
 	return out, nil
+}
+
+func whereChecks(c *check, m map[string]any, vars expr.Vars) (map[string]any, error) {
+	want := map[string]any{}
+	for _, sk := range sortedKeys(m) {
+		v, err := vars.Value(m[sk])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", sk, err)
+		}
+		p, perr := expr.ParsePath(subPath(sk))
+		c.subs = append(c.subs, subCheck{key: sk, path: p, perr: perr, want: v})
+		want[sk] = v
+	}
+	return want, nil
+}
+
+func subPath(sk string) string {
+	if strings.HasPrefix(sk, "$") {
+		return sk
+	}
+	return "$." + sk
 }
 
 func anyList(l []any) any {
@@ -276,6 +314,56 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 				fail("values differ (order ignored)")
 			}
 		}
+	case "contains":
+		want := c.want.(string)
+		a.Expected = want
+		text, isText := got.(string)
+		switch {
+		case !ok:
+			fail(notPresent)
+		case !isText:
+			a.Present, a.Actual = true, got
+			fail("not text")
+		default:
+			a.Present, a.Actual = true, text
+			if !strings.Contains(text, want) {
+				fail("doesn't contain the expected text")
+			}
+		}
+	case "count":
+		a.Expected = c.want
+		for _, s := range c.subs {
+			if s.perr != nil {
+				fail(fmt.Sprintf("%s: %v", s.key, s.perr))
+				return r.redactAssertion(a, c, elem, red)
+			}
+		}
+		list, isList := got.([]any)
+		switch {
+		case !ok:
+			fail(notPresent)
+		case !isList:
+			a.Present, a.Actual = true, got
+			fail("not a list")
+		default:
+			a.Present = true
+			var at []string
+			for i, el := range list {
+				if matchesAll(c.subs, el) {
+					at = append(at, fmt.Sprintf("[%d]", i))
+				}
+			}
+			a.Actual = len(at)
+			matched := fmt.Sprintf("none of the %d elements has these values", len(list))
+			if len(at) > 0 {
+				matched = fmt.Sprintf("%d of the %d elements have these values: %s", len(at), len(list), strings.Join(at, ", "))
+			}
+			if len(at) == c.n {
+				a.Message = matched
+			} else {
+				fail(fmt.Sprintf("%s; expected %d", matched, c.n))
+			}
+		}
 	case "any", "none":
 		a.Expected = c.want
 		for _, s := range c.subs {
@@ -349,25 +437,38 @@ func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string
 			return a
 		}
 		if want, ok := a.Expected.(map[string]any); ok {
-			out := map[string]any{}
-			for k, v := range want {
-				sp := k
-				if !strings.HasPrefix(sp, "$") {
-					sp = "$." + sp
-				}
-				out[k] = r.redactValue(c.target+"[0]"+strings.TrimPrefix(sp, "$"), v, red)
-			}
-			a.Expected = out
+			a.Expected = r.redactWhere(c.target, want, red)
 		}
 		if _, isList := a.Actual.([]any); isList {
 			elem = c.target
 		}
 		a.Actual = r.redactValue(elem, a.Actual, red)
 		return a
+	case "count":
+		want, isCount := a.Expected.(map[string]any)
+		switch {
+		case r.listedPath(c.target, red):
+			a.Expected = redacted
+		case isCount:
+			where, _ := want["where"].(map[string]any)
+			a.Expected = map[string]any{"where": r.redactWhere(c.target, where, red), "is": want["is"]}
+		}
+		if _, isCount := a.Actual.(int); !isCount {
+			a.Actual = r.redactValue(c.target, a.Actual, red)
+		}
+		return a
 	}
 	a.Expected = r.redactValue(c.target, a.Expected, red)
 	a.Actual = r.redactValue(c.target, a.Actual, red)
 	return a
+}
+
+func (r *Runner) redactWhere(target string, want map[string]any, red []string) map[string]any {
+	out := map[string]any{}
+	for k, v := range want {
+		out[k] = r.redactValue(target+"[0]"+strings.TrimPrefix(subPath(k), "$"), v, red)
+	}
+	return out
 }
 
 func (r *Runner) redactValue(path string, v any, red []string) any {

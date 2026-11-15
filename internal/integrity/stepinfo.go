@@ -31,6 +31,7 @@ func (r *Report) ApplyStepInfo(info map[model.StepRef]model.StepInfo) {
 	if c == nil {
 		return
 	}
+	checked := map[model.StepRef]bool{}
 	for _, sf := range r.Specs {
 		tables := map[string][]described{}
 		var order []string
@@ -39,6 +40,7 @@ func (r *Report) ApplyStepInfo(info map[model.StepRef]model.StepInfo) {
 			ds := r.describe(sf.Path, sc, info, c)
 			where := scenarioWhere(sc)
 			r.checkStateChecks(sf.Path, where, ds, c)
+			markCheckedSetup(ds, c, checked)
 			if sc.Case == nil {
 				r.checkRunScoped(sf.Path, where, ds)
 				continue
@@ -67,6 +69,23 @@ func (r *Report) ApplyStepInfo(info map[model.StepRef]model.StepInfo) {
 				}
 			}
 			r.Findings = kept
+		}
+	}
+	r.checkSetupExercised(checked)
+}
+
+func markCheckedSetup(ds []described, c *model.Config, checked map[model.StepRef]bool) {
+	for i, d := range ds {
+		if !d.at.setup || !d.acts() || d.info.Destructive {
+			continue
+		}
+		driver, _, _ := model.SplitDo(d.at.step.Do)
+		for _, later := range ds[i+1:] {
+			laterDriver, _, _ := model.SplitDo(later.at.step.Do)
+			if !later.at.setup && laterDriver == driver && later.checksState(c) {
+				checked[d.at.ref] = true
+				break
+			}
 		}
 	}
 }
@@ -298,6 +317,13 @@ func asserts(st *model.Step, v string) bool {
 	for _, x := range assertedValues(st.Expect) {
 		for _, s := range stringLeaves(x) {
 			if s == v {
+				return true
+			}
+		}
+	}
+	if st.Expect != nil {
+		for _, x := range st.Expect.Contains {
+			if s, isText := x.(string); isText && s != "" && strings.Contains(v, s) {
 				return true
 			}
 		}

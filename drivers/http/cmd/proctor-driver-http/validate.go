@@ -21,10 +21,12 @@ type expectation struct {
 	Unordered map[string][]any          `json:"unordered"`
 	Any       map[string]map[string]any `json:"any"`
 	None      map[string]map[string]any `json:"none"`
+	Contains  map[string]any            `json:"contains"`
+	Count     map[string]any            `json:"count"`
 }
 
 func (e expectation) count() int {
-	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None)
+	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None) + len(e.Contains) + len(e.Count)
 }
 
 func (e expectation) paths() []string {
@@ -37,6 +39,8 @@ func (e expectation) paths() []string {
 	out = append(out, sortedKeys(e.Unordered)...)
 	out = append(out, sortedKeys(e.Any)...)
 	out = append(out, sortedKeys(e.None)...)
+	out = append(out, sortedKeys(e.Contains)...)
+	out = append(out, sortedKeys(e.Count)...)
 	return out
 }
 
@@ -107,7 +111,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 			ex = expectation{}
 		}
 	}
-	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None})
+	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None, ex.Contains, ex.Count})
 	v.checkStatus(ex, p)
 	if method == "HEAD" {
 		v.checkHead(ex, p.Save)
@@ -317,6 +321,7 @@ func (v *validation) checkConflicts(ex expectation) {
 	equal := byHeader(sortedKeys(ex.Equal))
 	present := byHeader(ex.Present)
 	absent := byHeader(ex.Absent)
+	contained := byHeader(sortedKeys(ex.Contains))
 	for _, k := range ex.Absent {
 		key, isHeader := headerKey(k)
 		if !isHeader {
@@ -324,7 +329,7 @@ func (v *validation) checkConflicts(ex expectation) {
 		}
 		name, _, _ := headerPath(k)
 		switch {
-		case elsewhere(equal[key], k):
+		case elsewhere(equal[key], k), elsewhere(contained[key], k):
 			v.add("HTTP-08", "$.expect.absent", "header %s is both expected and absent", name)
 		case elsewhere(present[key], k):
 			v.add("HTTP-08", "$.expect.absent", "%s is asserted by both present and absent", k)

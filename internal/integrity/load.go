@@ -113,7 +113,6 @@ func Load(src Source, configPath string) *Report {
 		r.Specs = append(r.Specs, sf)
 		r.validateSpec(sf, &cfg, seenScenario)
 	}
-	r.checkSetupExercised()
 	return r
 }
 

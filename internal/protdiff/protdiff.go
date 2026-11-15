@@ -548,6 +548,12 @@ func assertionsOf(ex *model.Expect) []assertion {
 	for p, v := range ex.None {
 		out = append(out, assertion{"none", p, v, true})
 	}
+	for p, v := range ex.Contains {
+		out = append(out, assertion{"contains", p, v, true})
+	}
+	for p, v := range ex.Counts {
+		out = append(out, assertion{"count", p, v, true})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].label() < out[j].label() })
 	return out
 }
@@ -816,6 +822,14 @@ func (d *stepDiff) compareValues(b, h assertion, weaker func(assertion, string, 
 			return
 		}
 		d.change(b.label(), canonical(bm), canonical(hm))
+	case "contains":
+		bt, bok := b.value.(string)
+		ht, hok := h.value.(string)
+		if bok && hok && bt != ht && strings.Contains(bt, ht) {
+			weaker(b, "%s now looks for less of the text: %s became %s", b.label(), canonical(bt), canonical(ht))
+			return
+		}
+		d.change(b.label(), b.shown(), h.shown())
 	default:
 		d.change(b.label(), b.shown(), h.shown())
 	}

@@ -109,13 +109,20 @@ type Expect struct {
 	Unordered map[string][]any          `yaml:"unordered" json:"unordered,omitempty"`
 	Any       map[string]map[string]any `yaml:"any" json:"any,omitempty"`
 	None      map[string]map[string]any `yaml:"none" json:"none,omitempty"`
+	Contains  map[string]any            `yaml:"contains" json:"contains,omitempty"`
+	Counts    map[string]CountMatch     `yaml:"count" json:"count,omitempty"`
+}
+
+type CountMatch struct {
+	Where map[string]any `yaml:"where" json:"where"`
+	Is    any            `yaml:"is" json:"is"`
 }
 
 func (e *Expect) Count() int {
 	if e == nil {
 		return 0
 	}
-	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None)
+	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None) + len(e.Contains) + len(e.Counts)
 }
 
 type StepRef struct {

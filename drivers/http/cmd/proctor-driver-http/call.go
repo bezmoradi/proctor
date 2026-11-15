@@ -19,7 +19,10 @@ import (
 	"proctor/protocol"
 )
 
-const hidden = "[hidden]"
+const (
+	hidden   = "[hidden]"
+	redacted = "[redacted]"
+)
 
 type requestArgs struct {
 	Method   string         `json:"method"`
@@ -298,9 +301,55 @@ func responseExcerpt(resp *http.Response, body []byte) string {
 	}
 	if len(body) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(excerpt(body))
+		sb.WriteString(excerpt(redactedBody(body)))
 	}
 	return sb.String()
+}
+
+func redactedBody(body []byte) []byte {
+	v, reason, _ := parseJSON(body)
+	if reason != "" {
+		return body
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(redactSecrets(v, false)); err != nil {
+		return body
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+}
+
+func redactSecrets(v any, secret bool) any {
+	switch x := v.(type) {
+	case string:
+		if secret {
+			return redacted
+		}
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = redactSecrets(e, secret || secretName(k))
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = redactSecrets(e, secret)
+		}
+		return out
+	}
+	return v
+}
+
+func secretName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, w := range []string{"password", "secret", "token", "api_key"} {
+		if strings.Contains(lower, w) {
+			return true
+		}
+	}
+	return false
 }
 
 func excerpt(b []byte) string {

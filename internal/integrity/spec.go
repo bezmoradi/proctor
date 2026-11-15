@@ -331,6 +331,12 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 			r.add(Invalid, "EXE-03", p, "%s: equal: expected value for %s isn't a JSON value: %v", where, k, err)
 		}
 	}
+	for _, k := range sortedKeys(ex.Contains) {
+		note("contains", k)
+		if _, isText := ex.Contains[k].(string); !isText {
+			r.add(Invalid, "EXE-03", p, "%s: contains: the expected text for %s must be text", where, k)
+		}
+	}
 	for _, list := range []struct {
 		name  string
 		paths []string
@@ -340,6 +346,8 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 				r.add(Invalid, "EXE-03", p, "%s: %s lists %s twice", where, list.name, k)
 			} else if list.name == "present" && contains(in[k], "equal") {
 				r.add(Invalid, "EXE-03", p, "%s: %s is asserted by both equal and present", where, k)
+			} else if list.name == "present" && contains(in[k], "contains") {
+				r.add(Invalid, "EXE-03", p, "%s: %s is asserted by both contains and present", where, k)
 			}
 			note(list.name, k)
 		}
@@ -356,18 +364,7 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 	}
 	for _, k := range sortedKeys(ex.Length) {
 		note("length", k)
-		switch v := ex.Length[k].(type) {
-		case int:
-			if v < 0 {
-				r.add(Invalid, "EXE-03", p, "%s: length of %s can't be negative", where, k)
-			}
-		case string:
-			if names, err := references(v); err != nil || len(names) != 1 || v != "${"+names[0]+"}" {
-				r.add(Invalid, "EXE-03", p, "%s: length of %s must be an integer or one ${name} reference", where, k)
-			}
-		default:
-			r.add(Invalid, "EXE-03", p, "%s: length of %s must be an integer or one ${name} reference", where, k)
-		}
+		r.checkWhole(p, where, "length of "+k, ex.Length[k])
 	}
 	for _, k := range sortedKeys(ex.Unordered) {
 		note("unordered", k)
@@ -391,6 +388,22 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 			}
 		}
 	}
+	for _, k := range sortedKeys(ex.Counts) {
+		note("count", k)
+		cm := ex.Counts[k]
+		if cm.Where == nil {
+			r.add(Invalid, "EXE-03", p, "%s: count of %s needs where, the fields an element must have to be counted", where, k)
+		}
+		for _, sub := range sortedKeys(cm.Where) {
+			if strings.TrimSpace(sub) == "" {
+				r.add(Invalid, "EXE-03", p, "%s: count of %s has an empty field name in where", where, k)
+			}
+			if err := checkJSONValue(cm.Where[sub]); err != nil {
+				r.add(Invalid, "EXE-03", p, "%s: count of %s: expected value for %s isn't a JSON value: %v", where, k, sub, err)
+			}
+		}
+		r.checkWhole(p, where, "count of "+k+": is", cm.Is)
+	}
 	for _, k := range sortedKeys(in) {
 		if !contains(in[k], "absent") {
 			continue
@@ -400,6 +413,21 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 				r.add(Invalid, "EXE-03", p, "%s: %s is both absent and in %s", where, k, other)
 			}
 		}
+	}
+}
+
+func (r *Report) checkWhole(p, where, what string, v any) {
+	switch n := v.(type) {
+	case int:
+		if n < 0 {
+			r.add(Invalid, "EXE-03", p, "%s: %s can't be negative", where, what)
+		}
+	case string:
+		if names, err := references(n); err != nil || len(names) != 1 || n != "${"+names[0]+"}" {
+			r.add(Invalid, "EXE-03", p, "%s: %s must be an integer or one ${name} reference", where, what)
+		}
+	default:
+		r.add(Invalid, "EXE-03", p, "%s: %s must be an integer or one ${name} reference", where, what)
 	}
 }
 
@@ -422,6 +450,12 @@ func expectValues(ex *model.Expect) []any {
 			out = append(out, m[k])
 		}
 	}
+	for _, k := range sortedKeys(ex.Contains) {
+		out = append(out, ex.Contains[k])
+	}
+	for _, k := range sortedKeys(ex.Counts) {
+		out = append(out, ex.Counts[k].Where, ex.Counts[k].Is)
+	}
 	return out
 }
 
@@ -441,6 +475,14 @@ func assertedValues(ex *model.Expect) []any {
 			for _, sub := range sortedKeys(m[k]) {
 				out = append(out, m[k][sub])
 			}
+		}
+	}
+	for _, k := range sortedKeys(ex.Contains) {
+		out = append(out, ex.Contains[k])
+	}
+	for _, k := range sortedKeys(ex.Counts) {
+		for _, sub := range sortedKeys(ex.Counts[k].Where) {
+			out = append(out, ex.Counts[k].Where[sub])
 		}
 	}
 	return out
@@ -534,7 +576,7 @@ func identityRef(name string) (ident, value string, ok bool) {
 	return name[:i], name[i+1:], true
 }
 
-func (r *Report) checkSetupExercised() {
+func (r *Report) checkSetupExercised(checked map[model.StepRef]bool) {
 	type use struct{ spec, scenario, step, desc string }
 	verified := map[string]bool{}
 	setup := map[string]use{}
@@ -548,7 +590,7 @@ func (r *Report) checkSetupExercised() {
 			}
 			for i := range sc.Setup {
 				key, desc, ok := operation(&sc.Setup[i])
-				if !ok {
+				if !ok || checked[model.StepRef{Spec: sf.Path, Scenario: sc.ID, Phase: phaseSetup, Index: i}] {
 					continue
 				}
 				if _, seen := setup[key]; !seen {
@@ -565,7 +607,7 @@ func (r *Report) checkSetupExercised() {
 	for _, key := range order {
 		if !verified[key] {
 			u := setup[key]
-			r.add(Invalid, "FIX-08", u.spec, "%s setup step %s uses %s, but no verification step in the set exercises that operation with that outcome; a defect in it would be reported only as a setup ERROR",
+			r.add(Invalid, "FIX-08", u.spec, "%s setup step %s uses %s, but no verification step in the set exercises that operation with that outcome, and it isn't a non-destructive act followed in its scenario by a verification step that checks state on the same driver; a defect in it would be reported only as a setup ERROR",
 				u.scenario, u.step, u.desc)
 		}
 	}
