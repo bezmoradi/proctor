@@ -205,7 +205,7 @@ func (r *Report) checkRunScoped(p, where string, ds []described) {
 		}
 		var msgs []string
 		if d.acts() {
-			for _, v := range stringLeaves(st.With) {
+			for _, v := range dataLeaves(st.With, d.info.Data) {
 				if v == "" || strings.Contains(v, "${"+expr.RunID+"}") || refersToSaved(v) {
 					continue
 				}
@@ -246,6 +246,23 @@ func (r *Report) checkRunScoped(p, where string, ds []described) {
 				where, st.ID, st.Do)
 		}
 	}
+}
+
+func dataLeaves(with any, data []string) []string {
+	if len(data) == 0 {
+		return stringLeaves(with)
+	}
+	var out []string
+	for _, p := range data {
+		path, err := expr.ParsePath(p)
+		if err != nil {
+			return stringLeaves(with)
+		}
+		if v, ok := path.Select(with); ok {
+			out = append(out, stringLeaves(v)...)
+		}
+	}
+	return out
 }
 
 func refersToSaved(v string) bool {

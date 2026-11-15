@@ -338,6 +338,11 @@ func checkHello(h *host) []string {
 				msgs = append(msgs, fmt.Sprintf("%s: redact: %v", where, err))
 			}
 		}
+		for _, p := range op.Data {
+			if _, err := expr.ParsePath(p); err != nil {
+				msgs = append(msgs, fmt.Sprintf("%s: data: %v", where, err))
+			}
+		}
 		h.ops[op.Name] = op
 	}
 	sort.Strings(msgs)
@@ -489,6 +494,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 		info.Kind = op.Kind
 	}
 	info.Destructive, info.FixedTarget = res.Destructive, res.FixedTarget
+	info.Data = append([]string(nil), op.Data...)
 	if res.StateCheck != nil {
 		info.StateCheck = *res.StateCheck
 	}

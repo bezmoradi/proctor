@@ -150,6 +150,7 @@ type Operation struct {
 	Credential  string            `json:"credential"`
 	Escape      map[string]string `json:"escape,omitempty"`
 	Redact      []string          `json:"redact,omitempty"`
+	Data        []string          `json:"data,omitempty"`
 }
 
 type Secrets map[string]string

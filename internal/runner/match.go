@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"proctor/internal/expr"
 	"proctor/internal/model"
@@ -154,18 +153,6 @@ func lengthValue(v any, vars expr.Vars) (int, error) {
 	return 0, bad
 }
 
-func lengthOf(v any) (int, bool) {
-	switch x := v.(type) {
-	case []any:
-		return len(x), true
-	case map[string]any:
-		return len(x), true
-	case string:
-		return utf8.RuneCountInString(x), true
-	}
-	return 0, false
-}
-
 func sameMultiset(want, got []any) bool {
 	if len(want) != len(got) {
 		return false
@@ -260,17 +247,17 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 	case "length":
 		want := c.want.(int)
 		a.Expected = want
-		n, isLen := lengthOf(got)
+		list, isList := got.([]any)
 		switch {
 		case !ok:
 			fail(notPresent)
-		case !isLen:
+		case !isList:
 			a.Present, a.Actual = true, got
-			fail("not a list, an object or text")
+			fail("not a list")
 		default:
-			a.Present, a.Actual = true, n
-			if n != want {
-				fail(fmt.Sprintf("expected length %d, got %d", want, n))
+			a.Present, a.Actual = true, len(list)
+			if len(list) != want {
+				fail(fmt.Sprintf("expected length %d, got %d", want, len(list)))
 			}
 		}
 	case "unordered":

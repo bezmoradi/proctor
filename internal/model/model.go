@@ -121,6 +121,7 @@ type StepInfo struct {
 	Destructive, FixedTarget bool
 	StateCheck               bool
 	Refs                     []string
+	Data                     []string
 	Problems                 []Problem
 }
 
