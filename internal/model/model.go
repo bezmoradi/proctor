@@ -76,6 +76,7 @@ type Spec struct {
 	Version   int        `yaml:"version"`
 	Suite     string     `yaml:"suite"`
 	Scenarios []Scenario `yaml:"scenarios"`
+	Tables    []Table    `yaml:"tables"`
 }
 
 type Scenario struct {
@@ -84,6 +85,8 @@ type Scenario struct {
 	RequirementIsOperational bool   `yaml:"requirement_is_operational"`
 	Setup                    []Step `yaml:"setup"`
 	Steps                    []Step `yaml:"steps"`
+
+	Case *TableCase `yaml:"-"`
 }
 
 type Step struct {

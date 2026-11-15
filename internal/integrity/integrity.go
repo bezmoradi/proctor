@@ -217,6 +217,9 @@ func Load(src Source, configPath string) *Report {
 			r.add(Invalid, "INT-15", full, "%v", err)
 			continue
 		}
+		for _, pr := range spec.ExpandTables(strictyaml.Decode) {
+			r.add(Invalid, pr.Rule, full, "%s", pr.Msg)
+		}
 		r.Parsed[full] = &spec
 		r.validateSpec(full, &spec, &cfg, seenScenario)
 	}
@@ -331,21 +334,37 @@ func (r *Report) validateSpec(p string, s *model.Spec, c *model.Config, seen map
 	if s.Version != 1 {
 		r.add(Invalid, "INT-15", p, "version must be 1, got %d", s.Version)
 	}
-	if len(s.Scenarios) == 0 {
+	if len(s.Scenarios) == 0 && len(s.Tables) == 0 {
 		r.add(Violation, "INT-04", p, "the specification defines no scenarios")
 	}
+	tableCases := map[string][]model.Scenario{}
+	var tableOrder []string
 	for i, sc := range s.Scenarios {
 		where := fmt.Sprintf("scenarios[%d]", i)
+		if sc.Case != nil {
+			where = fmt.Sprintf("table %s case", sc.Case.Table)
+			if len(tableCases[sc.Case.Table]) == 0 {
+				tableOrder = append(tableOrder, sc.Case.Table)
+			}
+			tableCases[sc.Case.Table] = append(tableCases[sc.Case.Table], sc)
+		}
 		if !idPattern.MatchString(sc.ID) {
 			r.add(Invalid, "INT-02", p, "%s: invalid id %q", where, sc.ID)
 		} else if other, dup := seen[sc.ID]; dup {
-			r.add(Invalid, "INT-02", p, "%s: scenario id %q is also used in %s", where, sc.ID, other)
+			kind := "scenario"
+			if sc.Case != nil {
+				kind = "case"
+			}
+			r.add(Invalid, "INT-02", p, "%s: %s id %q is also used in %s", where, kind, sc.ID, other)
 		} else {
 			seen[sc.ID] = p
 			r.ScenarioIDs = append(r.ScenarioIDs, sc.ID)
 		}
 		where = fmt.Sprintf("scenario %s", sc.ID)
-		if strings.TrimSpace(sc.Name) == "" {
+		if sc.Case != nil {
+			where = fmt.Sprintf("table %s case %s", sc.Case.Table, sc.ID)
+		}
+		if strings.TrimSpace(sc.Name) == "" && sc.Case == nil {
 			r.add(Invalid, "EXE-01", p, "%s: name is required", where)
 		}
 		if len(sc.Steps) == 0 {
@@ -353,14 +372,42 @@ func (r *Report) validateSpec(p string, s *model.Spec, c *model.Config, seen map
 		}
 		stepIDs := map[string]bool{}
 		saved := map[string]bool{expr.RunID: true}
+		mark := len(r.Findings)
 		for j, st := range sc.Setup {
-			r.validateStep(p, fmt.Sprintf("%s setup[%d]", where, j), st, true, c, stepIDs, saved)
+			label := fmt.Sprintf("%s setup[%d]", where, j)
+			if sc.Case != nil {
+				label = fmt.Sprintf("table %s setup[%d]", sc.Case.Group, j)
+			}
+			r.validateStep(p, label, st, true, c, stepIDs, saved)
+		}
+		if sc.Case != nil && !sc.Case.First {
+			r.Findings = r.Findings[:mark]
 		}
 		for j, st := range sc.Steps {
 			r.validateStep(p, fmt.Sprintf("%s steps[%d]", where, j), st, false, c, stepIDs, saved)
 		}
 		r.checkStateChecks(p, where, sc)
-		r.checkRunScoped(p, where, sc)
+		if sc.Case == nil {
+			r.checkRunScoped(p, where, sc)
+		}
+	}
+	for _, id := range tableOrder {
+		cases := tableCases[id]
+		whole := model.Scenario{ID: id, Setup: cases[0].Setup}
+		for _, sc := range cases {
+			whole.Steps = append(whole.Steps, sc.Steps...)
+		}
+		mark := len(r.Findings)
+		r.checkRunScoped(p, "table "+id, whole)
+		seen := map[Finding]bool{}
+		kept := r.Findings[:mark]
+		for _, f := range r.Findings[mark:] {
+			if !seen[f] {
+				seen[f] = true
+				kept = append(kept, f)
+			}
+		}
+		r.Findings = kept
 	}
 }
 
@@ -532,7 +579,11 @@ func (r *Report) checkSetupExercised() {
 				if st.Request != nil && st.Expect != nil && st.Expect.Status != nil {
 					o := op{st.Request.Method, template(st.Request.Path), *st.Expect.Status}
 					if _, ok := setup[o]; !ok {
-						setup[o] = use{p, sc.ID, st.ID}
+						owner := "scenario " + sc.ID
+						if sc.Case != nil {
+							owner = "table " + sc.Case.Group
+						}
+						setup[o] = use{p, owner, st.ID}
 						order = append(order, o)
 					}
 				}
@@ -542,7 +593,7 @@ func (r *Report) checkSetupExercised() {
 	for _, o := range order {
 		if !verified[o] {
 			u := setup[o]
-			r.add(Invalid, "FIX-08", u.spec, "scenario %s setup step %s uses %s %s expecting %d, but no verification step in the set exercises that operation with that status; a defect in it would be reported only as a setup ERROR",
+			r.add(Invalid, "FIX-08", u.spec, "%s setup step %s uses %s %s expecting %d, but no verification step in the set exercises that operation with that status; a defect in it would be reported only as a setup ERROR",
 				u.scenario, u.step, o.method, o.path, o.status)
 		}
 	}

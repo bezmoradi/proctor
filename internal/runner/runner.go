@@ -90,10 +90,28 @@ type ScenarioResult struct {
 	ID     string       `json:"id"`
 	Name   string       `json:"name"`
 	Spec   string       `json:"specification"`
+	Table  string       `json:"table,omitempty"`
 	Result Result       `json:"result"`
 	Reason string       `json:"reason,omitempty"`
 	Cause  string       `json:"cause,omitempty"`
 	Steps  []StepResult `json:"steps"`
+}
+
+type TableRow struct {
+	Case   string   `json:"case"`
+	Cells  []string `json:"cells"`
+	Result Result   `json:"result"`
+}
+
+type TableResult struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Spec      string     `json:"specification"`
+	SetupFrom string     `json:"setup_from,omitempty"`
+	Columns   []string   `json:"columns"`
+	Rows      []TableRow `json:"rows"`
+	Result    Result     `json:"result"`
+	Reason    string     `json:"reason,omitempty"`
 }
 
 type Summary struct {
@@ -111,6 +129,7 @@ type Outcome struct {
 	Readiness  string           `json:"readiness,omitempty"`
 	Violations []string         `json:"violations,omitempty"`
 	Scenarios  []ScenarioResult `json:"scenarios"`
+	Tables     []TableResult    `json:"tables,omitempty"`
 	Summary    Summary          `json:"summary"`
 	ExitCode   int              `json:"exit_code"`
 	Result     string           `json:"result"`
@@ -386,6 +405,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			out.Violations = v
 		}
 	}
+	groups := map[string]*tableGroup{}
 	for _, p := range r.report.Specs {
 		spec := r.report.Parsed[p]
 		if spec == nil {
@@ -398,8 +418,18 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				res = notRunScenario(p, sc, stopAll)
 			case ctx.Err() != nil:
 				res = notRunScenario(p, sc, ReasonAborted)
+			case sc.Case != nil:
+				key := p + "\x00" + sc.Case.Group
+				if groups[key] == nil {
+					groups[key] = &tableGroup{}
+				}
+				res = r.tableCase(ctx, p, sc, out.RunID, groups[key])
 			default:
 				res = r.scenario(ctx, p, sc, out.RunID)
+			}
+			if sc.Case != nil {
+				res.Table = sc.Case.Table
+				out.addTableRow(p, sc, res)
 			}
 			out.Scenarios = append(out.Scenarios, res)
 		}
@@ -497,6 +527,101 @@ func usedSecrets(rep *integrity.Report) []string {
 		}
 	}
 	return sortedKeys(seen)
+}
+
+type tableGroup struct {
+	ran   bool
+	ok    bool
+	cause string
+	vars  expr.Vars
+}
+
+func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup) ScenarioResult {
+	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
+	if !g.ran {
+		g.ran, g.ok = true, true
+		g.vars = expr.Vars{expr.RunID: runID + "-" + sc.Case.Group}
+		for k, v := range r.secrets {
+			g.vars[k] = v
+		}
+		for _, st := range sc.Setup {
+			if !g.ok {
+				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "setup", Result: NotRun, Reason: ReasonSetupFailed})
+				continue
+			}
+			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: "setup"}, g.vars)
+			if sr.Result != Pass {
+				sr.Result, sr.Reason = Error, ReasonSetupFailed
+				g.ok, g.cause = false, sr.Cause
+			}
+			res.Steps = append(res.Steps, sr)
+		}
+	}
+	if !g.ok {
+		res.Result, res.Reason, res.Cause = NotRun, ReasonSetupFailed, g.cause
+		for _, st := range sc.Steps {
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: ReasonSetupFailed})
+		}
+		return res
+	}
+	vars := expr.Vars{}
+	for k, v := range g.vars {
+		vars[k] = v
+	}
+	stop := ""
+	for _, st := range sc.Steps {
+		if stop != "" {
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: stop})
+			continue
+		}
+		if ctx.Err() != nil {
+			stop = ReasonAborted
+			res.Result, res.Reason = Error, ReasonAborted
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: stop})
+			continue
+		}
+		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: "verification"}, vars)
+		switch sr.Result {
+		case Fail:
+			res.Result, stop = Fail, ReasonEarlierStepFailed
+		case Error:
+			res.Result, res.Cause, stop = Error, sr.Cause, ReasonEarlierStepErrored
+		}
+		res.Steps = append(res.Steps, sr)
+	}
+	return res
+}
+
+func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars) StepResult {
+	if st.Verify != nil {
+		return r.pgStep(ctx, st, sr, vars)
+	}
+	return r.httpStep(ctx, st, sr, vars)
+}
+
+var tableRank = map[Result]int{Pass: 0, NotRun: 1, Error: 2, Fail: 3}
+
+func (o *Outcome) addTableRow(p string, sc model.Scenario, res ScenarioResult) {
+	var t *TableResult
+	for i := range o.Tables {
+		if o.Tables[i].ID == sc.Case.Table && o.Tables[i].Spec == p {
+			t = &o.Tables[i]
+		}
+	}
+	if t == nil {
+		o.Tables = append(o.Tables, TableResult{ID: sc.Case.Table, Name: sc.Name, Spec: p, SetupFrom: sc.Case.SetupFrom,
+			Columns: sc.Case.Columns, Result: Pass})
+		t = &o.Tables[len(o.Tables)-1]
+	}
+	t.Rows = append(t.Rows, TableRow{Case: sc.ID, Cells: sc.Case.Cells, Result: res.Result})
+	result := res.Result
+	if res.Reason == ReasonSetupFailed {
+		result = Error
+		t.Reason = ReasonSetupFailed
+	}
+	if tableRank[result] > tableRank[t.Result] {
+		t.Result = result
+	}
 }
 
 func (o *Outcome) finish() {

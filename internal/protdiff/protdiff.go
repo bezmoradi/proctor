@@ -165,6 +165,9 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	for _, c := range res.Scenarios {
 		b, h := bs[c.ID].typed, hs[c.ID].typed
 		switch {
+		case c.Change == "removed" && b != nil && b.Case != nil:
+			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "table_row_removed",
+				Detail: "row " + c.ID + " of table " + b.Case.Table + " and its assertions were removed", AssertionsLost: scenarioAssertions(b)})
 		case c.Change == "removed" && b != nil:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "scenario_removed",
 				Detail: "the scenario and all its assertions were removed", AssertionsLost: scenarioAssertions(b)})
@@ -208,7 +211,7 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 		seq := mappingValue(doc, "scenarios")
 		if seq == nil || seq.Kind != yaml.SequenceNode {
-			continue
+			seq = &yaml.Node{}
 		}
 		for _, sc := range seq.Content {
 			idNode := mappingValue(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{sc}}, "id")
@@ -224,7 +227,16 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 		var spec model.Spec
 		if strictyaml.Decode(data, &spec) == nil {
+			if len(spec.ExpandTables(strictyaml.Decode)) > 0 {
+				unparsed = append(unparsed, p)
+			}
 			for i := range spec.Scenarios {
+				if c := spec.Scenarios[i].Case; c != nil {
+					if _, dup := out[spec.Scenarios[i].ID]; !dup {
+						out[spec.Scenarios[i].ID] = scenarioVersion{file: p, canon: c.Canon, typed: &spec.Scenarios[i]}
+					}
+					continue
+				}
 				if v, ok := out[spec.Scenarios[i].ID]; ok && v.file == p {
 					v.typed = &spec.Scenarios[i]
 					out[spec.Scenarios[i].ID] = v

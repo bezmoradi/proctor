@@ -47,6 +47,7 @@ type authReport struct {
 	Readiness        string                  `json:"readiness,omitempty"`
 	Summary          *runner.Summary         `json:"summary,omitempty"`
 	Scenarios        []runner.ScenarioResult `json:"scenarios"`
+	Tables           []runner.TableResult    `json:"tables,omitempty"`
 }
 
 type authTrust struct {
@@ -276,7 +277,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 			out = rn.Run(ctx)
 			code = out.ExitCode
 			ar.Violations = append(ar.Violations, out.Violations...)
-			ar.Target, ar.Readiness, ar.Scenarios, ar.Summary = out.Target, out.Readiness, out.Scenarios, &out.Summary
+			ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
 			ar.Provenance.RunID = out.RunID
 		}
 	}
