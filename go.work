@@ -4,6 +4,7 @@ use (
 	.
 	./drivers/http
 	./drivers/postgres
+	./drivers/sqs
 	./drivers/ws
 	./protocol
 	./simulators/token
