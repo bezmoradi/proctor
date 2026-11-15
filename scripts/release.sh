@@ -33,7 +33,7 @@ for t in $targets; do
 	arch=${t#*/}
 	bin="$out/proctor-$version-$os-$arch"
 	CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -buildvcs=false \
-		-ldflags "-s -w -buildid= -X proctor/internal/cli.Version=$version" \
+		-ldflags "-s -w -buildid= -X proctor/internal/commands.Version=$version" \
 		-o "$bin" ./cmd/proctor
 	echo "built $bin"
 done

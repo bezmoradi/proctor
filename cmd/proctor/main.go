@@ -3,9 +3,9 @@ package main
 import (
 	"os"
 
-	"proctor/internal/cli"
+	"proctor/internal/commands"
 )
 
 func main() {
-	os.Exit(cli.Main(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(commands.Execute(os.Args[1:], os.Stdout, os.Stderr))
 }
