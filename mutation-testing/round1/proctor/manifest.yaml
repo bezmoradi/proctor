@@ -1,4 +1,0 @@
-version: 1
-specifications:
-  - id: users
-    path: specs/users.yaml

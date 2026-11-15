@@ -42,7 +42,7 @@ scenarios:
           path: /api/v1/users
           identity: anonymous
           body: {}
-        no_state_check: the in-memory example can't look a user up by name; users-api-postgres checks the table in PGU-002
+        no_state_check: the in-memory example can't look a user up by name, so a refused create can't be checked against stored state
         expect:
           status: 422
           json:

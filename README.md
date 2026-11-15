@@ -111,8 +111,7 @@ A database check runs one parameterized, read-only query. Before using the verif
 |---|---|
 | `cmd/proctor`, `internal/` | The CLI |
 | `e2e/` | Black-box tests: they build the binary and run it against real Git repositories, HTTP servers and PostgreSQL. Proctor has no function-level unit tests |
-| `examples/` | Sample applications generated with [gopamin](https://github.com/bezmoradi/gopamin), with their Proctor specifications. See [`examples/README.md`](examples/README.md) |
-| `mutation-testing/` | Mutation testing of the specifications and of Proctor itself, with results |
+| `examples/` | `users-api`, a sample application generated with [gopamin](https://github.com/bezmoradi/gopamin), with its Proctor specifications (see [`examples/README.md`](examples/README.md)), and `github/`, the reference GitHub workflow and CODEOWNERS file |
 | `prd.md` | Requirements, decisions, acceptance tests and roadmap |
 
 ## Development
