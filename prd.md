@@ -1,13 +1,13 @@
 # Proctor — Product Requirements
 
-**Status:** Revision 3 (2026-11-14), the working basis for implementation. Every open decision has been decided (Appendix A); any of them can be revisited.
+**Status:** Revision 3 (2026-11-14), the working basis for implementation. Every open decision has been decided (Appendix A); any of them can be revisited. Phase 5, Temporal and log evidence, is parked (§20).
 **Contents:** sections 1 to 22 are the requirements. Appendix A records the decisions, Appendix B the runner decision (Phase 1), Appendix C the acceptance tests, and Appendix D the revision history.
 
 **Tagline:** Verify behavior, not implementation.
 **Project type:** Open-source, language-independent behavioral verification and integrity system.
 **Initial implementation language:** Go.
 **Initial specification format:** YAML.
-**Initial targets:** HTTP/REST APIs, with evidence from PostgreSQL, Temporal and structured application logs.
+**Initial targets:** HTTP/REST APIs, with evidence from PostgreSQL. Evidence from Temporal and structured application logs is parked (Phase 5, §20).
 
 ---
 
@@ -321,7 +321,7 @@ specifications:
 ## 7.4 Protected-input checks
 
 - **INT-11.** In authoritative mode, Proctor calls GitHub's CODEOWNERS errors endpoint for the base commit. Any reported error is an integrity violation. A CODEOWNERS file in more than one of `/.github/`, `/`, `/docs/` is an integrity violation. Proctor also reports, without failing, any protected path that its own last-match evaluation of CODEOWNERS leaves without an owner listed in `proctor.yaml` `protected_owners`; whether that should fail is OD-16.
-- **INT-12.** A scenario that uses a disabled adapter, or a connection or identity that `proctor.yaml` doesn't declare, fails validation (exit 3).
+- **INT-12.** A scenario that uses a disabled adapter, or a connection or identity that `proctor.yaml` doesn't declare, fails validation (exit 3). While Phase 5 is parked, a `temporal` or `logs` adapter, connection or setting in `proctor.yaml` or the binding is also invalid (exit 3), so no run can look as if it checked them.
 - **INT-13.** Every protected input is a regular file (Git mode 100644 or 100755). A symlink, a submodule (gitlink), a Git LFS pointer, or a path under a symlinked directory is an integrity violation. Files referenced by a verification dependency definition are resolved and hashed; a reference outside the protected root that `proctor.yaml` `protected_paths` doesn't list is an integrity violation. `protected_paths` entries are exact paths, or directories when they end in `/`.
 - **INT-14.** None of these Git attributes may apply to a protected path, as reported by `git check-attr -a --source=<commit>`: `diff`, `-diff`, `binary`, `text`, `eol`, `filter`, `working-tree-encoding`, `ident`, `linguist-generated`, `export-ignore`, `export-subst`. A match is an integrity violation. (Reason: they change the bytes a checkout writes, or hide the diff from reviewers.)
 - **INT-15.** Protected YAML is parsed strictly. Duplicate keys at any level, anchors, aliases, merge keys (`<<`), custom tags and keys the schema doesn't define fail validation (exit 3). (Reason: parsers disagree on duplicates, and one anchor edit can change many scenarios while the diff shows one line.)
@@ -380,7 +380,7 @@ Testing terms keep their usual meanings: black-box testing checks behavior throu
 
 1. Express expected behavior in version-controlled specifications with stable IDs.
 2. Execute them independently of the application's programming language, through public HTTP APIs.
-3. Verify business state in PostgreSQL, and collect operational evidence from Temporal and structured logs.
+3. Verify business state in PostgreSQL. Collecting operational evidence from Temporal and structured logs is parked with Phase 5 (§20).
 4. Verify asynchronous behavior with bounded `eventually`, `consistently` and `never` checks.
 5. Make every listed scenario impossible to skip silently in authoritative mode.
 6. Detect and list every change to protected inputs, and refuse inputs Git can't show faithfully.
@@ -619,9 +619,11 @@ Setup establishes starting conditions; it is not evidence that the application p
 - **FIX-05.** Each run has a unique ID, and `${run.id}` expands to it followed by `-` and the scenario's ID (for example `3f9a1c2b7d4e-PGU-001`). Specifications use it in names and keys so that data from different runs, or from different scenarios in one run, does not collide. Validation rejects (exit 3) a request that sends a value a later step of the scenario matches on when the value contains neither `${run.id}` nor a value saved earlier in the scenario, unless the step waives FIX-05 (EXE-08). A saved value came from the application's response in this run, usually an ID it assigned, so it is already run-scoped; `${secret.name}` and `${fill(N)}` are not.
 - **FIX-06.** Authoritative runs use a disposable environment created for the run. Cleanup inside a shared environment is out of scope for v1.
 - **FIX-08.** Every operation a specification set uses in setup (method, path template and expected status) is also exercised, in at least one scenario, as a verification step, so a defect in it is reported as FAIL somewhere rather than only as a setup ERROR. Validation rejects a set that doesn't (exit 3).
-- **FIX-07.** Before the first scenario, Proctor waits up to `startup_timeout` (protected policy) for readiness: the application's readiness endpoint answers 2xx; each PostgreSQL connection answers `SELECT 1` as the verification role; each Temporal task queue listed in `proctor.yaml` has a poller; each additional readiness path listed in `readiness.checks` (for example a background worker's health endpoint) answers 2xx; each log source exists. If readiness fails, the run is ERROR (exit 2), and every scenario is NOT_RUN with reason `environment_not_ready`.
+- **FIX-07.** Before the first scenario, Proctor waits up to `startup_timeout` (protected policy) for readiness: the application's readiness endpoint answers 2xx; each PostgreSQL connection answers `SELECT 1` as the verification role; each Temporal task queue listed in `proctor.yaml` has a poller; each additional readiness path listed in `readiness.checks` (for example a background worker's health endpoint) answers 2xx; each log source exists. The Temporal and log-source conditions are parked with Phase 5. If readiness fails, the run is ERROR (exit 2), and every scenario is NOT_RUN with reason `environment_not_ready`.
 
 ## 11.6 Logs
+
+**Parked (2026-11-14, product owner).** Phase 5 is parked: nothing in this section is built, and Proctor refuses `logs` configuration (INT-12, exit 3). The requirements are kept for when the phase resumes.
 
 The log adapter checks structured events the application wrote.
 
@@ -686,6 +688,8 @@ The log adapter checks structured events the application wrote.
 ```
 
 ## 11.8 Temporal
+
+**Parked (2026-11-14, product owner).** Phase 5 is parked: nothing in this section is built, and Proctor refuses `temporal` configuration (INT-12, exit 3). The requirements are kept for when the phase resumes.
 
 Temporal: "A Workflow Execution is uniquely identified by its Namespace, Workflow Id, and Run Id." Runs are chained by Continue-As-New, retries, cron and reset; a chain shares its first run's ID (`first_execution_run_id`). Visibility, used for search-attribute queries, is eventually consistent. Sources: https://docs.temporal.io/workflow-execution, https://docs.temporal.io/workflow-execution/continue-as-new, https://docs.temporal.io/visibility.
 
@@ -914,20 +918,12 @@ protected_paths: [compose.verify.yaml]
 adapters:
   http: enabled
   postgres: enabled
-  temporal: enabled
-  logs: enabled
 
 connections:
   postgres:
     app_db:
       schemas: [app]
       objects: [app.projects, app.exports]
-  temporal:
-    workflows:
-      task_queues: [exports]
-  logs:
-    application:
-      trace_id_field: trace_id
 
 identities:
   alice: { type: bearer }
@@ -942,9 +938,6 @@ time_limits:
   min_interval: 100ms
   max_samples: 1000
   max_window: 10m
-
-temporal:
-  max_clock_skew: 1s
 
 redaction:
   json_paths: [$.email]
@@ -963,10 +956,6 @@ target:
 connections:
   postgres:
     app_db: { dsn_env: PROCTOR_APP_DB_DSN }
-  temporal:
-    workflows: { address: "localhost:7233", namespace: default }
-  logs:
-    application: { type: file, path: ./logs/application.jsonl }
 identities:
   alice: { token_env: PROCTOR_ALICE_TOKEN, user_id_env: PROCTOR_ALICE_USER_ID }
   bob: { token_env: PROCTOR_BOB_TOKEN, user_id_env: PROCTOR_BOB_USER_ID }
@@ -1141,9 +1130,11 @@ DB-01 to DB-08, `eventually`, `consistently`, `never`, TIME-01 to TIME-12. Singl
 
 Acceptance: the Phase 4 tests in Appendix C, and every case in `mutation-testing/mvp-test-matrix.md` giving its required result on the commit that claims the phase.
 
-## Phase 5: Temporal and logs
+## Phase 5: Temporal and logs (parked)
 
 TMP-01 to TMP-08, LOG-01 to LOG-08.
+
+Parked on 2026-11-14 by the product owner. Nothing in it is built, and until it resumes Proctor refuses `temporal` and `logs` configuration (INT-12, exit 3). The requirements (§11.6, §11.8), the log and Temporal cases of the time-based checks (§11.9), and the Appendix C tests assigned to Phase 5 are kept, unbuilt, for when it does.
 
 ## Phase 6: Review experience and release
 
@@ -1381,6 +1372,12 @@ PGU-025 and PGU-026 assume at most 100 users. PGU-036 and PGU-049 assume no othe
 | Decision | Resolution | Where |
 |---|---|---|
 | OD-09. Approved format | Proctor's own schema. The product owner decided on 2026-11-14 that Proctor has its own runner, so no other runner's format exists to approve | Appendix B, §19 |
+
+### Decided after revision 3
+
+| Decision | Resolution | Where |
+|---|---|---|
+| Phase 5, Temporal and log evidence | Parked by the product owner on 2026-11-14. TMP-* and LOG-* stay in this document, unbuilt; Proctor refuses `temporal` and `logs` configuration | §20, INT-12 |
 
 ### Ideas not adopted yet
 
@@ -2040,6 +2037,7 @@ The original PRD and the full change log, with the reason for each change, are i
 | Mutation testing | 2026-11-14 | Closed the gaps mutation testing found: exact matching (HTTP-07, HTTP-08), list lengths (HTTP-09), ambiguous JSON (HTTP-10), state checks after writes (EXE-07), setup exercised as steps (FIX-08), setup-failure causes (FIX-04), `${run.id}` per scenario (FIX-05), credential variants (AUTH-06), secrets (AUTH-07), read-only PostgreSQL checks built early (DB-01 to DB-08), weakenings in the semantic diff (§7.5) |
 | Warnings removed | 2026-11-14 | Every warning is a failure (OD-20, EXE-08) |
 | 3 | 2026-11-14 | The PRD, decisions, runner decision record, acceptance tests and change log merged into this one file |
+| Phase 5 parked | 2026-11-14 | Temporal and log evidence parked by the product owner; `temporal` and `logs` configuration refused (INT-12); the example configuration no longer shows them |
 
 **Removed from the original, and not to be added back without a new decision:** glob-based discovery as the authoritative mechanism; `proctor approve`; the SKIPPED result; SQL examples with string interpolation; a CI example running an unpinned `proctor` from the pull request's workflow; the claim that Temporal "status: completed" and log events verify effects.
 

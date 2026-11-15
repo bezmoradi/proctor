@@ -3,7 +3,9 @@
 //
 // The specification format here is the Phase 0 subset from prd.md
 // §20: scenarios of HTTP steps with stable IDs. Schema v1 (tables, time
-// checks, PostgreSQL, Temporal and logs) comes in Phase 2 and later.
+// checks and PostgreSQL) comes in Phase 2 and later. Temporal and log
+// evidence (Phase 5) is parked, so their fields aren't modelled and strict
+// decoding rejects them.
 package model
 
 // Config is proctor.yaml (prd.md §14). Fields beyond those Phase 0
@@ -20,7 +22,6 @@ type Config struct {
 	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
 	Readiness       *Readiness              `yaml:"readiness"`
 	TimeLimits      *TimeLimits             `yaml:"time_limits"`
-	Temporal        *TemporalPolicy         `yaml:"temporal"`
 	Redaction       *Redaction              `yaml:"redaction"`
 	// Secrets names values, such as a test user's password, that requests
 	// may send as ${secret.name}; the binding supplies them.
@@ -30,21 +31,11 @@ type Config struct {
 
 type Connections struct {
 	Postgres map[string]PostgresPolicy `yaml:"postgres"`
-	Temporal map[string]TemporalConn   `yaml:"temporal"`
-	Logs     map[string]LogPolicy      `yaml:"logs"`
 }
 
 type PostgresPolicy struct {
 	Schemas []string `yaml:"schemas"`
 	Objects []string `yaml:"objects"`
-}
-
-type TemporalConn struct {
-	TaskQueues []string `yaml:"task_queues"`
-}
-
-type LogPolicy struct {
-	TraceIDField string `yaml:"trace_id_field"`
 }
 
 type IdentityType struct {
@@ -73,10 +64,6 @@ type TimeLimits struct {
 	MinInterval string `yaml:"min_interval"`
 	MaxSamples  int    `yaml:"max_samples"`
 	MaxWindow   string `yaml:"max_window"`
-}
-
-type TemporalPolicy struct {
-	MaxClockSkew string `yaml:"max_clock_skew"`
 }
 
 type Redaction struct {

@@ -132,7 +132,11 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 var identityTypes = map[string]bool{"none": true, "bearer": true, "basic": true, "oauth2_client_credentials": true}
 
-var adapterNames = map[string]bool{"http": true, "postgres": true, "temporal": true, "logs": true}
+var adapterNames = map[string]bool{"http": true, "postgres": true}
+
+// parkedAdapters are planned in prd.md but parked (Phase 5, §20). Naming one
+// is refused, so a run never looks as if it checked Temporal or logs.
+var parkedAdapters = map[string]bool{"temporal": true, "logs": true}
 
 var httpMethods = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
@@ -275,6 +279,10 @@ func (r *Report) validateConfig(c *model.Config) {
 		r.add(Invalid, "INT-15", p, "manifest is required")
 	}
 	for name, a := range c.Adapters {
+		if parkedAdapters[name] {
+			r.add(Invalid, "INT-12", p, "adapter %q isn't available: Temporal and log evidence (Phase 5) is parked", name)
+			continue
+		}
 		if !adapterNames[name] {
 			r.add(Invalid, "INT-12", p, "unknown adapter %q", name)
 		}

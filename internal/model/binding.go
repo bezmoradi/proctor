@@ -34,18 +34,10 @@ type Target struct {
 }
 
 // BindingConnections name where each connection's settings come from.
-// Temporal and logs are modelled so that strict decoding accepts the
-// documented example; only PostgreSQL is used so far.
+// Only PostgreSQL exists: Temporal and logs (Phase 5) are parked, so strict
+// decoding rejects them.
 type BindingConnections struct {
 	Postgres map[string]BindingPostgres `yaml:"postgres"`
-	Temporal map[string]struct {
-		Address   string `yaml:"address"`
-		Namespace string `yaml:"namespace"`
-	} `yaml:"temporal"`
-	Logs map[string]struct {
-		Type string `yaml:"type"`
-		Path string `yaml:"path"`
-	} `yaml:"logs"`
 }
 
 // BindingPostgres names the variable holding the connection string of the
