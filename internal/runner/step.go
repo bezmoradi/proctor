@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -97,7 +98,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	if !ok {
 		return errorf(CauseInvalidRequest, "driver %s has no operation %q", name, opName)
 	}
-	args, err := vars.Value(st.With)
+	args, err := argsFor(st.With, vars, op.Escape)
 	if err != nil {
 		return errorf(CauseInvalidRequest, "with: %v", err)
 	}
@@ -209,6 +210,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 			sr.Result = Fail
 		} else {
 			a.Present = true
+			r.scrubRedacted(path.String(), got, op.Redact)
 			vars[name] = got
 			sr.Saved = append(sr.Saved, name)
 		}
@@ -253,11 +255,53 @@ func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, arg
 	}
 	s := sampleResult{fact: res.Fact, ev: res.Evidence, pass: true}
 	for _, c := range checks {
-		a := r.judge(c, res.Fact)
+		a := r.judge(c, res.Fact, op.Redact)
 		if a.Result != Pass {
 			s.pass = false
 		}
 		s.asserts = append(s.asserts, a)
 	}
 	return s, nil, d
+}
+
+func argsFor(with any, vars expr.Vars, escape map[string]string) (any, error) {
+	if len(escape) == 0 {
+		return vars.Value(with)
+	}
+	return escapedValue("$", with, vars, escape)
+}
+
+func escapedValue(path string, t any, vars expr.Vars, escape map[string]string) (any, error) {
+	switch x := t.(type) {
+	case string:
+		if escape[path] == protocol.EscapePathSegment {
+			return vars.Text(x, url.PathEscape)
+		}
+		return vars.Value(x)
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			nk, err := vars.Text(k, nil)
+			if err != nil {
+				return nil, err
+			}
+			ne, err := escapedValue(path+"."+k, e, vars, escape)
+			if err != nil {
+				return nil, err
+			}
+			out[nk] = ne
+		}
+		return out, nil
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			ne, err := escapedValue(fmt.Sprintf("%s[%d]", path, i), e, vars, escape)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = ne
+		}
+		return out, nil
+	}
+	return t, nil
 }

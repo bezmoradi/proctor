@@ -198,7 +198,7 @@ func matchesAll(subs []subCheck, el any) bool {
 
 const notPresent = "not present in the fact"
 
-func (r *Runner) judge(c check, fact any) Assertion {
+func (r *Runner) judge(c check, fact any, red []string) Assertion {
 	a := Assertion{Kind: c.kind, Target: c.target, Result: Pass}
 	elem := c.target + "[0]"
 	fail := func(msg string) { a.Result, a.Message = Fail, msg }
@@ -294,7 +294,7 @@ func (r *Runner) judge(c check, fact any) Assertion {
 		for _, s := range c.subs {
 			if s.perr != nil {
 				fail(fmt.Sprintf("%s: %v", s.key, s.perr))
-				return r.redactAssertion(a, c, elem)
+				return r.redactAssertion(a, c, elem, red)
 			}
 		}
 		list, isList := got.([]any)
@@ -326,13 +326,13 @@ func (r *Runner) judge(c check, fact any) Assertion {
 			}
 		}
 	}
-	return r.redactAssertion(a, c, elem)
+	return r.redactAssertion(a, c, elem, red)
 }
 
-func (r *Runner) redactAssertion(a Assertion, c check, elem string) Assertion {
+func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string) Assertion {
 	switch c.kind {
 	case "keys":
-		if r.redactPath(c.target) {
+		if r.redactPath(c.target, red) {
 			if a.Expected != nil {
 				a.Expected = redacted
 			}
@@ -342,7 +342,7 @@ func (r *Runner) redactAssertion(a Assertion, c check, elem string) Assertion {
 		}
 		return a
 	case "any", "none":
-		if r.redactPath(c.target) {
+		if r.redactPath(c.target, red) {
 			if a.Expected != nil {
 				a.Expected = redacted
 			}
@@ -358,50 +358,100 @@ func (r *Runner) redactAssertion(a Assertion, c check, elem string) Assertion {
 				if !strings.HasPrefix(sp, "$") {
 					sp = "$." + sp
 				}
-				out[k] = r.redactValue(c.target+"[0]"+strings.TrimPrefix(sp, "$"), v)
+				out[k] = r.redactValue(c.target+"[0]"+strings.TrimPrefix(sp, "$"), v, red)
 			}
 			a.Expected = out
 		}
 		if _, isList := a.Actual.([]any); isList {
 			elem = c.target
 		}
-		a.Actual = r.redactValue(elem, a.Actual)
+		a.Actual = r.redactValue(elem, a.Actual, red)
 		return a
 	}
-	a.Expected = r.redactValue(c.target, a.Expected)
-	a.Actual = r.redactValue(c.target, a.Actual)
+	a.Expected = r.redactValue(c.target, a.Expected, red)
+	a.Actual = r.redactValue(c.target, a.Actual, red)
 	return a
 }
 
-func (r *Runner) redactValue(path string, v any) any {
+func (r *Runner) redactValue(path string, v any, red []string) any {
 	if v == nil {
 		return nil
 	}
-	if r.redactPath(path) {
+	if r.redactPath(path, red) {
 		return redacted
 	}
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
-			out[k] = r.redactValue(path+"."+k, e)
+			out[k] = r.redactValue(path+"."+k, e, red)
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
-			out[i] = r.redactValue(fmt.Sprintf("%s[%d]", path, i), e)
+			out[i] = r.redactValue(fmt.Sprintf("%s[%d]", path, i), e, red)
 		}
 		return out
 	}
 	return v
 }
 
-func (r *Runner) redactPath(p string) bool {
-	if r.redactJS[p] {
-		return true
+func (r *Runner) scrubRedacted(path string, v any, red []string) {
+	if r.redactPath(path, red) {
+		for _, s := range textLeaves(v) {
+			r.scrub.add(s)
+		}
+		return
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			r.scrubRedacted(path+"."+k, e, red)
+		}
+	case []any:
+		for i, e := range x {
+			r.scrubRedacted(fmt.Sprintf("%s[%d]", path, i), e, red)
+		}
+	}
+}
+
+func textLeaves(v any) []string {
+	switch x := v.(type) {
+	case string:
+		return []string{x}
+	case map[string]any:
+		var out []string
+		for _, e := range x {
+			out = append(out, textLeaves(e)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, e := range x {
+			out = append(out, textLeaves(e)...)
+		}
+		return out
+	}
+	return nil
+}
+
+func (r *Runner) redactPath(p string, red []string) bool {
+	for q := range r.redactJS {
+		if pathUnder(p, q) {
+			return true
+		}
+	}
+	for _, q := range red {
+		if pathUnder(p, q) {
+			return true
+		}
 	}
 	return sensitiveName(p[strings.LastIndexAny(p, ".[")+1:])
+}
+
+func pathUnder(p, root string) bool {
+	return p == root || strings.HasPrefix(p, root+".") || strings.HasPrefix(p, root+"[")
 }
 
 func sensitiveName(name string) bool {

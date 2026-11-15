@@ -119,6 +119,7 @@ type StepRef struct {
 type StepInfo struct {
 	Kind                     string
 	Destructive, FixedTarget bool
+	StateCheck               bool
 	Refs                     []string
 	Problems                 []Problem
 }

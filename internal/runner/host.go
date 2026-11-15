@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"proctor/internal/expr"
 	"proctor/internal/model"
 	"proctor/protocol"
 	"proctor/protocol/schema"
@@ -324,6 +325,19 @@ func checkHello(h *host) []string {
 				msgs = append(msgs, where+": "+what+": "+e)
 			}
 		}
+		for _, p := range sortedKeys(op.Escape) {
+			if _, err := expr.ParsePath(p); err != nil {
+				msgs = append(msgs, fmt.Sprintf("%s: escape: %v", where, err))
+			}
+			if op.Escape[p] != protocol.EscapePathSegment {
+				msgs = append(msgs, fmt.Sprintf("%s: escape %s: unknown escaping %q (this proctor knows %q)", where, p, op.Escape[p], protocol.EscapePathSegment))
+			}
+		}
+		for _, p := range op.Redact {
+			if _, err := expr.ParsePath(p); err != nil {
+				msgs = append(msgs, fmt.Sprintf("%s: redact: %v", where, err))
+			}
+		}
 		h.ops[op.Name] = op
 	}
 	sort.Strings(msgs)
@@ -410,7 +424,7 @@ func (sess *session) describe(ctx context.Context, specs []SpecFile) (map[model.
 }
 
 func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool) (model.StepInfo, error) {
-	var info model.StepInfo
+	info := model.StepInfo{StateCheck: true}
 	problem := func(rule, path, format string, args ...any) {
 		info.Problems = append(info.Problems, model.Problem{Rule: rule, Path: path, Message: sess.scrub.clean(fmt.Sprintf(format, args...))})
 	}
@@ -454,7 +468,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	var res protocol.ValidateResult
 	cctx, cancel := sess.callCtx(ctx)
 	err := h.client.Call(cctx, protocol.MethodValidate, protocol.ValidateParams{Op: opName, Args: st.With, Identity: st.Identity,
-		Variant: st.Variant, Expect: st.Expect, Setup: setup}, &res)
+		Variant: st.Variant, Expect: st.Expect, Setup: setup, Save: st.Save}, &res)
 	cancel()
 	if err != nil {
 		return info, fmt.Errorf("driver %s: validate failed: %v", name, err)
@@ -475,6 +489,9 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 		info.Kind = op.Kind
 	}
 	info.Destructive, info.FixedTarget = res.Destructive, res.FixedTarget
+	if res.StateCheck != nil {
+		info.StateCheck = *res.StateCheck
+	}
 	seen := map[string]bool{}
 	for _, n := range res.Refs {
 		seen[n] = true

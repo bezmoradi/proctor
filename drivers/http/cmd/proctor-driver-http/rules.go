@@ -12,7 +12,6 @@ import (
 
 var (
 	refRE    = regexp.MustCompile(`\$\{([^}]*)\}`)
-	wholeRef = regexp.MustCompile(`^\$\{[^{}]+\}$`)
 	fillRE   = regexp.MustCompile(`^fill\(([1-9][0-9]{0,7})\)$`)
 	secretRE = regexp.MustCompile(`^secret\.[A-Za-z_][A-Za-z0-9_]*$`)
 )

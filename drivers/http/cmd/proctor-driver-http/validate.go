@@ -103,12 +103,15 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None})
 	v.checkStatus(ex, p)
 	if method == "HEAD" {
-		v.checkHead(ex)
+		v.checkHead(ex, p.Save)
+	}
+	if v.r.Kind == protocol.KindObserve && !checksState(ex, p) {
+		no := false
+		v.r.StateCheck = &no
 	}
 	v.checkHeaderCase(ex)
 	v.checkConflicts(ex)
 	v.checkUnordered(ex)
-	v.checkLength(ex)
 	if method == "GET" && len(ex.Length) > 0 && len(query) == 0 {
 		v.add("HTTP-09", "$.expect.length", "asserts a list length on a request with no query parameters; the list may include records the scenario didn't create (filter the request, or waive HTTP-09 with the reason it can't)")
 	}
@@ -197,16 +200,40 @@ func (v *validation) checkStatus(ex expectation, p protocol.ValidateParams) {
 	}
 }
 
+func checksState(ex expectation, p protocol.ValidateParams) bool {
+	if p.Variant != "" {
+		return false
+	}
+	code, valid := httpStatus(ex.Equal[statusPath])
+	return !valid || (code != 401 && code != 403)
+}
+
 func under(p, root string) bool {
 	return p == root || strings.HasPrefix(p, root+".") || strings.HasPrefix(p, root+"[")
 }
 
-func (v *validation) checkHead(ex expectation) {
+func inBody(p string) bool {
+	return under(p, "$.body") || under(p, "$.body_text") || under(p, "$.body_invalid")
+}
+
+func (v *validation) checkHead(ex expectation, save map[string]string) {
+	at := ""
 	for _, p := range ex.paths() {
-		if under(p, "$.body") || under(p, "$.body_text") || under(p, "$.body_invalid") {
-			v.add("EXE-03", "$.expect", "a HEAD response has no body, so it can only assert status and headers")
-			return
+		if inBody(p) {
+			at = "$.expect"
+			break
 		}
+	}
+	if at == "" {
+		for _, name := range sortedKeys(save) {
+			if inBody(save[name]) {
+				at = "$.save"
+				break
+			}
+		}
+	}
+	if at != "" {
+		v.add("EXE-03", at, "a HEAD response has no body, so it can only assert status and headers")
 	}
 }
 
@@ -260,36 +287,40 @@ func headerKey(p string) (string, bool) {
 	return p, false
 }
 
-func (v *validation) checkConflicts(ex expectation) {
-	asserted := map[string]string{}
-	exact := map[string]string{}
-	for _, k := range sortedKeys(ex.Equal) {
-		key, _ := headerKey(k)
-		asserted[key] = "equal"
-		exact[k] = "equal"
+func byHeader(paths []string) map[string][]string {
+	out := map[string][]string{}
+	for _, p := range paths {
+		if key, ok := headerKey(p); ok {
+			out[key] = append(out[key], p)
+		}
 	}
-	for _, list := range []struct {
-		name  string
-		paths []string
-	}{{"present", ex.Present}, {"absent", ex.Absent}} {
-		for _, k := range list.paths {
-			key, isHeader := headerKey(k)
-			prev, dup := asserted[key]
-			if same, ok := exact[k]; ok {
-				prev, dup = same, true
-			} else if dup && (prev == "absent") == (list.name == "absent") {
-				dup = false
-			}
-			if dup {
-				if isHeader && prev == "equal" && list.name == "absent" {
-					name, _, _ := headerPath(k)
-					v.add("HTTP-08", "$.expect."+list.name, "header %s is both expected and absent", name)
-				} else {
-					v.add("HTTP-08", "$.expect."+list.name, "%s is asserted by both %s and %s", k, prev, list.name)
-				}
-			}
-			asserted[key] = list.name
-			exact[k] = list.name
+	return out
+}
+
+func elsewhere(paths []string, p string) bool {
+	for _, q := range paths {
+		if q != p {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *validation) checkConflicts(ex expectation) {
+	equal := byHeader(sortedKeys(ex.Equal))
+	present := byHeader(ex.Present)
+	absent := byHeader(ex.Absent)
+	for _, k := range ex.Absent {
+		key, isHeader := headerKey(k)
+		if !isHeader {
+			continue
+		}
+		name, _, _ := headerPath(k)
+		switch {
+		case elsewhere(equal[key], k):
+			v.add("HTTP-08", "$.expect.absent", "header %s is both expected and absent", name)
+		case elsewhere(present[key], k):
+			v.add("HTTP-08", "$.expect.absent", "%s is asserted by both present and absent", k)
 		}
 	}
 	for _, k := range ex.Absent {
@@ -298,37 +329,20 @@ func (v *validation) checkConflicts(ex expectation) {
 		}
 	}
 	for _, k := range sortedKeys(ex.Keys) {
-		seen := map[string]bool{}
-		for _, name := range ex.Keys[k] {
-			if seen[name] {
-				v.add("HTTP-08", "$.expect.keys", "keys of %s lists %q twice", k, name)
-			}
-			seen[name] = true
-		}
-		if key, _ := headerKey(k); asserted[key] == "absent" {
+		if key, isHeader := headerKey(k); isHeader && elsewhere(absent[key], k) {
 			v.add("HTTP-08", "$.expect.keys", "%s is both absent and given keys", k)
 		}
 	}
 	for _, k := range sortedKeys(ex.Length) {
-		if key, _ := headerKey(k); asserted[key] == "absent" {
+		if key, isHeader := headerKey(k); isHeader && elsewhere(absent[key], k) {
 			v.add("HTTP-08", "$.expect.length", "%s is both absent and given a length", k)
 		}
 	}
 }
 
 func (v *validation) checkUnordered(ex expectation) {
-	equal := map[string]bool{}
-	for k := range ex.Equal {
-		if key, ok := headerKey(k); ok {
-			equal[key] = true
-		}
-	}
-	absent := map[string]bool{}
-	for _, k := range ex.Absent {
-		if key, ok := headerKey(k); ok {
-			absent[key] = true
-		}
-	}
+	equal := byHeader(sortedKeys(ex.Equal))
+	absent := byHeader(ex.Absent)
 	at := "$.expect.unordered"
 	for _, k := range sortedKeys(ex.Unordered) {
 		name, rest, ok := headerPath(k)
@@ -340,10 +354,10 @@ func (v *validation) checkUnordered(ex expectation) {
 			continue
 		}
 		key, _ := headerKey(k)
-		if equal[key] {
+		if len(equal[key]) > 0 {
 			v.add("HTTP-08", at, "header %s is in both equal and unordered", name)
 		}
-		if absent[key] {
+		if elsewhere(absent[key], k) {
 			v.add("HTTP-08", at, "header %s is both in unordered and absent", name)
 		}
 		vals := ex.Unordered[k]
@@ -366,28 +380,6 @@ func (v *validation) checkUnordered(ex expectation) {
 			if isText {
 				seen[s] = true
 			}
-		}
-	}
-}
-
-func (v *validation) checkLength(ex expectation) {
-	at := "$.expect.length"
-	for _, k := range sortedKeys(ex.Length) {
-		switch x := ex.Length[k].(type) {
-		case json.Number:
-			n, err := strconv.ParseInt(x.String(), 10, 64)
-			switch {
-			case err != nil:
-				v.add("HTTP-09", at, "length of %s must be an integer or one ${name} reference", k)
-			case n < 0:
-				v.add("HTTP-09", at, "length of %s can't be negative", k)
-			}
-		case string:
-			if !wholeRef.MatchString(x) || len(refRE.FindAllString(x, -1)) != 1 {
-				v.add("HTTP-09", at, "length of %s must be an integer or one ${name} reference", k)
-			}
-		default:
-			v.add("HTTP-09", at, "length of %s must be an integer or one ${name} reference", k)
 		}
 	}
 }

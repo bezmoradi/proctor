@@ -92,6 +92,8 @@ func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.He
 			ArgsSchema: argsSchema,
 			FactSchema: factSchema,
 			Credential: protocol.CredentialOptional,
+			Escape:     map[string]string{"$.path": protocol.EscapePathSegment},
+			Redact:     []string{"$.headers.set-cookie", "$.header_lists.set-cookie"},
 		}},
 		PolicySchema:     nil,
 		ConnectionSchema: connectionSchema,

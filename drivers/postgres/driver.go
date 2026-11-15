@@ -275,7 +275,40 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	if matchers(p.Expect) == 0 {
 		add("EXE-03", "$.expect", "a database check needs at least one expectation")
 	}
+	if len(p.Save) > 0 && !oneRow(p.Expect) {
+		add("EXE-02", "$.save", "a database check can save values only when it expects exactly one row (expect.equal[%q]: 1)", rowCountPath)
+	}
+	for _, name := range sortedNames(p.Save) {
+		if path := p.Save[name]; !strings.HasPrefix(path, firstRowPrefix) || len(path) == len(firstRowPrefix) {
+			add("EXE-02", "$.save", "save %s: %q must name a column of the only row, as %s<column>", name, path, firstRowPrefix)
+		}
+	}
 	return r, nil
+}
+
+const (
+	rowCountPath   = "$.row_count"
+	firstRowPrefix = "$.rows[0]."
+)
+
+func oneRow(expect any) bool {
+	m, _ := expect.(map[string]any)
+	equal, _ := m["equal"].(map[string]any)
+	n, ok := equal[rowCountPath].(json.Number)
+	if !ok {
+		return false
+	}
+	i, err := strconv.ParseInt(n.String(), 10, 64)
+	return err == nil && i == 1
+}
+
+func sortedNames(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func matchers(expect any) int {

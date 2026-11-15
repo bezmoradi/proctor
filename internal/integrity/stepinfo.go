@@ -154,6 +154,13 @@ func refusedVariant(st *model.Step, c *model.Config) bool {
 	return st.Variant != "" && !contains(c.Identities[st.Identity].AcceptedVariants, st.Variant)
 }
 
+func (d described) checksState(c *model.Config) bool {
+	if !d.observes() || refusedVariant(d.at.step, c) {
+		return false
+	}
+	return d.info.StateCheck || acceptedVariant(d.at.step, c)
+}
+
 func (r *Report) checkStateChecks(p, where string, ds []described, c *model.Config) {
 	for i, d := range ds {
 		if d.at.setup || !d.known {
@@ -168,7 +175,7 @@ func (r *Report) checkStateChecks(p, where string, ds []described, c *model.Conf
 		}
 		checked := false
 		for _, later := range ds[i+1:] {
-			if !later.at.setup && later.observes() && !refusedVariant(later.at.step, c) {
+			if !later.at.setup && later.checksState(c) {
 				checked = true
 				break
 			}
@@ -180,7 +187,7 @@ func (r *Report) checkStateChecks(p, where string, ds []described, c *model.Conf
 			continue
 		}
 		if !checked {
-			r.add(Invalid, "EXE-07", p, "%s step %s acts, but no later step of the scenario checks the state it changed (add a later step that observes it with at least one expectation and an accepted credential, or set no_state_check to the reason none is possible)",
+			r.add(Invalid, "EXE-07", p, "%s step %s acts, but no later step of the scenario checks the state it changed (add a later step that observes it with at least one expectation and an accepted credential, and that its driver counts as a state check, which a step expecting to be denied isn't; or set no_state_check to the reason none is possible)",
 				where, st.ID)
 		}
 	}

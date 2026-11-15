@@ -73,6 +73,8 @@ const (
 	SchemeHeader = "header"
 )
 
+const EscapePathSegment = "path_segment"
+
 const (
 	ProofProven   = "proven"
 	ProofUnproven = "unproven"
@@ -139,13 +141,15 @@ type HelloResult struct {
 }
 
 type Operation struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	ArgsSchema  any    `json:"args_schema"`
-	FactSchema  any    `json:"fact_schema"`
-	OpensHandle bool   `json:"opens_handle"`
-	UsesHandle  bool   `json:"uses_handle"`
-	Credential  string `json:"credential"`
+	Name        string            `json:"name"`
+	Kind        string            `json:"kind"`
+	ArgsSchema  any               `json:"args_schema"`
+	FactSchema  any               `json:"fact_schema"`
+	OpensHandle bool              `json:"opens_handle"`
+	UsesHandle  bool              `json:"uses_handle"`
+	Credential  string            `json:"credential"`
+	Escape      map[string]string `json:"escape,omitempty"`
+	Redact      []string          `json:"redact,omitempty"`
 }
 
 type Secrets map[string]string
@@ -165,12 +169,13 @@ type ConfigureParams struct {
 }
 
 type ValidateParams struct {
-	Op       string `json:"op"`
-	Args     any    `json:"args"`
-	Identity string `json:"identity"`
-	Variant  string `json:"variant"`
-	Expect   any    `json:"expect"`
-	Setup    bool   `json:"setup"`
+	Op       string            `json:"op"`
+	Args     any               `json:"args"`
+	Identity string            `json:"identity"`
+	Variant  string            `json:"variant"`
+	Expect   any               `json:"expect"`
+	Setup    bool              `json:"setup"`
+	Save     map[string]string `json:"save,omitempty"`
 }
 
 type ValidateResult struct {
@@ -179,6 +184,7 @@ type ValidateResult struct {
 	FixedTarget bool      `json:"fixed_target"`
 	Problems    []Problem `json:"problems"`
 	Refs        []string  `json:"refs"`
+	StateCheck  *bool     `json:"state_check,omitempty"`
 }
 
 type Problem struct {
