@@ -1,9 +1,3 @@
-// Package strictyaml decodes protected YAML (INT-15 in prd.md).
-//
-// It accepts exactly one document and rejects the YAML features that let a
-// reviewer see something other than what runs: duplicate keys, anchors,
-// aliases, merge keys, explicit tags, non-scalar keys and keys the target
-// type doesn't define.
 package strictyaml
 
 import (
@@ -15,8 +9,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Error describes why a document was rejected. Line is 0 when the parser
-// gave no position.
 type Error struct {
 	Line int
 	Msg  string
@@ -29,7 +21,6 @@ func (e *Error) Error() string {
 	return e.Msg
 }
 
-// Decode checks data and decodes it into v, which must be a pointer.
 func Decode(data []byte, v any) error {
 	if _, err := Parse(data); err != nil {
 		return err
@@ -42,8 +33,6 @@ func Decode(data []byte, v any) error {
 	return nil
 }
 
-// Parse checks data and returns its document node. Callers that need the
-// node tree, such as the semantic diff, use it directly.
 func Parse(data []byte) (*yaml.Node, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node

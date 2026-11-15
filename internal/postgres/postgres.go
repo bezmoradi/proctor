@@ -1,11 +1,3 @@
-// Package postgres is Proctor's read-only PostgreSQL verification adapter
-// (prd.md §11.7, DB-01 to DB-07).
-//
-// Every query is sent with driver parameter binding (DB-01) inside its own
-// transaction opened READ ONLY at READ COMMITTED, with a transaction-local
-// statement_timeout and a client-side deadline (DB-02). Results are read in
-// PostgreSQL's text format and converted by column type, so numbers keep
-// their exact value and nothing depends on Go's type mapping.
 package postgres
 
 import (
@@ -20,17 +12,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// MaxRows bounds how many rows one check reads; more is an error, so a
-// check can't silently judge a truncated result.
 const MaxRows = 10000
 
-// Conn is one verification connection.
 type Conn struct {
 	name string
 	conn *pgx.Conn
 }
 
-// ErrorClass says why a database operation failed, for the report's cause.
 type ErrorClass string
 
 const (
@@ -40,8 +28,6 @@ const (
 	BadResult   ErrorClass = "unsupported_result"
 )
 
-// Error is a database failure with its class. Messages never include the
-// connection string.
 type Error struct {
 	Class    ErrorClass
 	SQLState string
@@ -60,7 +46,7 @@ func classify(ctx context.Context, err error, what string) *Error {
 	switch {
 	case errors.As(err, &pe):
 		cls := QueryError
-		if pe.Code == "57014" { // query_canceled: statement_timeout
+		if pe.Code == "57014" {
 			cls = Timeout
 		}
 		return &Error{Class: cls, SQLState: pe.Code, Msg: what + ": " + pe.Message}
@@ -72,8 +58,6 @@ func classify(ctx context.Context, err error, what string) *Error {
 	return &Error{Class: Unreachable, Msg: what + ": " + scrub(err.Error())}
 }
 
-// scrub removes anything that looks like a password assignment from a
-// driver message, in case a future driver version echoes the DSN.
 func scrub(s string) string {
 	out := []string{}
 	for _, f := range strings.Fields(s) {
@@ -85,13 +69,10 @@ func scrub(s string) string {
 	return strings.Join(out, " ")
 }
 
-// Open connects with the given connection string and pins the session:
-// read-only by default and search_path set to schemas, or to nothing when
-// none are declared, so unqualified names fail (DB-03).
 func Open(ctx context.Context, name, dsn string, schemas []string, timeout time.Duration) (*Conn, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		// pgx's parse errors can quote the string; never show it.
+
 		return nil, &Error{Class: Unreachable, Msg: fmt.Sprintf("connection %s: the connection string doesn't parse", name)}
 	}
 	cfg.ConnectTimeout = timeout
@@ -117,23 +98,17 @@ func Open(ctx context.Context, name, dsn string, schemas []string, timeout time.
 	return &Conn{name: name, conn: c}, nil
 }
 
-// Close ends the session.
 func (c *Conn) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = c.conn.Close(ctx)
 }
 
-// Ping runs SELECT 1 as the verification role (FIX-07).
 func (c *Conn) Ping(ctx context.Context, timeout time.Duration) error {
 	_, _, err := c.Query(ctx, "SELECT 1", nil, timeout)
 	return err
 }
 
-// Query runs one query in its own read-only transaction and returns the
-// column names and rows, each value converted to a JSON-comparable form:
-// integers and numerics as json.Number, booleans as bool, json and jsonb
-// decoded, NULL as nil, and everything else as PostgreSQL's text form.
 func (c *Conn) Query(ctx context.Context, sql string, args []any, timeout time.Duration) ([]string, [][]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout+time.Second)
 	defer cancel()
@@ -182,7 +157,6 @@ func (c *Conn) Query(ctx context.Context, sql string, args []any, timeout time.D
 	return cols, out, nil
 }
 
-// PostgreSQL type OIDs Proctor converts specially.
 const (
 	oidBool    = 16
 	oidInt8    = 20
@@ -216,7 +190,7 @@ func convert(oid uint32, b []byte) (any, error) {
 	case oidFloat4, oidFloat8, oidNumeric:
 		switch s {
 		case "NaN", "Infinity", "-Infinity":
-			return s, nil // not JSON numbers; compared as text
+			return s, nil
 		}
 		return json.Number(s), nil
 	case oidJSON, oidJSONB:
@@ -233,9 +207,6 @@ func convert(oid uint32, b []byte) (any, error) {
 	return s, nil
 }
 
-// RoleProblems checks the session's role against DB-04 and the declared
-// objects against DB-07, and returns every problem found. objects are the
-// tables and views proctor.yaml declares for this connection.
 func (c *Conn) RoleProblems(ctx context.Context, objects []string, timeout time.Duration) ([]string, error) {
 	var problems []string
 	q := func(sql string, args ...any) ([][]any, error) {
@@ -289,7 +260,6 @@ func (c *Conn) RoleProblems(ctx context.Context, objects []string, timeout time.
 		}
 	}
 
-	// Table privileges, including column-level grants, and sequences.
 	rows, err = q(`SELECT n.nspname || '.' || c.relname, c.relkind::text,
 			has_any_column_privilege(c.oid, 'SELECT'),
 			has_any_column_privilege(c.oid, 'INSERT'),
@@ -357,8 +327,6 @@ func (c *Conn) RoleProblems(ctx context.Context, objects []string, timeout time.
 
 type object struct{ full, kind string }
 
-// resolve finds each declared object's schema-qualified name and relkind
-// through the session's search_path; kind is "" when it doesn't resolve.
 func (c *Conn) resolve(ctx context.Context, objects []string, timeout time.Duration) (map[string]object, error) {
 	out := map[string]object{}
 	for _, o := range objects {

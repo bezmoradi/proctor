@@ -25,7 +25,6 @@ import (
 	"proctor/internal/strictyaml"
 )
 
-// authOptions are the flags of `proctor run --authoritative` (MODE-01).
 type authOptions struct {
 	c                             common
 	binding, commit, base, prHead string
@@ -35,8 +34,6 @@ type authOptions struct {
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// authReport is the authoritative JSON report (§13.1). It is always
-// written to --report (MODE-05), also when nothing could run.
 type authReport struct {
 	Result           string                  `json:"result"`
 	ExitCode         int                     `json:"exit_code"`
@@ -53,10 +50,8 @@ type authReport struct {
 }
 
 type authTrust struct {
-	// WorkflowIdentity is a verified *github.Identity, or "unverified".
 	WorkflowIdentity any `json:"workflow_identity"`
-	// WorkflowChanged is true, false, "not_applicable" (the workflow
-	// lives in another repository, OD-01 option A) or "unknown".
+
 	WorkflowChanged            any      `json:"workflow_changed"`
 	CodeownersErrors           []string `json:"codeowners_errors"`
 	UnownedProtectedPaths      []string `json:"unowned_protected_paths"`
@@ -81,10 +76,6 @@ type authProvenance struct {
 	EndedAt        string              `json:"ended_at"`
 }
 
-// runAuthoritative checks that a commit satisfies the contract (§5.2). It
-// reads every protected input from the Git object database at the tested
-// commit (MODE-02), runs nothing while any integrity or configuration
-// problem exists, and always writes the report.
 func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	if o.report == "" {
 		fmt.Fprintln(stderr, "proctor run: --report is required with --authoritative (MODE-05)")
@@ -108,8 +99,6 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	invalid := func(format string, args ...any) { ar.Errors = append(ar.Errors, fmt.Sprintf(format, args...)) }
 
-	// MODE-01: the binding comes from the trusted job, never from the
-	// checkout the pull request controls.
 	if inside, err := within(repo.Dir(), o.binding); err != nil {
 		invalid("binding: %v", err)
 	} else if inside {
@@ -155,8 +144,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 			}
 		}
 		for _, u := range rep.Unlisted {
-			// INT-05 in authoritative mode: a specification the manifest
-			// doesn't list is never silently left out.
+
 			violate("INT-05", "%s looks like a specification but the manifest doesn't list it", u)
 		}
 		ar.Provenance.SHA256 = map[string]string{}
@@ -178,8 +166,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		ar.Provenance.SHA256["binding"] = hex.EncodeToString(sum[:])
 		ar.Provenance.Environment = b.Environment
 		ar.Provenance.Image = b.Image
-		// REP-11: the image that ran must be the image built from the
-		// tested commit.
+
 		switch {
 		case b.Image == nil || b.Image.BuiltDigest == "" || b.Image.RunningDigest == "":
 			violate("REP-11", "the binding must give image.built_digest and image.running_digest")
@@ -193,7 +180,6 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		ar.Provenance.Environment = "unnamed"
 	}
 
-	// INT-10: every protected change against the base, for the code owners.
 	if base != "" && tested != "" {
 		if ch, err := protdiff.Compute(repo, base, tested, o.c.config); err != nil {
 			violate("INT-08", "%v", err)
@@ -215,7 +201,6 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	defer stop()
 	client := github.Client(10 * time.Second)
 
-	// MODE-03: the workflow identity, if the job can prove it.
 	ident, err := github.FetchIdentity(ctx, client)
 	switch {
 	case errors.Is(err, github.ErrNoToken):
@@ -245,7 +230,6 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// INT-11: GitHub's own check of CODEOWNERS at the base commit.
 	token := os.Getenv("GITHUB_TOKEN")
 	api := os.Getenv("GITHUB_API_URL")
 	if api == "" {
@@ -323,7 +307,6 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 
 const exitError = 2
 
-// within reports whether path resolves to a location inside dir.
 func within(dir, path string) (bool, error) {
 	d, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -344,8 +327,6 @@ func within(dir, path string) (bool, error) {
 	return rel == "." || !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..", nil
 }
 
-// workflowChanged implements MODE-04 under OD-01 option B: the workflow
-// file that ran, compared with the same path at the base commit.
 func workflowChanged(repo *gitrepo.Repo, id *github.Identity, base string) (any, error) {
 	split := func(ref string) (string, string, error) {
 		at := strings.LastIndex(ref, "@")
@@ -393,8 +374,6 @@ func workflowChanged(repo *gitrepo.Repo, id *github.Identity, base string) (any,
 	return false, nil
 }
 
-// unowned lists the tested commit's protected paths that CODEOWNERS at
-// the base leaves without a protected owner (INT-11, report only).
 func unowned(repo *gitrepo.Repo, base, tested string, rep *integrity.Report) []string {
 	baseTree, err1 := repo.Tree(base)
 	tree, err2 := repo.Tree(tested)
@@ -459,7 +438,6 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 	writeRun(w, rep, out, "authoritative")
 }
 
-// writeSummary appends the job summary (INT-10, MODE-04).
 func writeSummary(w io.Writer, ar *authReport) {
 	fmt.Fprintf(w, "## Proctor: %s (exit %d)\n\n", strings.ToUpper(ar.Result), ar.ExitCode)
 	p := ar.Provenance

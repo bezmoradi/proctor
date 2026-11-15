@@ -1,13 +1,3 @@
-// Package protdiff lists changes to protected inputs between two commits
-// (INT-08 and INT-09 in prd.md).
-//
-// It compares the two commits' trees entry by entry, by blob ID and mode,
-// and never uses Git's rename detection: a removed path and an added path
-// with the same blob ID and mode are reported as a move; anything else is a
-// removal plus an addition. It also lists scenario IDs that were added,
-// removed, modified or moved between specification files. Any Git error is
-// returned as an error, which callers report as an integrity violation,
-// never as "no changes".
 package protdiff
 
 import (
@@ -26,28 +16,22 @@ import (
 	"proctor/internal/strictyaml"
 )
 
-// FileChange is one changed protected path.
 type FileChange struct {
-	Change  string `json:"change"` // added, removed, modified, moved
+	Change  string `json:"change"`
 	Path    string `json:"path"`
-	From    string `json:"from,omitempty"` // for moves
+	From    string `json:"from,omitempty"`
 	OldMode string `json:"old_mode,omitempty"`
 	NewMode string `json:"new_mode,omitempty"`
 }
 
-// ScenarioChange is one changed scenario, matched by ID across all
-// specification files.
 type ScenarioChange struct {
-	Change   string `json:"change"` // added, removed, modified, moved
+	Change   string `json:"change"`
 	ID       string `json:"id"`
 	File     string `json:"file"`
 	FromFile string `json:"from_file,omitempty"`
-	Modified bool   `json:"modified,omitempty"` // for moves
+	Modified bool   `json:"modified,omitempty"`
 }
 
-// Weakening is a change that makes a scenario check less (§7.5): a removed
-// scenario, step or assertion, a verification step moved into setup, or an
-// added no_state_check or waive entry. A reviewer reads these first.
 type Weakening struct {
 	Scenario       string `json:"scenario"`
 	Step           string `json:"step,omitempty"`
@@ -56,8 +40,6 @@ type Weakening struct {
 	AssertionsLost int    `json:"assertions_lost"`
 }
 
-// ExpectationChange is a changed request or expectation that isn't simply
-// a removal: a different status, value, identity, credential or query.
 type ExpectationChange struct {
 	Scenario string `json:"scenario"`
 	Step     string `json:"step"`
@@ -66,7 +48,6 @@ type ExpectationChange struct {
 	To       string `json:"to"`
 }
 
-// Result lists every protected change between Base and Head.
 type Result struct {
 	Base         string              `json:"base"`
 	Head         string              `json:"head"`
@@ -74,17 +55,12 @@ type Result struct {
 	Scenarios    []ScenarioChange    `json:"scenarios"`
 	Weakenings   []Weakening         `json:"weakenings"`
 	Expectations []ExpectationChange `json:"expectation_changes"`
-	// Unparsed lists specification files whose scenarios couldn't be
-	// compared because one side doesn't parse; their file change still shows.
+
 	Unparsed []string `json:"unparsed,omitempty"`
 }
 
-// Count returns the number of changed protected paths.
 func (r *Result) Count() int { return len(r.Files) }
 
-// BaseForTestMerge returns the base commit for GitHub's test merge commit:
-// its first parent, after checking that its second parent is the pull
-// request's head (INT-09).
 func BaseForTestMerge(repo *gitrepo.Repo, merge, prHead string) (string, error) {
 	m, err := repo.ResolveCommit(merge)
 	if err != nil {
@@ -107,7 +83,6 @@ func BaseForTestMerge(repo *gitrepo.Repo, merge, prHead string) (string, error) 
 	return repo.ResolveCommit(parents[0])
 }
 
-// Compute compares the protected inputs of base and head.
 func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error) {
 	b, err := repo.ResolveCommit(base)
 	if err != nil {
@@ -129,8 +104,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	if root == "." || root == "" {
 		return nil, fmt.Errorf("configuration %q must sit inside a protected root directory", configPath)
 	}
-	// Paths protected on either side count, so that removing an entry from
-	// protected_paths doesn't hide the change it permits.
+
 	extra := append(protectedPaths(repo, bt, configPath), protectedPaths(repo, ht, configPath)...)
 
 	res := &Result{Base: b, Head: h}
@@ -154,7 +128,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 			res.Files = append(res.Files, c)
 		}
 	}
-	// Exact moves only: same blob and mode at a new path.
+
 	used := map[int]bool{}
 	for _, rm := range removed {
 		moved := false
@@ -211,11 +185,9 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 type scenarioVersion struct {
 	file  string
 	canon []byte
-	typed *model.Scenario // nil when the file doesn't decode strictly
+	typed *model.Scenario
 }
 
-// scenarios maps scenario ID to its file and canonical form, for every
-// specification candidate under the protected root.
 func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath string) (map[string]scenarioVersion, []string, error) {
 	out := map[string]scenarioVersion{}
 	var unparsed []string
@@ -236,7 +208,7 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 		seq := mappingValue(doc, "scenarios")
 		if seq == nil || seq.Kind != yaml.SequenceNode {
-			continue // not a specification (for example the manifest)
+			continue
 		}
 		for _, sc := range seq.Content {
 			idNode := mappingValue(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{sc}}, "id")
@@ -285,9 +257,6 @@ func compareScenarios(base, head map[string]scenarioVersion) []ScenarioChange {
 	return out
 }
 
-// protectedPaths reads protected_paths from the commit's proctor.yaml, or
-// returns nil if it can't be read; the configuration file's own change is
-// listed either way.
 func protectedPaths(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, configPath string) []string {
 	e, ok := tree[configPath]
 	if !ok || !e.Regular() {
@@ -320,8 +289,6 @@ func mappingValue(doc *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// stripPositions copies a node without line, column and comment data, so
-// that only content changes make two scenarios differ.
 func stripPositions(n *yaml.Node) *yaml.Node {
 	c := &yaml.Node{Kind: n.Kind, Tag: n.Tag, Value: n.Value}
 	for _, child := range n.Content {
@@ -361,8 +328,6 @@ func dedupe(s []string) []string {
 	return out
 }
 
-// stepAssertions lists a step's assertions by name, for counting and
-// matching across versions.
 func stepAssertions(st model.Step) []string {
 	var out []string
 	if ex := st.Expect; ex != nil {
@@ -431,9 +396,6 @@ func indexSteps(sc *model.Scenario) (map[string]located, []string) {
 	return m, order
 }
 
-// compareSteps matches steps by ID and reports what each lost or changed.
-// Setup steps carry no evidence (FIX-04), so only verification assertions
-// count as lost.
 func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationChange) {
 	var ws []Weakening
 	var es []ExpectationChange
@@ -544,7 +506,6 @@ func stepChanges(b, h model.Step) []ExpectationChange {
 	return out
 }
 
-// canonical renders a decoded value for comparison and display.
 func canonical(v any) string {
 	if p, ok := v.(*int); ok {
 		if p == nil {

@@ -1,6 +1,3 @@
-# Built binaries
 /bin/
-# Local environment files (examples keep their own .gitignore too)
 .env
-# Python bytecode
 __pycache__/

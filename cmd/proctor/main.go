@@ -1,5 +1,3 @@
-// Command proctor verifies an application against a protected behavioral
-// contract. See prd.md.
 package main
 
 import (

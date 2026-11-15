@@ -1,10 +1,3 @@
-// Package expr holds the small expression language of the Phase 0
-// specification subset: JSONPath selectors, ${name} variable references and
-// type-strict value comparison (prd.md HTTP-02, HTTP-03, OD-10).
-//
-// The JSONPath subset is $, .name and [index]. Schema v1 replaces it with an
-// RFC 9535 implementation (OD-10); until then anything outside the subset is
-// rejected at validation rather than guessed at.
 package expr
 
 import (
@@ -16,7 +9,6 @@ import (
 	"strings"
 )
 
-// Path is a parsed JSONPath selector from the Phase 0 subset.
 type Path struct {
 	src   string
 	steps []step
@@ -30,7 +22,6 @@ type step struct {
 
 var nameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*`)
 
-// ParsePath parses $, $.a.b, $.a[0].b and similar selectors.
 func ParsePath(s string) (Path, error) {
 	p := Path{src: s}
 	if !strings.HasPrefix(s, "$") {
@@ -66,7 +57,6 @@ func ParsePath(s string) (Path, error) {
 
 func (p Path) String() string { return p.src }
 
-// Select returns the value at the path and whether it exists.
 func (p Path) Select(doc any) (any, bool) {
 	cur := doc
 	for _, st := range p.steps {
@@ -96,18 +86,10 @@ var (
 	varName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
-// VarName reports whether s can name a saved value.
 func VarName(s string) bool { return varName.MatchString(s) }
 
-// RunID is the reference to the run's unique ID (FIX-05), which the runner
-// expands to the run's ID followed by "-" and the scenario's ID. Saved names
-// can't contain a dot, so it never collides with one.
 const RunID = "run.id"
 
-// References returns the variable names referenced by ${...} in s, with
-// RunID for ${run.id}. Any other reference that isn't a plain saved-value
-// name is an error: the steps., identities. and row. namespaces come with
-// schema v1.
 func References(s string) ([]string, error) {
 	var names []string
 	for _, m := range refRE.FindAllStringSubmatch(s, -1) {
@@ -122,8 +104,6 @@ func References(s string) ([]string, error) {
 	return names, nil
 }
 
-// ReferencesIn walks a decoded YAML value and returns every reference in
-// its strings (map keys included).
 func ReferencesIn(v any) ([]string, error) {
 	var out []string
 	var walk func(any) error
@@ -162,11 +142,8 @@ var (
 	secretRE = regexp.MustCompile(`^secret\.([A-Za-z_][A-Za-z0-9_]*)$`)
 )
 
-// MaxFill bounds ${fill(N)}.
 const MaxFill = 16 << 20
 
-// IsFill reports whether a reference is ${fill(N)}: N copies of "x", for
-// testing size limits without writing large specifications.
 func IsFill(ref string) bool {
 	m := fillRE.FindStringSubmatch(ref)
 	if m == nil {
@@ -176,14 +153,10 @@ func IsFill(ref string) bool {
 	return n <= MaxFill
 }
 
-// IsSecret reports whether a reference is ${secret.name}, a value the
-// binding supplies from the environment and reports never show.
 func IsSecret(ref string) bool { return secretRE.MatchString(ref) }
 
-// SecretName returns the name in ${secret.name}.
 func SecretName(ref string) string { return secretRE.FindStringSubmatch(ref)[1] }
 
-// lookup resolves one reference: a fill, or a value in v.
 func (v Vars) lookup(name string) (any, bool) {
 	if m := fillRE.FindStringSubmatch(name); m != nil {
 		n, _ := strconv.Atoi(m[1])
@@ -195,14 +168,8 @@ func (v Vars) lookup(name string) (any, bool) {
 	return val, ok
 }
 
-// Vars are values saved by earlier steps of one scenario, plus RunID and
-// "secret.<name>" entries for the binding's secrets.
 type Vars map[string]any
 
-// Value interpolates a template value once (HTTP-02). A string that is
-// exactly one reference keeps the saved value's type; a reference inside
-// other text becomes text (HTTP-03). Inserted values are never scanned
-// again. Maps and lists are interpolated element by element.
 func (v Vars) Value(t any) (any, error) {
 	switch x := t.(type) {
 	case string:
@@ -243,8 +210,6 @@ func (v Vars) Value(t any) (any, error) {
 	}
 }
 
-// Text interpolates a string template, converting each inserted value to
-// text and passing it through escape when escape isn't nil.
 func (v Vars) Text(t string, escape func(string) string) (string, error) {
 	var err error
 	out := refRE.ReplaceAllStringFunc(t, func(ref string) string {
@@ -263,8 +228,6 @@ func (v Vars) Text(t string, escape func(string) string) (string, error) {
 	return out, err
 }
 
-// ToText is the text form of a JSON value: strings as they are, everything
-// else as JSON.
 func ToText(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -276,9 +239,6 @@ func ToText(v any) string {
 	return string(b)
 }
 
-// Equal compares an expected value (decoded from YAML) with an actual one
-// (decoded from JSON with UseNumber), strictly by type: 7 is not "7", and
-// numbers compare by value whatever their spelling.
 func Equal(want, got any) bool {
 	if wn, ok := number(want); ok {
 		gn, ok := number(got)

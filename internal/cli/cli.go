@@ -1,10 +1,3 @@
-// Package cli implements the proctor command line for Phase 0: validate,
-// integrity, diff and run in local mode (prd.md §16.1).
-//
-// Exit codes follow §13.3: 0 passed, 1 a behavioral assertion failed, 2
-// an execution or infrastructure error, 3 invalid configuration or
-// specification (also used for invalid invocations), 4 integrity or trust
-// violation. Authoritative mode (MODE-01) comes in a later increment.
 package cli
 
 import (
@@ -27,7 +20,6 @@ import (
 	"proctor/internal/strictyaml"
 )
 
-// Version is set at build time with -ldflags "-X proctor/internal/cli.Version=...".
 var Version = "0.0.0-phase0"
 
 const (
@@ -38,7 +30,6 @@ const (
 
 const defaultConfig = "proctor/proctor.yaml"
 
-// Main runs the command line and returns the process exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
@@ -95,8 +86,6 @@ func newFlags(name string, stderr io.Writer, c *common) *flag.FlagSet {
 	return fs
 }
 
-// validate checks formats and validation rules (exit 0 or 3). It reads the
-// working tree unless --commit is given, and never contacts an application.
 func validate(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var commit string
@@ -124,12 +113,10 @@ func validate(args []string, stdout, stderr io.Writer) int {
 	if r.Has(integrity.Invalid) {
 		code = exitInvalid
 	}
-	// validate reports integrity findings it happened to see, but only
-	// `proctor integrity` decides them (exit 4).
+
 	return write(stdout, c.json, "VALIDATE", r, code, resultName(code))
 }
 
-// checkIntegrity runs every static integrity check at a commit (0, 3 or 4).
 func checkIntegrity(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var commit string
@@ -197,8 +184,6 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int
 	return code
 }
 
-// diff lists protected changes between two commits (exit 0, or 4 when Git
-// can't produce either commit or its trees).
 func diff(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var base, head, prHead string
@@ -307,10 +292,6 @@ func orDash(s string) string {
 	return s
 }
 
-// run executes the specification set. In local mode (§5.1) it reads the
-// protected files from the working tree, so its result is not evidence for
-// a commit; --authoritative (§5.2) reads them from a commit instead. Exit
-// codes 0 to 4 (§13.3).
 func run(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var bindingPath, commit, base, prHead, report string
@@ -354,7 +335,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
 	if code := rep.ExitCode(); code != exitOK {
-		// Nothing runs when the set is invalid or incomplete (INT-04).
+
 		return write(stdout, c.json, "RUN", rep, code, resultName(code))
 	}
 

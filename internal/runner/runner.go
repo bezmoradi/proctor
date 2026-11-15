@@ -1,11 +1,3 @@
-// Package runner executes specifications: scenarios of HTTP steps and
-// read-only PostgreSQL checks against the target and connections named by an
-// environment binding (prd.md §11.1, §11.2, §11.7, §13.3, FIX-04,
-// INT-03).
-//
-// It is Proctor's own runner (§19, SEC-13). Scenarios run one at a time in
-// manifest order and then file order (EXE-04). Every scenario the loader
-// found gets a result; nothing is skipped silently.
 package runner
 
 import (
@@ -26,7 +18,6 @@ import (
 	"proctor/internal/postgres"
 )
 
-// Result is the outcome of a scenario, step or assertion (§13.3).
 type Result string
 
 const (
@@ -36,7 +27,6 @@ const (
 	NotRun Result = "NOT_RUN"
 )
 
-// NOT_RUN and ERROR reasons (§13.3).
 const (
 	ReasonSetupFailed         = "setup_failed"
 	ReasonEarlierStepFailed   = "earlier_step_failed"
@@ -46,10 +36,6 @@ const (
 	ReasonTrustViolation      = "trust_violation"
 )
 
-// Causes say why a step is ERROR or FAIL (FIX-04). A setup step that FAILs
-// becomes ERROR with reason setup_failed and keeps its cause, so a report
-// tells an application defect (unexpected_response) from an environment
-// problem (unreachable, timeout).
 const (
 	CauseUnexpectedResponse = "unexpected_response"
 	CauseUnreachable        = "unreachable"
@@ -59,14 +45,12 @@ const (
 	CauseInvalidRequest     = "invalid_request"
 )
 
-// MaxBodyBytes bounds how much of a response Proctor reads.
 const MaxBodyBytes = 10 << 20
 
 const redacted = "[redacted]"
 
-// Assertion is one evaluated expectation, with the evidence it was judged on.
 type Assertion struct {
-	Kind     string `json:"kind"` // status, header, body, json, present, absent, length, save, rows, first_row
+	Kind     string `json:"kind"`
 	Target   string `json:"target,omitempty"`
 	Expected any    `json:"expected,omitempty"`
 	Actual   any    `json:"actual,omitempty"`
@@ -75,7 +59,6 @@ type Assertion struct {
 	Message  string `json:"message,omitempty"`
 }
 
-// Request is what was sent, without credentials.
 type Request struct {
 	Method     string `json:"method"`
 	URL        string `json:"url"`
@@ -83,17 +66,14 @@ type Request struct {
 	Credential string `json:"credential,omitempty"`
 }
 
-// Check is a database check as run; arguments are not reported, since
-// they can hold captured values.
 type Check struct {
 	Connection string `json:"connection"`
 	Query      string `json:"query"`
 }
 
-// StepResult is one step's outcome.
 type StepResult struct {
 	ID         string      `json:"id"`
-	Phase      string      `json:"phase"` // setup or verification
+	Phase      string      `json:"phase"`
 	Result     Result      `json:"result"`
 	Reason     string      `json:"reason,omitempty"`
 	Cause      string      `json:"cause,omitempty"`
@@ -106,8 +86,6 @@ type StepResult struct {
 	Saved      []string    `json:"saved,omitempty"`
 }
 
-// ScenarioResult is one scenario's outcome. Its result is its worst step,
-// except that a failed setup makes it ERROR (FIX-04).
 type ScenarioResult struct {
 	ID     string       `json:"id"`
 	Name   string       `json:"name"`
@@ -118,7 +96,6 @@ type ScenarioResult struct {
 	Steps  []StepResult `json:"steps"`
 }
 
-// Summary counts scenario results and evaluated assertions.
 type Summary struct {
 	Scenarios  int `json:"scenarios"`
 	Passed     int `json:"passed"`
@@ -128,7 +105,6 @@ type Summary struct {
 	Assertions int `json:"assertions"`
 }
 
-// Outcome is a whole run.
 type Outcome struct {
 	RunID      string           `json:"run_id"`
 	Target     string           `json:"target"`
@@ -140,44 +116,36 @@ type Outcome struct {
 	Result     string           `json:"result"`
 }
 
-// ConfigError is a binding or configuration problem found before any
-// request is sent (exit 3).
 type ConfigError struct{ Msgs []string }
 
 func (e *ConfigError) Error() string { return strings.Join(e.Msgs, "; ") }
 
-// Runner holds everything a run needs, checked by New.
 type Runner struct {
 	report       *integrity.Report
 	base         *url.URL
 	ua           string
-	tokens       map[string]string // credKey -> bearer token; never reported
+	tokens       map[string]string
 	client       *http.Client
 	redactJS     map[string]bool
 	redactH      map[string]bool
 	ready        string
 	readyFor     time.Duration
 	queryTimeout time.Duration
-	dsns         map[string]string // connection -> connection string; never reported
+	dsns         map[string]string
 	pg           map[string]*postgres.Conn
-	secrets      map[string]string // "secret.<name>" -> value; never reported
+	secrets      map[string]string
 }
 
-// Options tune a run. Zero values give the defaults.
 type Options struct {
-	// RequestTimeout bounds each request; 10s by default (OD-18 leaves the
-	// v1 default open).
 	RequestTimeout time.Duration
-	// QueryTimeout bounds each database query; 5s by default.
+
 	QueryTimeout time.Duration
-	// LookupEnv reads credential variables; os.LookupEnv in production.
+
 	LookupEnv func(string) (string, bool)
 }
 
 func credKey(identity, variant string) string { return identity + "\x00" + variant }
 
-// New checks the binding against the loaded configuration. The report must
-// have no findings of kind Invalid or Violation.
 func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, error) {
 	var msgs []string
 	bad := func(format string, args ...any) { msgs = append(msgs, fmt.Sprintf(format, args...)) }
@@ -218,8 +186,8 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 			}
 		}
 	}
-	tokens := map[string]string{} // credKey -> whole Authorization value; never reported
-	owner := map[string]string{}  // Authorization value -> who uses it, for AUTH-03
+	tokens := map[string]string{}
+	owner := map[string]string{}
 	load := func(who, key, env, prefix string) {
 		tok, ok := lookup(env)
 		switch {
@@ -342,21 +310,17 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 		r.queryTimeout = 5 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// SEC-07: requests go to the target only, never through a proxy taken
-	// from the environment.
+
 	transport.Proxy = nil
 	r.client = &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
-		// HTTP-01: redirects are never followed; the response is judged as
-		// received.
+
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	return r, nil
 }
 
-// used lists the identities, credential variants and PostgreSQL connections
-// the loaded specifications use.
 func used(rep *integrity.Report) (idents []string, variants [][2]string, conns []string) {
 	seenI, seenV, seenC := map[string]bool{}, map[[2]string]bool{}, map[string]bool{}
 	for _, p := range rep.Specs {
@@ -388,18 +352,14 @@ func used(rep *integrity.Report) (idents []string, variants [][2]string, conns [
 	return idents, variants, conns
 }
 
-// NewRunID returns a fresh run ID: 12 lower-case hex digits from the
-// operating system's random source, safe in paths, names and SQL text.
 func NewRunID() string {
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
-		panic(err) // crypto/rand doesn't fail on supported platforms
+		panic(err)
 	}
 	return hex.EncodeToString(b)
 }
 
-// Run executes every scenario. It never returns early: a scenario that
-// can't run still gets a NOT_RUN result with its reason (INT-03).
 func (r *Runner) Run(ctx context.Context) *Outcome {
 	out := &Outcome{Target: r.base.String(), RunID: NewRunID()}
 	defer func() {
@@ -421,8 +381,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			stopAll = ReasonEnvironmentNotReady
 			out.Readiness = "not ready: " + err.Error()
 		case len(v) > 0:
-			// DB-04: a role that could change data, or read what
-			// proctor.yaml doesn't declare, makes every check suspect.
+
 			stopAll = ReasonTrustViolation
 			out.Violations = v
 		}
@@ -450,9 +409,6 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 	return out
 }
 
-// scrub replaces every credential, secret and connection string that
-// appears anywhere in the outcome, for example because the application
-// echoed one in a response Proctor asserted on (AUTH-02, SEC-02).
 func (r *Runner) scrub(out *Outcome) {
 	var values []string
 	for _, v := range r.tokens {
@@ -464,7 +420,7 @@ func (r *Runner) scrub(out *Outcome) {
 	for _, v := range r.dsns {
 		values = append(values, v)
 	}
-	// Longest first, so a value that contains another is replaced whole.
+
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	clean := func(s string) string {
 		for _, v := range values {
@@ -513,7 +469,6 @@ func (r *Runner) scrub(out *Outcome) {
 	}
 }
 
-// usedSecrets lists the secrets the loaded specifications reference.
 func usedSecrets(rep *integrity.Report) []string {
 	seen := map[string]bool{}
 	for _, p := range rep.Specs {
@@ -562,8 +517,7 @@ func (o *Outcome) finish() {
 			s.Assertions += len(st.Assertions)
 		}
 	}
-	// REP-07: a trust violation (4) first, then a behavioral failure (1),
-	// then an error (2).
+
 	switch {
 	case len(o.Violations) > 0:
 		o.ExitCode, o.Result = 4, "integrity_violation"
@@ -576,9 +530,6 @@ func (o *Outcome) finish() {
 	}
 }
 
-// waitReady waits, within the startup timeout, for the readiness path to
-// answer 2xx and for every PostgreSQL connection to answer SELECT 1 as the
-// verification role (FIX-07).
 func (r *Runner) waitReady(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, r.readyFor)
 	defer cancel()
@@ -634,7 +585,6 @@ func (r *Runner) waitReady(ctx context.Context) error {
 	return nil
 }
 
-// checkRoles runs DB-04 and DB-07 on every open connection.
 func (r *Runner) checkRoles(ctx context.Context) ([]string, error) {
 	var out []string
 	for _, name := range sortedKeys(r.pg) {
@@ -643,8 +593,7 @@ func (r *Runner) checkRoles(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("connection %s: checking the verification role: %v", name, err)
 		}
-		// A superuser can own thousands of objects; the first problems are
-		// enough to act on, and the count says how many there are.
+
 		const shown = 50
 		for i, p := range problems {
 			if i == shown {
@@ -670,13 +619,12 @@ func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
 
 func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runID string) ScenarioResult {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
-	// FIX-05: ${run.id} is unique per run and per scenario, so names made
-	// with it collide neither with earlier runs nor with other scenarios.
+
 	vars := expr.Vars{expr.RunID: runID + "-" + sc.ID}
 	for k, v := range r.secrets {
 		vars[k] = v
 	}
-	stop := "" // reason for the remaining steps, once one is set
+	stop := ""
 
 	run := func(st model.Step, phase string) {
 		if stop != "" {
@@ -697,9 +645,7 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 		}
 		switch {
 		case phase == "setup" && sr.Result != Pass:
-			// FIX-04: a setup step that fails or can't run is ERROR; its
-			// cause stays, so an application defect is told apart from
-			// the environment.
+
 			sr.Result, sr.Reason = Error, ReasonSetupFailed
 			res.Result, res.Reason, res.Cause = Error, ReasonSetupFailed, sr.Cause
 			stop = ReasonSetupFailed

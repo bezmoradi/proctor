@@ -1,8 +1,3 @@
-// Package github holds the two GitHub calls Proctor makes in authoritative
-// mode (prd.md SEC-07): the GitHub Actions OIDC token that proves which
-// workflow is running (MODE-03), and the CODEOWNERS errors endpoint
-// (INT-11). It also evaluates CODEOWNERS itself to report protected paths
-// with no protected owner; that evaluation only reports (OD-16).
 package github
 
 import (
@@ -24,13 +19,8 @@ import (
 	"time"
 )
 
-// Issuer is the only OIDC issuer Proctor trusts. Black-box tests build a
-// separate binary with -ldflags "-X proctor/internal/github.Issuer=env",
-// which reads the issuer from PROCTOR_TEST_OIDC_ISSUER; a normal build
-// can't be pointed elsewhere.
 var Issuer = "https://token.actions.githubusercontent.com"
 
-// Audience is the audience Proctor requests and requires.
 const Audience = "proctor"
 
 const maxBody = 1 << 20
@@ -42,8 +32,6 @@ func issuer() string {
 	return Issuer
 }
 
-// Client makes requests with no proxy from the environment, no redirects
-// and a time limit (ASM-21).
 func Client(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:       timeout,
@@ -52,7 +40,6 @@ func Client(timeout time.Duration) *http.Client {
 	}
 }
 
-// Identity is the workflow identity from a verified OIDC token.
 type Identity struct {
 	Repository     string `json:"repository"`
 	WorkflowRef    string `json:"workflow_ref"`
@@ -65,14 +52,8 @@ type Identity struct {
 	RunAttempt     string `json:"run_attempt"`
 }
 
-// ErrNoToken means the job didn't grant id-token: write, so there is no
-// identity to verify.
 var ErrNoToken = errors.New("no OIDC token request variables")
 
-// FetchIdentity requests an OIDC token from the Actions runtime and
-// verifies its signature, issuer, audience and time. It returns ErrNoToken
-// when the runtime offers no token; any other error means a token was
-// offered but couldn't be verified.
 func FetchIdentity(ctx context.Context, c *http.Client) (*Identity, error) {
 	reqURL, reqTok := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"), os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 	if reqURL == "" || reqTok == "" {
@@ -243,18 +224,14 @@ func getJSON(ctx context.Context, c *http.Client, u, auth string, v any) error {
 	return nil
 }
 
-// StatusError is a non-200 answer.
 type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("HTTP status %d", e.Code) }
 
-// scrubURL drops query strings from an error message: the token request
-// URL may carry runtime parameters.
 var queryPart = regexp.MustCompile(`\?[^\s"]*`)
 
 func scrubURL(s string) string { return queryPart.ReplaceAllString(s, "?…") }
 
-// CodeownersError is one problem GitHub reports in CODEOWNERS.
 type CodeownersError struct {
 	Line    int    `json:"line"`
 	Kind    string `json:"kind"`
@@ -262,8 +239,6 @@ type CodeownersError struct {
 	Message string `json:"message"`
 }
 
-// CodeownersErrors asks GitHub for the errors in the CODEOWNERS file at
-// ref (INT-11). repo is "owner/name".
 func CodeownersErrors(ctx context.Context, c *http.Client, apiURL, repo, token, ref string) ([]CodeownersError, error) {
 	if !regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`).MatchString(repo) {
 		return nil, fmt.Errorf("repository %q isn't owner/name", repo)
@@ -285,9 +260,6 @@ func CodeownersErrors(ctx context.Context, c *http.Client, apiURL, repo, token, 
 	return *resp.Errors, nil
 }
 
-// Unowned returns the paths whose last matching CODEOWNERS rule names no
-// owner from owners. Proctor's matcher follows GitHub's documented rules
-// but isn't GitHub's, so this only reports (OD-16).
 func Unowned(codeowners []byte, paths, owners []string) []string {
 	type rule struct {
 		re     *regexp.Regexp
@@ -329,10 +301,6 @@ func Unowned(codeowners []byte, paths, owners []string) []string {
 	return out
 }
 
-// patternRegexp turns one CODEOWNERS pattern into a regular expression
-// over repository-relative paths, with gitignore-style rules: a leading or
-// inner slash anchors the pattern at the root, a trailing slash matches a
-// directory's contents, * stays within a segment and ** crosses segments.
 func patternRegexp(p string) *regexp.Regexp {
 	anchored := strings.HasPrefix(p, "/") || strings.Contains(strings.TrimSuffix(p, "/"), "/")
 	p = strings.TrimPrefix(p, "/")

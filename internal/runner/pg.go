@@ -12,9 +12,6 @@ import (
 	"proctor/internal/postgres"
 )
 
-// pgStep runs one database check (§11.7). Connection failures and SQL
-// errors are ERROR (DB-05); only a result that differs from the expectation
-// is FAIL.
 func (r *Runner) pgStep(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars) StepResult {
 	pc := st.Verify.Postgres
 	sr.Check = &Check{Connection: pc.Connection, Query: strings.TrimSpace(pc.Query)}
@@ -139,10 +136,6 @@ func (r *Runner) pgStep(ctx context.Context, st model.Step, sr StepResult, vars 
 	return sr
 }
 
-// argValue turns a decoded value into a driver argument. Strings are sent as
-// text and PostgreSQL converts them to the parameter's type, so an ID saved
-// from JSON as "7" matches an integer column; numbers keep their exact
-// spelling.
 func argValue(v any) any {
 	switch t := v.(type) {
 	case nil, string, bool:

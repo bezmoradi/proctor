@@ -1,13 +1,3 @@
-// Package integrity loads the protected verification inputs and runs the
-// static integrity checks of prd.md §7: INT-01, INT-02, INT-04
-// (static part), INT-05, INT-11 (local part), INT-12, INT-13, INT-14,
-// INT-15 and INT-16.
-//
-// Findings have one of two kinds. Invalid (exit 3) means a file breaks the
-// format or validation rules, including a specification likely to give a
-// misleading PASS. Violation (exit 4) means the verification set or its
-// inputs are incomplete or can't be trusted to show what runs. There is no
-// warning level: every finding fails the command (REQ-37).
 package integrity
 
 import (
@@ -32,7 +22,6 @@ import (
 	"proctor/internal/strictyaml"
 )
 
-// Kind is a finding's class; its value is the exit code it causes.
 type Kind int
 
 const (
@@ -48,7 +37,6 @@ func (k Kind) String() string {
 	return "invalid"
 }
 
-// Finding is one failed check.
 type Finding struct {
 	Kind    Kind   `json:"kind"`
 	Rule    string `json:"rule"`
@@ -56,7 +44,6 @@ type Finding struct {
 	Message string `json:"message"`
 }
 
-// Report is the result of loading and checking the protected inputs.
 type Report struct {
 	Commit        string            `json:"commit,omitempty"`
 	ConfigPath    string            `json:"config"`
@@ -72,8 +59,6 @@ type Report struct {
 	Parsed   map[string]*model.Spec `json:"-"`
 }
 
-// ExitCode returns 4 if any violation was found, else 3 if anything is
-// invalid, else 0 (REP-07 order: 4 before 3).
 func (r *Report) ExitCode() int {
 	code := 0
 	for _, f := range r.Findings {
@@ -84,7 +69,6 @@ func (r *Report) ExitCode() int {
 	return code
 }
 
-// Has reports whether any finding of kind k exists.
 func (r *Report) Has(k Kind) bool {
 	for _, f := range r.Findings {
 		if f.Kind == k {
@@ -98,19 +82,14 @@ func (r *Report) add(k Kind, rule, p, format string, args ...any) {
 	r.Findings = append(r.Findings, Finding{Kind: k, Rule: rule, Path: p, Message: fmt.Sprintf(format, args...)})
 }
 
-// Source reads repository-relative files. ok is false when the file doesn't
-// exist; err is for anything else.
 type Source interface {
 	ReadFile(p string) (data []byte, ok bool, err error)
 }
 
-// CodeownersPaths are the locations GitHub reads, in its lookup order.
 var CodeownersPaths = []string{".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"}
 
 var repoMetaPaths = []string{".gitattributes", ".gitmodules", ".lfsconfig"}
 
-// Protected reports whether a repository path is a protected input (§7.1)
-// for the given protected root and the extra paths from proctor.yaml.
 func Protected(p, root string, extra []string) bool {
 	if strings.HasPrefix(p, root+"/") || strings.HasPrefix(p, ".github/") {
 		return true
@@ -134,19 +113,14 @@ var identityTypes = map[string]bool{"none": true, "bearer": true, "basic": true,
 
 var adapterNames = map[string]bool{"http": true, "postgres": true}
 
-// parkedAdapters are planned in prd.md but parked (Phase 5, §20). Naming one
-// is refused, so a run never looks as if it checked Temporal or logs.
 var parkedAdapters = map[string]bool{"temporal": true, "logs": true}
 
 var httpMethods = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
-// stateChanging are the methods EXE-07 requires a state check after.
 var stateChanging = map[string]bool{"POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
 var objectPattern = regexp.MustCompile(`^([a-z_][a-z0-9_$]*\.)?[a-z_][a-z0-9_$]*$`)
 
-// checkRelPath enforces the path rules of INT-01: relative, clean, no "..",
-// no backslash or NUL.
 func checkRelPath(p string) error {
 	switch {
 	case p == "":
@@ -167,8 +141,6 @@ func checkRelPath(p string) error {
 	return nil
 }
 
-// Load reads and validates proctor.yaml, the manifest and every listed
-// specification from src. It runs every check that doesn't need Git.
 func Load(src Source, configPath string) *Report {
 	r := &Report{ConfigPath: configPath, Hashes: map[string]string{}, Parsed: map[string]*model.Spec{}}
 	if err := checkRelPath(configPath); err != nil {
@@ -392,11 +364,6 @@ func (r *Report) validateSpec(p string, s *model.Spec, c *model.Config, seen map
 	}
 }
 
-// checkStateChecks enforces EXE-07: every state-changing verification step
-// is followed, in the same scenario, by a check of the state: a database
-// check, or a GET whose expected status isn't 401 or 403 (a refused read
-// shows nothing about the state). A step can waive this only by stating
-// why in no_state_check.
 func (r *Report) checkStateChecks(p, where string, sc model.Scenario) {
 	for i, st := range sc.Steps {
 		if st.Request == nil || !stateChanging[st.Request.Method] {
@@ -436,17 +403,8 @@ func isStateCheck(st model.Step) bool {
 	return s != 401 && s != 403
 }
 
-// waivable lists the rules a step's waive map may name. EXE-07 has its own
-// field, no_state_check.
 var waivable = map[string]bool{"FIX-05": true, "HTTP-09": true}
 
-// checkRunScoped enforces FIX-05 (a value a request sends and a later step
-// matches must contain ${run.id}, or a record left by an earlier run could
-// satisfy the expectation) and HTTP-09's list rule (a length asserted on a
-// GET with no query parameters can count records the scenario didn't
-// create). Both are errors; a step can waive either only with a written
-// reason, and a waiver for a rule that doesn't fire is itself an error, so
-// waivers can't pile up unnoticed.
 func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 	all := append(append([]model.Step{}, sc.Setup...), sc.Steps...)
 	for i, st := range all {
@@ -494,10 +452,6 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 	}
 }
 
-// refersToSaved reports whether v contains a ${name} reference to a value
-// saved earlier in the scenario. Such a value came from the application's
-// own response in this run (usually an ID it assigned), so it is already
-// scoped to the run; ${secret.name} and ${fill(N)} are not.
 func refersToSaved(v string) bool {
 	for _, m := range refAny.FindAllString(v, -1) {
 		name := m[2 : len(m)-1]
@@ -554,10 +508,6 @@ func stringLeaves(v any) []string {
 	return nil
 }
 
-// checkSetupExercised enforces FIX-08: every operation used in setup, by
-// method, path template and expected status, is also a verification step
-// somewhere in the set, so a defect in it is reported as FAIL rather than
-// as a setup ERROR.
 func (r *Report) checkSetupExercised() {
 	type op struct {
 		method, path string
@@ -600,12 +550,8 @@ func (r *Report) checkSetupExercised() {
 
 var refAny = regexp.MustCompile(`\$\{[^}]*\}`)
 
-// template replaces each ${...} in a path with {}.
 func template(p string) string { return refAny.ReplaceAllString(p, "{}") }
 
-// validateStep checks one step. saved holds the names earlier steps of the
-// scenario save; the step's own saves are added after its references are
-// checked, since a step can't use what it hasn't received yet.
 func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *model.Config, ids, saved map[string]bool) {
 	if !idPattern.MatchString(st.ID) {
 		r.add(Invalid, "INT-02", p, "%s: invalid step id %q", where, st.ID)
@@ -647,8 +593,7 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 			}
 		}
 		r.checkRefs(p, where, saved, st.Request.Path, st.Request.Query)
-		// The body and headers are never reported, so only they may carry
-		// secrets and fills.
+
 		r.checkRequestRefs(p, where, saved, c, st.Request.Headers, st.Request.Body)
 		id, declared := c.Identities[st.Request.Identity]
 		if st.Request.Identity == "" {
@@ -770,7 +715,6 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 	}
 }
 
-// validateVerify checks a database check step (§11.7).
 func (r *Report) validateVerify(p, where string, st model.Step, setup bool, c *model.Config, saved map[string]bool) {
 	if st.Verify.Postgres == nil {
 		r.add(Invalid, "EXE-01", p, "%s: verify needs postgres", where)
@@ -826,8 +770,6 @@ func (r *Report) validateVerify(p, where string, st model.Step, setup bool, c *m
 	r.checkRefs(p, where, saved, ex.FirstRow)
 }
 
-// validateRowSaves checks a database check's saves: each names a column of
-// the single row the check expects (EXE-02).
 func (r *Report) validateRowSaves(p, where string, st model.Step, saved map[string]bool) {
 	if len(st.Save) == 0 {
 		return
@@ -851,8 +793,6 @@ func (r *Report) validateRowSaves(p, where string, st model.Step, saved map[stri
 	}
 }
 
-// checkJSONValue rejects values that can't be compared with a decoded JSON
-// value: YAML's infinities and NaN, and anything json can't encode.
 func checkJSONValue(v any) error {
 	if f, ok := v.(float64); ok && (f != f || f > 1.7976931348623157e308 || f < -1.7976931348623157e308) {
 		return fmt.Errorf("%v is not a JSON number", f)
@@ -875,8 +815,6 @@ func checkJSONValue(v any) error {
 	return err
 }
 
-// checkRefs reports ${...} references that are malformed or name a value no
-// earlier step saves (HTTP-02).
 func (r *Report) checkRefs(p, where string, saved map[string]bool, values ...any) {
 	for _, v := range values {
 		var names []string
@@ -909,8 +847,6 @@ func (r *Report) checkRefs(p, where string, saved map[string]bool, values ...any
 	}
 }
 
-// checkRequestRefs checks references in a request's body and headers, where
-// ${fill(N)} and declared ${secret.name} values are also allowed (AUTH-07).
 func (r *Report) checkRequestRefs(p, where string, saved map[string]bool, c *model.Config, values ...any) {
 	allowed := map[string]bool{}
 	for k, v := range saved {
@@ -945,9 +881,6 @@ func (r *Report) checkRequestRefs(p, where string, saved map[string]bool, c *mod
 	r.checkRefs(p, where, allowed, append([]any{}, values...)...)
 }
 
-// checkRequestPath enforces HTTP-05: a path stays under the binding's base
-// URL. References are checked as written; the runner escapes inserted
-// values so they can't add segments.
 func checkRequestPath(p string) error {
 	switch {
 	case !strings.HasPrefix(p, "/"):
@@ -978,8 +911,6 @@ func checkRequestPath(p string) error {
 	return nil
 }
 
-// forbiddenHeader names the rule a specification would break by setting a
-// header that belongs to the run or to the HTTP client.
 func forbiddenHeader(name string) (rule, why string) {
 	switch strings.ToLower(name) {
 	case "host":
@@ -994,8 +925,6 @@ func forbiddenHeader(name string) (rule, why string) {
 	return "", ""
 }
 
-// CheckCommit loads the protected inputs from a commit and adds the checks
-// that need Git: INT-05, INT-11 (local part), INT-13, INT-14 and INT-16.
 func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 	src, err := NewCommitSource(repo, commit)
 	if err != nil {
@@ -1014,9 +943,6 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 		extra = r.Config.ProtectedPaths
 	}
 
-	// INT-13: a directory that holds protected inputs must be a real tree.
-	// A tree entry at a directory's path means a symlink, submodule or file
-	// stands in for it, and the files "under" it aren't in the commit.
 	reported := map[string]bool{}
 	for _, d := range protectedDirs(r.ProtectedRoot, extra) {
 		if e, ok := tree[d]; ok && !reported[d] {
@@ -1072,9 +998,6 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 	return r
 }
 
-// protectedDirs returns every directory that must be a real tree: the
-// protected root, extra paths ending in "/", and all their ancestors, plus
-// the ancestors of extra file paths and of .github/.
 func protectedDirs(root string, extra []string) []string {
 	var dirs []string
 	addWithAncestors := func(d string) {
@@ -1094,10 +1017,6 @@ func protectedDirs(root string, extra []string) []string {
 	return dirs
 }
 
-// forbiddenAttr lists the attributes INT-14 rejects: they change the bytes a
-// checkout writes, or hide the diff from reviewers. `binary` is a macro that
-// Git reports as `-diff -merge -text`, so it is caught through `diff` and
-// `text`. `crlf` is Git's legacy spelling of `text` and `eol`.
 func forbiddenAttr(a string) bool {
 	switch a {
 	case "diff", "binary", "text", "eol", "crlf", "filter", "working-tree-encoding", "ident",
@@ -1107,9 +1026,6 @@ func forbiddenAttr(a string) bool {
 	return false
 }
 
-// isSpecCandidate reports whether p looks like a specification file under the
-// protected root: a YAML file other than proctor.yaml, the manifest and
-// local bindings under environments/.
 func isSpecCandidate(p string, r *Report) bool {
 	if !strings.HasPrefix(p, r.ProtectedRoot+"/") {
 		return false
@@ -1137,15 +1053,12 @@ func kindOf(e gitrepo.Entry) string {
 	}
 }
 
-// CommitSource reads files from a commit's tree. Paths must match tree
-// entries byte for byte, and only regular file blobs are returned.
 type CommitSource struct {
 	repo *gitrepo.Repo
 	oid  string
 	tree map[string]gitrepo.Entry
 }
 
-// NewCommitSource resolves commit and reads its tree.
 func NewCommitSource(repo *gitrepo.Repo, commit string) (*CommitSource, error) {
 	oid, err := repo.ResolveCommit(commit)
 	if err != nil {
@@ -1170,8 +1083,6 @@ func (s *CommitSource) ReadFile(p string) ([]byte, bool, error) {
 	return data, err == nil, err
 }
 
-// WorkTreeSource reads files from a directory on disk. It is for local
-// validation only; authoritative checks read from a commit (MODE-02).
 type WorkTreeSource struct {
 	Root string
 }

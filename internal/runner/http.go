@@ -19,8 +19,6 @@ import (
 	"proctor/internal/model"
 )
 
-// httpStep sends one request and judges the response. Assertions are all
-// evaluated, so the report shows every mismatch, not only the first.
 func (r *Runner) httpStep(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars) StepResult {
 	errorf := func(cause, format string, args ...any) StepResult {
 		sr.Result, sr.Cause = Error, cause
@@ -97,8 +95,7 @@ func (r *Runner) httpStep(ctx context.Context, st model.Step, sr StepResult, var
 	var docErr error
 	if needsJSON {
 		doc, docErr = decodeJSON(body)
-		// HTTP-10: a body that some JSON parsers read differently from
-		// others can't support a PASS.
+
 		if docErr == nil {
 			if k, dup := duplicateKey(body); dup {
 				docErr = fmt.Errorf("duplicate object key %q", k)
@@ -259,8 +256,6 @@ func (r *Runner) httpStep(ctx context.Context, st model.Step, sr StepResult, var
 	return sr
 }
 
-// lengthValue resolves a length expectation: an integer, or a reference to
-// a saved whole number.
 func lengthValue(v any, vars expr.Vars) (int, error) {
 	x, err := vars.Value(v)
 	if err != nil {
@@ -294,11 +289,9 @@ func readCause(err error) string {
 	return CauseUnreadableResponse
 }
 
-// build turns a step's request into an HTTP request under the base URL.
 func (r *Runner) build(ctx context.Context, rq *model.Request, vars expr.Vars) (*http.Request, *Request, error) {
 	rec := &Request{Method: rq.Method, Identity: rq.Identity, Credential: rq.Credential}
-	// Inserted values are escaped as one path segment, so a saved value
-	// can't add segments or a query (HTTP-05).
+
 	p, err := vars.Text(rq.Path, url.PathEscape)
 	if err != nil {
 		return nil, rec, err
@@ -395,9 +388,6 @@ func decodeJSON(b []byte) (any, error) {
 	return v, nil
 }
 
-// duplicateKey reports the first object key that appears twice in one
-// object of a valid JSON document. Go keeps the last value of a duplicate;
-// other parsers keep the first, so the document has no single meaning.
 func duplicateKey(b []byte) (string, bool) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
@@ -445,7 +435,7 @@ func duplicateKey(b []byte) (string, bool) {
 				stack = stack[:len(stack)-1]
 			}
 		}
-		// A value ended: the enclosing object expects a key next.
+
 		if len(stack) > 0 && stack[len(stack)-1].obj {
 			stack[len(stack)-1].expKey = true
 		}
