@@ -29,6 +29,7 @@ const (
 const (
 	ReasonSetupFailed         = "setup_failed"
 	ReasonEarlierStepFailed   = "earlier_step_failed"
+	ReasonMissingSavedValue   = "missing_saved_value"
 	ReasonEarlierStepErrored  = "earlier_step_errored"
 	ReasonEnvironmentNotReady = "environment_not_ready"
 	ReasonAborted             = "aborted"
@@ -233,6 +234,15 @@ type Options struct {
 	Authoritative bool
 	DriverDir     string
 	Described     map[model.StepRef]model.StepInfo
+	Progress      func(Progress)
+}
+
+type Progress struct {
+	Index, Total int
+	ID           string
+	Done         bool
+	Result       Result
+	Elapsed      time.Duration
 }
 
 func (o Options) withDefaults() (Options, error) {
@@ -275,6 +285,7 @@ type Runner struct {
 	redactJS map[string]bool
 	excerpt  int
 	scrub    *scrubber
+	info     map[model.StepRef]model.StepInfo
 }
 
 func credKey(identity, variant string) string { return identity + "\x00" + variant }
@@ -320,6 +331,7 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 		sess.close()
 		return nil, err
 	}
+	r.info = infos
 	return r, nil
 }
 
@@ -525,12 +537,21 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 		}
 	}
 	groups := map[string]*tableGroup{}
+	total, n := 0, 0
+	for _, f := range r.specs {
+		if f.Spec != nil {
+			total += len(f.Spec.Scenarios)
+		}
+	}
 	for _, f := range r.specs {
 		if f.Spec == nil {
 			continue
 		}
 		p := f.Path
 		for _, sc := range f.Spec.Scenarios {
+			n++
+			began := time.Now()
+			r.progress(Progress{Index: n, Total: total, ID: sc.ID})
 			var res ScenarioResult
 			switch {
 			case stopAll != "":
@@ -554,6 +575,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				out.addTableRow(p, sc, res)
 			}
 			out.Scenarios = append(out.Scenarios, res)
+			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Done: true, Result: res.Result, Elapsed: time.Since(began)})
 		}
 	}
 	r.sess.close()
@@ -561,6 +583,12 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 	out.finish()
 	r.scrubOutcome(out)
 	return out
+}
+
+func (r *Runner) progress(p Progress) {
+	if r.opt.Progress != nil {
+		r.opt.Progress(p)
+	}
 }
 
 func (r *Runner) baseVars(runID string) expr.Vars {
@@ -699,24 +727,35 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 	for k, v := range g.vars {
 		vars[k] = v
 	}
-	stop := ""
-	for _, st := range sc.Steps {
+	stop, failed := "", false
+	for i, st := range sc.Steps {
 		if stop != "" {
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
+		if failed {
+			if reason, msg := r.afterFailure(p, sc.ID, i, st, vars, hs); reason != "" {
+				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: reason, Message: msg})
+				continue
+			}
+		}
 		if ctx.Err() != nil {
 			stop = ReasonAborted
-			res.Result, res.Reason = Error, ReasonAborted
+			if !failed {
+				res.Result, res.Reason = Error, ReasonAborted
+			}
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
 		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseVerification}, vars, hs)
 		switch sr.Result {
 		case Fail:
-			res.Result, stop = Fail, ReasonEarlierStepFailed
+			res.Result, failed = Fail, true
 		case Error:
-			res.Result, res.Cause, stop = Error, sr.Cause, ReasonEarlierStepErrored
+			if !failed {
+				res.Result, res.Cause = Error, sr.Cause
+			}
+			stop = ReasonEarlierStepErrored
 		}
 		res.Steps = append(res.Steps, sr)
 	}
@@ -727,15 +766,23 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
 	vars := r.baseVars(runID + "-" + sc.ID)
 	hs := newHandleSet()
-	stop := ""
-	run := func(st model.Step, phase string) {
+	stop, failed := "", false
+	run := func(i int, st model.Step, phase string) {
 		if stop != "" {
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
 			return
 		}
+		if failed {
+			if reason, msg := r.afterFailure(p, sc.ID, i, st, vars, hs); reason != "" {
+				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: reason, Message: msg})
+				return
+			}
+		}
 		if ctx.Err() != nil {
 			stop = ReasonAborted
-			res.Result, res.Reason = Error, ReasonAborted
+			if !failed {
+				res.Result, res.Reason = Error, ReasonAborted
+			}
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
 			return
 		}
@@ -746,22 +793,49 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 			res.Result, res.Reason, res.Cause = Error, ReasonSetupFailed, sr.Cause
 			stop = ReasonSetupFailed
 		case sr.Result == Fail:
-			res.Result = Fail
-			stop = ReasonEarlierStepFailed
+			res.Result, failed = Fail, true
 		case sr.Result == Error:
-			res.Result, res.Cause = Error, sr.Cause
+			if !failed {
+				res.Result, res.Cause = Error, sr.Cause
+			}
 			stop = ReasonEarlierStepErrored
 		}
 		res.Steps = append(res.Steps, sr)
 	}
-	for _, st := range sc.Setup {
-		run(st, PhaseSetup)
+	for i, st := range sc.Setup {
+		run(i, st, PhaseSetup)
 	}
-	for _, st := range sc.Steps {
-		run(st, PhaseVerification)
+	for i, st := range sc.Steps {
+		run(i, st, PhaseVerification)
 	}
 	res.Handles = r.closeHandles(ctx, hs)
 	return res
+}
+
+func (r *Runner) afterFailure(p, scenario string, i int, st model.Step, vars expr.Vars, hs *handleSet) (string, string) {
+	in, ok := r.info[model.StepRef{Spec: p, Scenario: scenario, Phase: "steps", Index: i}]
+	if !ok || in.Kind != protocol.KindObserve {
+		return ReasonEarlierStepFailed, ""
+	}
+	if st.On != "" && hs.open[st.On] == nil {
+		return ReasonEarlierStepFailed, fmt.Sprintf("on %q: the handle isn't open, because an earlier step failed or didn't run", st.On)
+	}
+	var missing []string
+	for _, v := range []any{st.With, st.Expect} {
+		for _, name := range refsIn(v) {
+			ref := "${" + name + "}"
+			if _, set := vars[name]; expr.VarName(name) && !set && !contains(missing, ref) {
+				missing = append(missing, ref)
+			}
+		}
+	}
+	switch len(missing) {
+	case 0:
+		return "", ""
+	case 1:
+		return ReasonMissingSavedValue, missing[0] + " wasn't saved, because an earlier step failed or didn't run"
+	}
+	return ReasonMissingSavedValue, strings.Join(missing, ", ") + " weren't saved, because an earlier step failed or didn't run"
 }
 
 func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {

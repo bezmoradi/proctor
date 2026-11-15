@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +24,7 @@ import (
 type runOptions struct {
 	common
 	binding, commit, base, prHead, report string
-	authoritative                         bool
+	authoritative, noProgress             bool
 	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
 }
@@ -50,7 +51,8 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	f.StringVar(&o.commit, "commit", "HEAD", "with --authoritative: the tested commit")
 	f.StringVar(&o.base, "base", "", "with --authoritative: the base commit, when the pull request head is tested directly")
 	f.StringVar(&o.prHead, "pr-head", "", "with --authoritative: the pull request head, when the tested commit is GitHub's test merge")
-	f.StringVar(&o.report, "report", "", "with --authoritative: where to write the JSON report (required)")
+	f.StringVar(&o.report, "report", "", "where to write the JSON report: required with --authoritative; in local mode it gets the document --json prints, with mode 0600")
+	f.BoolVar(&o.noProgress, "no-progress", false, "don't write a line to stderr as each scenario finishes")
 	return cmd
 }
 
@@ -60,11 +62,13 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "proctor run: --call-timeout and --ready-timeout must be positive")
 		return exitInvalid
 	}
+	progress, endProgress := newProgress(stderr, o.noProgress)
+	defer endProgress()
 	if o.authoritative {
 		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
-			callTimeout: o.callTimeout, readyTimeout: o.readyTimeout}, stdout, stderr)
+			callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress}, stdout, stderr)
 	}
-	for _, name := range []string{"commit", "base", "pr-head", "report"} {
+	for _, name := range []string{"commit", "base", "pr-head"} {
 		if o.set(name) {
 			fmt.Fprintf(stderr, "proctor run: --%s is only for --authoritative\n", name)
 			return exitInvalid
@@ -79,34 +83,45 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
+	emit := func(render func(w io.Writer, asJSON bool) int) int {
+		return emitLocal(o.report, c.json, stdout, stderr, render)
+	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
 	if code := rep.ExitCode(); code != exitOK {
-		return write(stdout, c.json, "RUN", rep, nil, code, resultName(code))
+		return emit(func(w io.Writer, asJSON bool) int { return write(w, asJSON, "RUN", rep, nil, code, resultName(code)) })
 	}
 
 	b, err := readBinding(bindingPath)
 	if err != nil {
-		return setupFailed(stdout, c.json, rep, &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}})
+		se := &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}}
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
 	}
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
-		return setupFailed(stdout, c.json, rep, se)
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
 	}
 	if code := rep.ExitCode(); code != exitOK {
-		return write(stdout, c.json, "RUN", rep, &driverCheck{drivers: drivers}, code, resultName(code))
+		return emit(func(w io.Writer, asJSON bool) int {
+			return write(w, asJSON, "RUN", rep, &driverCheck{drivers: drivers}, code, resultName(code))
+		})
 	}
 	opt.Described = info
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
-		return setupFailed(stdout, c.json, rep, asSetupError(err))
+		se := asSetupError(err)
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
 	}
 	defer rn.Close()
 	out := rn.Run(ctx)
-	if c.json {
-		enc := json.NewEncoder(stdout)
+	return emit(func(w io.Writer, asJSON bool) int { return writeLocalRun(w, asJSON, rep, out) })
+}
+
+func writeLocalRun(w io.Writer, asJSON bool, rep *integrity.Report, out *runner.Outcome) int {
+	if asJSON {
+		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
 			"result":    out.Result,
@@ -129,8 +144,40 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 		})
 		return out.ExitCode
 	}
-	writeRun(stdout, rep, out, "local, non-authoritative")
+	writeRun(w, rep, out, "local, non-authoritative")
 	return out.ExitCode
+}
+
+func emitLocal(report string, asJSON bool, stdout, stderr io.Writer, render func(w io.Writer, asJSON bool) int) int {
+	code := render(stdout, asJSON)
+	if report == "" {
+		return code
+	}
+	var buf bytes.Buffer
+	render(&buf, true)
+	if err := writePrivate(report, buf.Bytes()); err != nil {
+		fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
+		if code == exitOK {
+			return exitError
+		}
+	}
+	return code
+}
+
+func writePrivate(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func readBinding(p string) (*model.Binding, error) {

@@ -30,6 +30,7 @@ type authOptions struct {
 	binding, commit, base, prHead string
 	report                        string
 	callTimeout, readyTimeout     time.Duration
+	progress                      func(runner.Progress)
 }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -293,7 +294,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 }
 
 func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress}
 	refused := func(se *runner.SetupError) int {
 		if se.ExitCode == exitIntegrity {
 			ar.Violations = append(ar.Violations, se.Msgs...)
