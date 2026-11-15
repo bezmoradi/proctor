@@ -16,20 +16,51 @@ Temporal and log evidence, time-based checks (`eventually`, `consistently`, `nev
 
 ## Quick start
 
-Needs Go 1.27.1 or later and Git.
+Needs Go 1.27.1 or later and Git. Build Proctor:
 
 ```sh
 go build -o bin/proctor ./cmd/proctor
-
-# Start the sample API (in memory, no database) in another terminal:
-(cd examples/users-api && PORT=18080 make run)
-
-bin/proctor validate --config examples/users-api/proctor/proctor.yaml
-bin/proctor run --config examples/users-api/proctor/proctor.yaml \
-  --binding examples/users-api/proctor/environments/local.yaml
 ```
 
-The run waits for `/readyz`, executes scenarios USR-001 to USR-005 and prints `RESULT: PASSED (exit 0, local, non-authoritative)`. Add `--json` for the machine-readable report.
+In your application's Git repository, create a `proctor/` folder:
+
+```yaml
+# proctor/proctor.yaml
+version: 1
+project: my-api
+manifest: manifest.yaml
+identities:
+  anonymous: { type: none }
+readiness:
+  path: /readyz
+  startup_timeout: 15s
+```
+
+```yaml
+# proctor/manifest.yaml
+version: 1
+specifications:
+  - id: users
+    path: specs/users.yaml
+```
+
+Put a specification in `proctor/specs/users.yaml`, such as the one under [Specifications](#specifications), and tell Proctor where the application runs:
+
+```yaml
+# proctor/environments/local.yaml
+target:
+  base_url: http://127.0.0.1:8080
+  user_agent: proctor-local/0
+```
+
+Then, from the repository root, with the application running:
+
+```sh
+/path/to/bin/proctor validate
+/path/to/bin/proctor run --binding proctor/environments/local.yaml
+```
+
+The run waits for `/readyz` (set `readiness.path` to your application's health endpoint), executes every listed scenario and prints `RESULT: PASSED (exit 0, local, non-authoritative)` when they all pass. Add `--json` for the machine-readable report.
 
 ## Commands
 
@@ -110,7 +141,7 @@ A database check runs one parameterized, read-only query. Before using the verif
 | Path | Contents |
 |---|---|
 | `cmd/proctor`, `internal/` | The CLI |
-| `examples/` | `users-api`, a sample application generated with [gopamin](https://github.com/bezmoradi/gopamin), with its Proctor specifications (see [`examples/README.md`](examples/README.md)), and `github/`, the reference GitHub workflow and CODEOWNERS file |
+| `examples/github/` | The reference GitHub workflow and CODEOWNERS file |
 | `prd.md` | Requirements, decisions, acceptance tests and roadmap |
 
 ## Development

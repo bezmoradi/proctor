@@ -1,8 +1,0 @@
-version: 1
-project: users-api
-manifest: manifest.yaml
-identities:
-  anonymous: { type: none }
-readiness:
-  path: /readyz
-  startup_timeout: 15s

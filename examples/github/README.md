@@ -1,6 +1,6 @@
 # Reference GitHub configuration
 
-`proctor.yml` and `CODEOWNERS` are the reference workflow (prd.md §16.2) and code-owner file (§6.3) for OD-01 option B. They were confirmed on 2026-11-14 in a temporary public repository, `bezmoradi/proctor-trust-test-20261114`, with Proctor 0.0.0-phase0+ee924a9 and the `examples/users-api` application. The results below come from that test.
+`proctor.yml` and `CODEOWNERS` are the reference workflow (prd.md §16.2) and code-owner file (§6.3) for OD-01 option B. They were confirmed on 2026-11-14 in a temporary public repository, `bezmoradi/proctor-trust-test-20261114`, with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API generated with [gopamin](https://github.com/bezmoradi/gopamin). The results below come from that test.
 
 To use them:
 
