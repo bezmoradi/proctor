@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,7 +24,7 @@ type runOptions struct {
 	common
 	binding, commit, base, prHead, report string
 	authoritative                         bool
-	timeout, qtimeout                     time.Duration
+	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
 }
 
@@ -43,8 +44,8 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	addCommon(cmd, &o.common)
 	f := cmd.Flags()
 	f.StringVarP(&o.binding, "binding", "b", "", "environment binding file (required)")
-	f.DurationVar(&o.timeout, "request-timeout", 10*time.Second, "time limit for each request")
-	f.DurationVar(&o.qtimeout, "query-timeout", 5*time.Second, "time limit for each database query")
+	f.DurationVar(&o.callTimeout, "call-timeout", 10*time.Second, "time limit for each driver call")
+	f.DurationVar(&o.readyTimeout, "ready-timeout", 30*time.Second, "how long to wait for every driver to report its target ready")
 	f.BoolVar(&o.authoritative, "authoritative", false, "check a commit for the trusted CI job")
 	f.StringVar(&o.commit, "commit", "HEAD", "with --authoritative: the tested commit")
 	f.StringVar(&o.base, "base", "", "with --authoritative: the base commit, when the pull request head is tested directly")
@@ -54,14 +55,14 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func run(o runOptions, stdout, stderr io.Writer) int {
-	c, bindingPath, commit, base, prHead, report := o.common, o.binding, o.commit, o.base, o.prHead, o.report
-	authoritative, timeout, qtimeout := o.authoritative, o.timeout, o.qtimeout
-	if timeout <= 0 || qtimeout <= 0 {
-		fmt.Fprintln(stderr, "proctor run: --request-timeout and --query-timeout must be positive")
+	c, bindingPath := o.common, o.binding
+	if o.callTimeout <= 0 || o.readyTimeout <= 0 {
+		fmt.Fprintln(stderr, "proctor run: --call-timeout and --ready-timeout must be positive")
 		return exitInvalid
 	}
-	if authoritative {
-		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: commit, base: base, prHead: prHead, report: report, timeout: timeout, qtimeout: qtimeout}, stdout, stderr)
+	if o.authoritative {
+		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
+			callTimeout: o.callTimeout, readyTimeout: o.readyTimeout}, stdout, stderr)
 	}
 	for _, name := range []string{"commit", "base", "pr-head", "report"} {
 		if o.set(name) {
@@ -80,30 +81,28 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
 	if code := rep.ExitCode(); code != exitOK {
-
-		return write(stdout, c.json, "RUN", rep, code, resultName(code))
+		return write(stdout, c.json, "RUN", rep, nil, code, resultName(code))
 	}
 
-	data, err := os.ReadFile(bindingPath)
+	b, err := readBinding(bindingPath)
 	if err != nil {
-		return configError(stdout, stderr, c.json, rep, []string{fmt.Sprintf("binding: %v", err)})
+		return setupFailed(stdout, c.json, rep, &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}})
 	}
-	var b model.Binding
-	if err := strictyaml.Decode(data, &b); err != nil {
-		return configError(stdout, stderr, c.json, rep, []string{fmt.Sprintf("binding %s: %v", bindingPath, err)})
-	}
-	rn, err := runner.New(rep, &b, runner.Options{RequestTimeout: timeout, QueryTimeout: qtimeout, LookupEnv: os.LookupEnv})
-	if err != nil {
-		msgs := []string{err.Error()}
-		var ce *runner.ConfigError
-		if errors.As(err, &ce) {
-			msgs = ce.Msgs
-		}
-		return configError(stdout, stderr, c.json, rep, msgs)
-	}
-
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	drivers, se := describeSteps(ctx, rep, b, opt)
+	if se != nil {
+		return setupFailed(stdout, c.json, rep, se)
+	}
+	if code := rep.ExitCode(); code != exitOK {
+		return write(stdout, c.json, "RUN", rep, &driverCheck{drivers: drivers}, code, resultName(code))
+	}
+	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
+	if err != nil {
+		return setupFailed(stdout, c.json, rep, asSetupError(err))
+	}
+	defer rn.Close()
 	out := rn.Run(ctx)
 	if c.json {
 		enc := json.NewEncoder(stdout)
@@ -122,6 +121,7 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 			"target":     out.Target,
 			"readiness":  out.Readiness,
 			"violations": out.Violations,
+			"drivers":    out.Drivers,
 			"summary":    out.Summary,
 			"scenarios":  out.Scenarios,
 			"tables":     out.Tables,
@@ -132,17 +132,61 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	return out.ExitCode
 }
 
-func configError(stdout, stderr io.Writer, asJSON bool, rep *integrity.Report, msgs []string) int {
+func readBinding(p string) (*model.Binding, error) {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("binding: %v", err)
+	}
+	var b model.Binding
+	if err := strictyaml.Decode(data, &b); err != nil {
+		return nil, fmt.Errorf("binding %s: %v", p, err)
+	}
+	return &b, nil
+}
+
+func specFiles(rep *integrity.Report) []runner.SpecFile {
+	out := make([]runner.SpecFile, 0, len(rep.Specs))
+	for _, s := range rep.Specs {
+		out = append(out, runner.SpecFile{Path: s.Path, Spec: s.Spec})
+	}
+	return out
+}
+
+func describeSteps(ctx context.Context, rep *integrity.Report, b *model.Binding, opt runner.Options) ([]runner.DriverInfo, *runner.SetupError) {
+	info, drivers, err := runner.Describe(ctx, rep.Config, specFiles(rep), b, opt)
+	if err != nil {
+		return nil, asSetupError(err)
+	}
+	rep.ApplyStepInfo(info)
+	if drivers == nil {
+		drivers = []runner.DriverInfo{}
+	}
+	return drivers, nil
+}
+
+func asSetupError(err error) *runner.SetupError {
+	var se *runner.SetupError
+	if errors.As(err, &se) {
+		return se
+	}
+	return &runner.SetupError{ExitCode: exitError, Msgs: []string{err.Error()}}
+}
+
+func setupFailed(stdout io.Writer, asJSON bool, rep *integrity.Report, se *runner.SetupError) int {
+	code := se.ExitCode
+	if code < exitError {
+		code = exitError
+	}
 	if asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{"result": "invalid", "exit_code": exitInvalid, "mode": "local", "errors": msgs})
-		return exitInvalid
+		_ = enc.Encode(map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": se.Msgs})
+		return code
 	}
 	fmt.Fprintf(stdout, "PROCTOR RUN  (local, non-authoritative)\n\nConfiguration:   %s\n\n", safe(rep.ConfigPath))
-	for _, m := range msgs {
-		fmt.Fprintf(stdout, "INVALID   %s\n", safe(m))
+	for _, m := range se.Msgs {
+		fmt.Fprintf(stdout, "%s %s\n", setupLabel(code), safe(m))
 	}
-	fmt.Fprintf(stdout, "\nNothing was sent to the application.\nRESULT: INVALID (exit %d)\n", exitInvalid)
-	return exitInvalid
+	fmt.Fprintf(stdout, "\nNothing was sent to the application.\nRESULT: %s (exit %d)\n", strings.ToUpper(resultName(code)), code)
+	return code
 }

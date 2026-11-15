@@ -166,6 +166,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	switch {
 	case bc != nil && hc != nil:
 		res.Weakenings = append(res.Weakenings, compareDrivers(bc, hc)...)
+		res.Weakenings = append(res.Weakenings, compareConfig(bc, hc)...)
 	case bFound && hFound && (bt[configPath].OID != ht[configPath].OID || bt[configPath].Mode != ht[configPath].Mode):
 		res.Weakenings = append(res.Weakenings, Weakening{Kind: "not_analysed",
 			Detail: configPath + " changed but one side doesn't decode as a version 2 configuration, so its drivers weren't compared; read the file diff"})
@@ -350,6 +351,101 @@ func compareDrivers(b, h *model.Config) []Weakening {
 		}
 	}
 	return out
+}
+
+const (
+	defaultMinInterval = 100 * time.Millisecond
+	defaultMaxSamples  = 1000
+	defaultMaxWindow   = 10 * time.Minute
+)
+
+func compareConfig(b, h *model.Config) []Weakening {
+	var out []Weakening
+	weaken := func(kind, format string, args ...any) {
+		out = append(out, Weakening{Kind: kind, Detail: fmt.Sprintf(format, args...)})
+	}
+	for _, name := range sortedKeys(h.Identities) {
+		was := b.Identities[name].AcceptedVariants
+		for _, v := range h.Identities[name].AcceptedVariants {
+			if !containsString(was, v) {
+				weaken("variant_accepted", "identity %s: credential variant %s is now accepted, so a step using it no longer has to expect 401 or 403 (AUTH-06)", name, v)
+			}
+		}
+	}
+	bl, hl := limitsOf(b.TimeLimits), limitsOf(h.TimeLimits)
+	switch {
+	case bl.err != "" || hl.err != "":
+		if bl.raw != hl.raw {
+			weaken("not_analysed", "time_limits %s became %s, but one side doesn't parse; read the file diff", bl.raw, hl.raw)
+		}
+	default:
+		if hl.maxWindow > bl.maxWindow {
+			weaken("max_window_longer", "time_limits.max_window %s became %s; time checks may now wait or watch longer", bl.maxWindow, hl.maxWindow)
+		}
+		if hl.maxSamples > bl.maxSamples {
+			weaken("max_samples_higher", "time_limits.max_samples %d became %d; time checks may now sample more", bl.maxSamples, hl.maxSamples)
+		}
+		if hl.minInterval < bl.minInterval {
+			weaken("min_interval_shorter", "time_limits.min_interval %s became %s; time checks may now sample the target more often", bl.minInterval, hl.minInterval)
+		}
+	}
+	var bp, hp []string
+	if b.Redaction != nil {
+		bp = b.Redaction.JSONPaths
+	}
+	if h.Redaction != nil {
+		hp = h.Redaction.JSONPaths
+	}
+	for _, jp := range bp {
+		if !containsString(hp, jp) {
+			weaken("redaction_removed", "redaction.json_paths entry %s was removed; that value is no longer redacted in the evidence", jp)
+		}
+	}
+	return out
+}
+
+type limits struct {
+	minInterval time.Duration
+	maxSamples  int
+	maxWindow   time.Duration
+	raw, err    string
+}
+
+func limitsOf(tl *model.TimeLimits) limits {
+	l := limits{minInterval: defaultMinInterval, maxSamples: defaultMaxSamples, maxWindow: defaultMaxWindow, raw: "(defaults)"}
+	if tl == nil {
+		return l
+	}
+	l.raw = fmt.Sprintf("{min_interval: %s, max_samples: %d, max_window: %s}", orNone(tl.MinInterval), tl.MaxSamples, orNone(tl.MaxWindow))
+	parse := func(s string, into *time.Duration) {
+		if s == "" {
+			return
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil || d <= 0 {
+			l.err = s
+			return
+		}
+		*into = d
+	}
+	parse(tl.MinInterval, &l.minInterval)
+	parse(tl.MaxWindow, &l.maxWindow)
+	switch {
+	case tl.MaxSamples < 0:
+		l.err = fmt.Sprint(tl.MaxSamples)
+	case tl.MaxSamples > 0:
+		l.maxSamples = tl.MaxSamples
+	}
+	return l
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func mappingValue(doc *yaml.Node, key string) *yaml.Node {

@@ -1,13 +1,17 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 
 	"proctor/internal/gitrepo"
 	"proctor/internal/integrity"
+	"proctor/internal/runner"
 )
 
 type validateOptions struct {
@@ -19,7 +23,7 @@ func newValidateCmd(stdout, stderr io.Writer) *cobra.Command {
 	var o validateOptions
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Check the configuration, manifest and specifications without contacting the application",
+		Short: "Check the configuration, manifest and specifications, with each driver's own checks, without contacting the application",
 		Example: `  proctor validate
   proctor validate --commit HEAD~1 --json`,
 		Args: cobra.NoArgs,
@@ -49,10 +53,15 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		src = cs
 	}
 	r := integrity.Load(src, c.config)
-	code := exitOK
-	if r.Has(integrity.Invalid) {
-		code = exitInvalid
+	dc := &driverCheck{}
+	if r.Config != nil {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		dc.drivers, dc.setup = describeSteps(ctx, r, nil, runner.Options{})
 	}
-
-	return write(stdout, c.json, "VALIDATE", r, code, resultName(code))
+	code := r.ExitCode()
+	if dc.setup != nil && dc.setup.ExitCode > code {
+		code = dc.setup.ExitCode
+	}
+	return write(stdout, c.json, "VALIDATE", r, dc, code, resultName(code))
 }

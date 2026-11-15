@@ -15,7 +15,7 @@ func resultName(code int) string {
 	switch code {
 	case exitOK:
 		return "passed"
-	case 1:
+	case exitFailed:
 		return "failed"
 	case exitError:
 		return "error"
@@ -26,11 +26,30 @@ func resultName(code int) string {
 	}
 }
 
-func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int, result string) int {
+type driverCheck struct {
+	drivers []runner.DriverInfo
+	setup   *runner.SetupError
+}
+
+func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driverCheck, code int, result string) int {
+	if dc == nil {
+		dc = &driverCheck{}
+	}
+	var errs []string
+	if dc.setup != nil {
+		errs = dc.setup.Msgs
+	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{"result": result, "exit_code": code, "mode": "local", "report": r})
+		doc := map[string]any{"result": result, "exit_code": code, "mode": "local", "report": r}
+		if dc.drivers != nil {
+			doc["drivers"] = dc.drivers
+		}
+		if dc.setup != nil {
+			doc["errors"] = errs
+		}
+		_ = enc.Encode(doc)
 		return code
 	}
 	fmt.Fprintf(w, "PROCTOR %s  (local, non-authoritative)\n\n", title)
@@ -38,11 +57,12 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int
 		fmt.Fprintf(w, "Commit:          %s\n", safe(r.Commit))
 	}
 	fmt.Fprintf(w, "Configuration:   %s\n", safe(r.ConfigPath))
+	writeDrivers(w, dc.drivers)
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d   Unlisted: %d\n", len(r.Specs), len(r.ScenarioIDs), len(r.Unlisted))
 	for _, u := range r.Unlisted {
 		fmt.Fprintf(w, "  unlisted (not executed): %s\n", safe(u))
 	}
-	if len(r.Findings) > 0 {
+	if len(r.Findings)+len(errs) > 0 {
 		fmt.Fprintln(w)
 	}
 	for _, f := range r.Findings {
@@ -56,8 +76,45 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int
 		}
 		fmt.Fprintf(w, "%s %-7s %s%s\n", label, safe(f.Rule), safe(loc), safe(f.Message))
 	}
+	for _, m := range errs {
+		fmt.Fprintf(w, "%s %s\n", setupLabel(dc.setup.ExitCode), safe(m))
+	}
+	if dc.setup != nil {
+		fmt.Fprintln(w, "\nThe drivers didn't check the steps, so the specifications are only partly validated.")
+	}
 	fmt.Fprintf(w, "\nRESULT: %s (exit %d)\n", strings.ToUpper(result), code)
 	return code
+}
+
+func setupLabel(code int) string {
+	switch code {
+	case exitIntegrity:
+		return "INTEGRITY"
+	case exitInvalid:
+		return "INVALID  "
+	}
+	return "ERROR    "
+}
+
+func writeDrivers(w io.Writer, drivers []runner.DriverInfo) {
+	if len(drivers) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Drivers:")
+	for _, d := range drivers {
+		sum := d.SHA256
+		if len(sum) > 16 {
+			sum = sum[:16]
+		}
+		fmt.Fprintf(w, "  %-14s proctor-driver-%s %s  %s  sha256 %s\n", safe(d.Name), safe(d.Official), safe(orDash(d.Version)), safe(d.Origin), safe(orDash(sum)))
+		for _, p := range d.Proofs {
+			line := fmt.Sprintf("  %-14s proof %s: %s", "", safe(p.Name), safe(p.Status))
+			if p.Detail != "" {
+				line += " (" + safe(p.Detail) + ")"
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
 }
 
 func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode string) {
@@ -70,6 +127,9 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		fmt.Fprintf(w, "Readiness:       %s\n", safe(out.Readiness))
 	}
 	fmt.Fprintf(w, "Run ID:          %s\n", safe(out.RunID))
+	if mode != "authoritative" {
+		writeDrivers(w, out.Drivers)
+	}
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d\n\n", len(rep.Specs), out.Summary.Scenarios)
 	for _, v := range out.Violations {
 		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
@@ -107,23 +167,11 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 	for _, st := range sc.Steps {
 		label := safe(st.ID)
-		if st.Phase == "setup" {
+		if st.Phase == runner.PhaseSetup {
 			label = "setup " + label
 		}
-		req := ""
-		if st.Request != nil {
-			req = "  " + safe(st.Request.Method) + " " + safe(st.Request.URL)
-			if st.Request.Credential != "" {
-				req += " [" + safe(st.Request.Identity) + ", " + safe(st.Request.Credential) + " credential]"
-			}
-			if st.Status != 0 {
-				req += fmt.Sprintf(" -> %d", st.Status)
-			}
-		}
-		if st.Check != nil {
-			req = "  postgres " + safe(st.Check.Connection)
-		}
-		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, req)
+		act := actionText(st)
+		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, act)
 		if st.Reason != "" {
 			stepLine += "  (" + safe(st.Reason) + causeText(st.Cause) + ")"
 		} else if st.Cause != "" && st.Result == runner.Error {
@@ -193,7 +241,7 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 		}
 		failedSetup := false
 		for _, st := range sc.Steps {
-			if st.Phase == "setup" && st.Result != runner.Pass {
+			if st.Phase == runner.PhaseSetup && st.Result != runner.Pass {
 				failedSetup = true
 			}
 		}
@@ -212,25 +260,53 @@ func causeText(c string) string {
 	return ", cause " + safe(c)
 }
 
-func describe(a runner.Assertion) string {
-	switch a.Kind {
-	case "status", "body", "rows":
-		return a.Message
-	case "absent":
-		return fmt.Sprintf("%s: got %s", a.Message, show(a.Actual))
-	case "present":
-		return a.Message
-	}
-	if a.Message != "" && a.Expected == nil {
-		if a.Present {
-			return fmt.Sprintf("%s; got %s", a.Message, show(a.Actual))
+func actionText(st runner.StepResult) string {
+	a := st.Action
+	if a == nil {
+		if st.Driver == "" {
+			return ""
 		}
-		return a.Message
+		return "  " + safe(st.Driver)
 	}
-	if !a.Present {
-		return fmt.Sprintf("expected %s, but %s", show(a.Expected), a.Message)
+	t := "  " + safe(a.Driver+"."+a.Op)
+	switch {
+	case a.Identity != "" && a.Variant != "":
+		t += " [" + safe(a.Identity) + ", " + safe(a.Variant) + " credential]"
+	case a.Identity != "":
+		t += " [" + safe(a.Identity) + "]"
 	}
-	return fmt.Sprintf("expected %s, got %s", show(a.Expected), show(a.Actual))
+	if st.Origin == runner.OriginUnpinned {
+		t += " (unpinned driver)"
+	}
+	if a.Summary != "" {
+		t += ": " + safe(a.Summary)
+	}
+	if st.Samples > 0 {
+		t += fmt.Sprintf(" [%d sample%s]", st.Samples, plural(st.Samples))
+	}
+	return t
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func describe(a runner.Assertion) string {
+	msg := a.Message
+	switch {
+	case !a.Present && a.Expected != nil:
+		return fmt.Sprintf("expected %s, but %s", show(a.Expected), msg)
+	case !a.Present:
+		return msg
+	case (a.Kind == "keys" || a.Kind == "length") && !strings.HasPrefix(msg, "not "):
+		return msg
+	case a.Expected == nil || strings.HasPrefix(msg, "not "):
+		return fmt.Sprintf("%s; got %s", msg, show(a.Actual))
+	}
+	return fmt.Sprintf("%s: expected %s, got %s", msg, show(a.Expected), show(a.Actual))
 }
 
 func show(v any) string {

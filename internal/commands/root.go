@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	"proctor/internal/runner"
 )
 
 const devVersion = "0.0.0-phase0"
@@ -14,6 +16,8 @@ var Version = devVersion
 
 const (
 	exitOK        = 0
+	exitFailed    = 1
+	exitError     = 2
 	exitInvalid   = 3
 	exitIntegrity = 4
 )
@@ -44,6 +48,7 @@ func addCommon(cmd *cobra.Command, c *common) {
 }
 
 func Execute(args []string, stdout, stderr io.Writer) int {
+	runner.CoreVersion = Version
 	u := &updateCheck{}
 	root := newRootCmd(stdout, stderr, u)
 	root.SetArgs(args)

@@ -2,5 +2,7 @@ go 1.27.1
 
 use (
 	.
+	./drivers/http
+	./drivers/postgres
 	./protocol
 )

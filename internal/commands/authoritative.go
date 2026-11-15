@@ -29,7 +29,7 @@ type authOptions struct {
 	c                             common
 	binding, commit, base, prHead string
 	report                        string
-	timeout, qtimeout             time.Duration
+	callTimeout, readyTimeout     time.Duration
 }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -43,6 +43,7 @@ type authReport struct {
 	ProtectedChanges *protdiff.Result        `json:"protected_changes"`
 	Violations       []string                `json:"violations"`
 	Errors           []string                `json:"errors"`
+	Drivers          []runner.DriverInfo     `json:"drivers"`
 	Target           string                  `json:"target,omitempty"`
 	Readiness        string                  `json:"readiness,omitempty"`
 	Summary          *runner.Summary         `json:"summary,omitempty"`
@@ -91,7 +92,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
-	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Scenarios: []runner.ScenarioResult{}}
+	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{}}
 	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{}}
 	ar.Provenance = authProvenance{ProctorVersion: Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		CIRunID: os.Getenv("GITHUB_RUN_ID"), CIRunAttempt: os.Getenv("GITHUB_RUN_ATTEMPT"), Repository: os.Getenv("GITHUB_REPOSITORY")}
@@ -264,22 +265,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	var out *runner.Outcome
 	if code == exitOK {
-		rn, err := runner.New(rep, &b, runner.Options{RequestTimeout: o.timeout, QueryTimeout: o.qtimeout, LookupEnv: os.LookupEnv})
-		if err != nil {
-			var ce *runner.ConfigError
-			if errors.As(err, &ce) {
-				ar.Errors = append(ar.Errors, ce.Msgs...)
-			} else {
-				ar.Errors = append(ar.Errors, err.Error())
-			}
-			code = exitInvalid
-		} else {
-			out = rn.Run(ctx)
-			code = out.ExitCode
-			ar.Violations = append(ar.Violations, out.Violations...)
-			ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
-			ar.Provenance.RunID = out.RunID
-		}
+		code, out = authRun(ctx, o, ar, rep, &b)
 	}
 	ar.ExitCode, ar.Result = code, resultName(code)
 	ar.Provenance.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -294,7 +280,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
 		if f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
-			writeSummary(f, ar)
+			writeSummary(f, ar, o.c.config)
 			f.Close()
 		}
 	}
@@ -306,7 +292,53 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	return code
 }
 
-const exitError = 2
+func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true}
+	refused := func(se *runner.SetupError) int {
+		if se.ExitCode == exitIntegrity {
+			ar.Violations = append(ar.Violations, se.Msgs...)
+		} else {
+			ar.Errors = append(ar.Errors, se.Msgs...)
+		}
+		if se.ExitCode < exitError {
+			return exitError
+		}
+		return se.ExitCode
+	}
+	mark := len(rep.Findings)
+	drivers, se := describeSteps(ctx, rep, b, opt)
+	if se != nil {
+		return refused(se), nil
+	}
+	ar.Drivers = drivers
+	for _, f := range rep.Findings[mark:] {
+		msg := f.Rule + ": " + strings.TrimPrefix(f.Path+": ", ": ") + f.Message
+		if f.Kind == integrity.Violation {
+			ar.Violations = append(ar.Violations, msg)
+		} else {
+			ar.Errors = append(ar.Errors, msg)
+		}
+	}
+	switch {
+	case len(ar.Violations) > 0:
+		return exitIntegrity, nil
+	case len(ar.Errors) > 0:
+		return exitInvalid, nil
+	}
+	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
+	if err != nil {
+		return refused(asSetupError(err)), nil
+	}
+	defer rn.Close()
+	out := rn.Run(ctx)
+	ar.Violations = append(ar.Violations, out.Violations...)
+	ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
+	ar.Provenance.RunID = out.RunID
+	if out.Drivers != nil {
+		ar.Drivers = out.Drivers
+	}
+	return out.ExitCode, out
+}
 
 func within(dir, path string) (bool, error) {
 	d, err := filepath.EvalSymlinks(dir)
@@ -417,6 +449,7 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 		fmt.Fprintf(w, "Workflow:        unverified\n")
 	}
 	fmt.Fprintf(w, "Workflow changed: %v\n", ar.Trust.WorkflowChanged)
+	writeDrivers(w, ar.Drivers)
 	if ar.ProtectedChanges != nil {
 		for _, f := range ar.ProtectedChanges.Files {
 			fmt.Fprintf(w, "APPROVAL REQUIRED  %s %s\n", safe(f.Change), safe(f.Path))
@@ -429,7 +462,7 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
 	}
 	for _, e := range ar.Errors {
-		fmt.Fprintf(w, "INVALID   %s\n", safe(e))
+		fmt.Fprintf(w, "%s %s\n", errorLabel(ar.ExitCode), safe(e))
 	}
 	if out == nil {
 		fmt.Fprintf(w, "\nNo scenario was run.\nRESULT: %s (exit %d, authoritative)\n", strings.ToUpper(ar.Result), ar.ExitCode)
@@ -439,7 +472,14 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 	writeRun(w, rep, out, "authoritative")
 }
 
-func writeSummary(w io.Writer, ar *authReport) {
+func errorLabel(code int) string {
+	if code == exitError {
+		return "ERROR    "
+	}
+	return "INVALID  "
+}
+
+func writeSummary(w io.Writer, ar *authReport, config string) {
 	fmt.Fprintf(w, "## Proctor: %s (exit %d)\n\n", strings.ToUpper(ar.Result), ar.ExitCode)
 	p := ar.Provenance
 	fmt.Fprintf(w, "Tested commit %s, base %s", code(orDash(p.TestedCommit)), code(orDash(p.Base)))
@@ -448,6 +488,17 @@ func writeSummary(w io.Writer, ar *authReport) {
 	}
 	fmt.Fprintln(w, ".")
 	fmt.Fprintln(w)
+	if len(ar.Drivers) > 0 {
+		fmt.Fprintln(w, "| Driver | Program | Version | Origin | Proofs |\n|---|---|---|---|---|")
+		for _, d := range ar.Drivers {
+			var proofs []string
+			for _, p := range d.Proofs {
+				proofs = append(proofs, p.Name+": "+p.Status)
+			}
+			fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", md(d.Name), code("proctor-driver-"+d.Official), md(orDash(d.Version)), md(d.Origin), md(orDash(strings.Join(proofs, ", "))))
+		}
+		fmt.Fprintln(w)
+	}
 	if ar.Trust.WorkflowChanged == true {
 		fmt.Fprintln(w, "**This result is not authoritative until the workflow change is approved.** The workflow that ran differs from the base branch's.")
 		fmt.Fprintln(w)
@@ -463,7 +514,7 @@ func writeSummary(w io.Writer, ar *authReport) {
 			fmt.Fprintf(w, "- %s %s\n", md(f.Change), code(f.Path))
 		}
 		for _, wk := range ar.ProtectedChanges.Weakenings {
-			fmt.Fprintf(w, "- weakening in %s: %s\n", md(strings.TrimSpace(wk.Scenario+" "+wk.Step)), md(wk.Detail))
+			fmt.Fprintf(w, "- weakening in %s: %s\n", md(weakeningPlace(wk, config)), md(wk.Detail))
 		}
 		fmt.Fprintln(w)
 	}
@@ -471,7 +522,7 @@ func writeSummary(w io.Writer, ar *authReport) {
 		fmt.Fprintf(w, "- integrity violation: %s\n", md(v))
 	}
 	for _, e := range ar.Errors {
-		fmt.Fprintf(w, "- invalid: %s\n", md(e))
+		fmt.Fprintf(w, "- %s: %s\n", strings.ToLower(strings.TrimSpace(errorLabel(ar.ExitCode))), md(e))
 	}
 	if len(ar.Scenarios) > 0 {
 		fmt.Fprintln(w, "\n| Scenario | Result |\n|---|---|")

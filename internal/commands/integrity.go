@@ -41,5 +41,5 @@ func checkIntegrity(o integrityOptions, stdout, stderr io.Writer) int {
 	}
 	r := integrity.CheckCommit(repo, commit, c.config)
 	code := r.ExitCode()
-	return write(stdout, c.json, "INTEGRITY", r, code, resultName(code))
+	return write(stdout, c.json, "INTEGRITY", r, nil, code, resultName(code))
 }

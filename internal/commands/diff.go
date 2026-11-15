@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -93,11 +94,7 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 	if len(res.Weakenings) > 0 {
 		fmt.Fprintln(stdout, "\nWeakenings (review these first):")
 		for _, wk := range res.Weakenings {
-			loc := wk.Scenario
-			if wk.Step != "" {
-				loc += " " + wk.Step
-			}
-			line := fmt.Sprintf("  %-20s %s: %s", safe(wk.Kind), safe(loc), safe(wk.Detail))
+			line := fmt.Sprintf("  %-20s %s: %s", safe(wk.Kind), safe(weakeningPlace(wk, c.config)), safe(wk.Detail))
 			if wk.AssertionsLost > 0 {
 				line += fmt.Sprintf(" (%d assertion(s) lost)", wk.AssertionsLost)
 			}
@@ -105,7 +102,7 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 		}
 	}
 	if len(res.Expectations) > 0 {
-		fmt.Fprintln(stdout, "\nChanged requests and expectations:")
+		fmt.Fprintln(stdout, "\nChanged actions and expectations:")
 		for _, e := range res.Expectations {
 			fmt.Fprintf(stdout, "  %s %s %s: %s -> %s\n", safe(e.Scenario), safe(e.Step), safe(e.What), safe(e.From), safe(e.To))
 		}
@@ -126,6 +123,16 @@ func diffError(stdout, stderr io.Writer, asJSON bool, err error) int {
 		fmt.Fprintf(stderr, "proctor diff: integrity violation (INT-08): %s\n", safe(err.Error()))
 	}
 	return exitIntegrity
+}
+
+func weakeningPlace(wk protdiff.Weakening, config string) string {
+	switch {
+	case wk.Scenario != "":
+		return strings.TrimSpace(wk.Scenario + " " + wk.Step)
+	case wk.Driver != "":
+		return "driver " + wk.Driver
+	}
+	return config
 }
 
 func orDash(s string) string {
