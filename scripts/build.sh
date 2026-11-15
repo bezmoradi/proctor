@@ -31,14 +31,67 @@ else
 	sum() { shasum -a 256 "$@"; }
 fi
 
-drivers="http postgres"
-sumfile="$root/internal/runner/official.sum"
+discover() {
+	local kind=$1 prefix=$2 found="" dir name
+	for dir in "$root/$kind"/*/; do
+		[ -d "$dir" ] || continue
+		name=$(basename "$dir")
+		[ -d "$dir/cmd/$prefix-$name" ] || continue
+		if ! [[ $name =~ ^[a-z][a-z0-9_-]*$ ]]; then
+			echo "build: $kind/$name: the name must match ^[a-z][a-z0-9_-]*\$" >&2
+			exit 1
+		fi
+		if [ ! -f "$dir/go.mod" ]; then
+			echo "build: $kind/$name has no go.mod; each one is its own module" >&2
+			exit 1
+		fi
+		found="$found $name"
+	done
+	echo "$found"
+}
+
+drivers=$(discover drivers proctor-driver)
+sims=$(discover simulators proctor-sim)
+if [ -z "$drivers" ]; then
+	echo "build: no drivers found under drivers/<name>/cmd/proctor-driver-<name>" >&2
+	exit 1
+fi
+
+if git describe --tags >/dev/null 2>&1; then
+	version=$(git describe --tags --always --dirty)
+	version=${version#v}
+elif desc=$(git describe --tags --always --dirty 2>/dev/null); then
+	version=0.0.0-$desc
+else
+	version=""
+fi
+
+xflags() {
+	[ -n "$version" ] || return 0
+	local mod
+	mod=$(GOWORK=off go list -m)
+	echo "-X main.Version=$version -X $mod.Version=$version"
+}
+
+build_module() {
+	local dir=$1 prog=$2
+	(
+		cd "$root/$dir"
+		GOWORK=off go build -trimpath -buildvcs=false -ldflags "$(xflags)" -o "$out/$prog" "./cmd/$prog"
+	)
+	echo "built $out/$prog"
+}
 
 for d in $drivers; do
-	(cd "drivers/$d" && GOWORK=off go build -trimpath -buildvcs=false -o "$out/proctor-driver-$d" "./cmd/proctor-driver-$d")
-	echo "built $out/proctor-driver-$d"
+	build_module "drivers/$d" "proctor-driver-$d"
+done
+for s in $sims; do
+	build_module "simulators/$s" "proctor-sim-$s"
 done
 
+sumfile="$root/internal/runner/official.sum"
+coreflags=""
+[ -z "$version" ] || coreflags="-X proctor/internal/commands.Version=$version"
 trap ': > "$sumfile"' EXIT
 (
 	cd "$out"
@@ -46,17 +99,17 @@ trap ': > "$sumfile"' EXIT
 		sum "proctor-driver-$d"
 	done
 ) > "$sumfile"
-GOWORK=off go build -trimpath -buildvcs=false -o "$out/proctor" ./cmd/proctor
+GOWORK=off go build -trimpath -buildvcs=false -ldflags "$coreflags" -o "$out/proctor" ./cmd/proctor
 : > "$sumfile"
 trap - EXIT
-echo "built $out/proctor with these pinned drivers:"
+echo "built $out/proctor ${version:-(no version from git)} with these pinned drivers:"
 (cd "$out" && for d in $drivers; do sum "proctor-driver-$d"; done)
 
 if [ "$install" -eq 1 ]; then
 	gopath=$(go env GOPATH)
 	dest="${gopath%%:*}/bin"
 	mkdir -p "$dest"
-	for f in proctor $(for d in $drivers; do echo "proctor-driver-$d"; done); do
+	for f in proctor $(for d in $drivers; do echo "proctor-driver-$d"; done) $(for s in $sims; do echo "proctor-sim-$s"; done); do
 		cp "$out/$f" "$dest/$f"
 		echo "installed $dest/$f"
 	done
