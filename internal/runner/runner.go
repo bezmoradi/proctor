@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"proctor/internal/applogs"
 	"proctor/internal/expr"
 	"proctor/internal/integrity"
 	"proctor/internal/model"
@@ -34,6 +35,7 @@ const (
 	ReasonEnvironmentNotReady = "environment_not_ready"
 	ReasonAborted             = "aborted"
 	ReasonTrustViolation      = "trust_violation"
+	ReasonAppLogs             = "app_logs"
 )
 
 const (
@@ -47,6 +49,7 @@ const (
 	CauseUnsupportedResult  = protocol.CauseUnsupportedResult
 	CauseDriverFailed       = protocol.CauseDriverFailed
 	CauseNotConfigured      = protocol.CauseNotConfigured
+	CauseAppLogsUnreadable  = "app_logs_unreadable"
 )
 
 const (
@@ -68,6 +71,8 @@ const (
 	defaultExcerpt      = 4096
 	callMargin          = time.Second
 	readyPause          = 250 * time.Millisecond
+	logFlushWait        = 300 * time.Millisecond
+	logLinesShown       = 50
 	stderrKeep          = 64 << 10
 )
 
@@ -128,6 +133,37 @@ type ScenarioResult struct {
 	Cause   string         `json:"cause,omitempty"`
 	Steps   []StepResult   `json:"steps"`
 	Handles []HandleRecord `json:"handles,omitempty"`
+	AppLogs *AppLogResult  `json:"app_logs,omitempty"`
+}
+
+const AppLogCheck = "app-logs"
+
+type AppLogResult struct {
+	Check           string           `json:"check"`
+	Result          Result           `json:"result"`
+	Cause           string           `json:"cause,omitempty"`
+	Message         string           `json:"message,omitempty"`
+	Note            string           `json:"note,omitempty"`
+	LinesRead       int              `json:"lines_read"`
+	Unexpected      []AppLogLine     `json:"unexpected,omitempty"`
+	UnexpectedCount int              `json:"unexpected_count"`
+	Expected        []AppLogExpected `json:"expected,omitempty"`
+}
+
+type AppLogLine struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Time    string `json:"time,omitempty"`
+	Line    string `json:"line"`
+}
+
+type AppLogExpected struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Count   *int   `json:"count,omitempty"`
+	Seen    int    `json:"seen"`
+	Result  Result `json:"result"`
+	Problem string `json:"problem,omitempty"`
 }
 
 type TableRow struct {
@@ -137,14 +173,15 @@ type TableRow struct {
 }
 
 type TableResult struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Spec      string     `json:"specification"`
-	SetupFrom string     `json:"setup_from,omitempty"`
-	Columns   []string   `json:"columns"`
-	Rows      []TableRow `json:"rows"`
-	Result    Result     `json:"result"`
-	Reason    string     `json:"reason,omitempty"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Spec      string        `json:"specification"`
+	SetupFrom string        `json:"setup_from,omitempty"`
+	Columns   []string      `json:"columns"`
+	Rows      []TableRow    `json:"rows"`
+	Result    Result        `json:"result"`
+	Reason    string        `json:"reason,omitempty"`
+	AppLogs   *AppLogResult `json:"app_logs,omitempty"`
 }
 
 type Summary struct {
@@ -286,6 +323,8 @@ type Runner struct {
 	excerpt  int
 	scrub    *scrubber
 	info     map[model.StepRef]model.StepInfo
+	logs     applogs.Source
+	logRules applogs.Rules
 }
 
 func credKey(identity, variant string) string { return identity + "\x00" + variant }
@@ -318,6 +357,15 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 		return nil, err
 	}
 	r.sess = sess
+	if cfg.AppLogs != nil && b.AppLogs != nil {
+		src := applogs.File{Path: b.AppLogs.File}
+		if _, err := src.Mark(); err != nil {
+			sess.close()
+			return nil, &SetupError{ExitCode: ExitError, Msgs: []string{r.scrub.clean(fmt.Sprintf("app_logs: cannot read the application's log: %v", err))}}
+		}
+		r.logs = src
+		r.logRules = applogs.Rules{Levels: cfg.AppLogs.EffectiveLevels(), LevelField: cfg.AppLogs.LevelKey(), MessageField: cfg.AppLogs.MessageKey()}
+	}
 	infos := opt.Described
 	if infos == nil {
 		infos, err = sess.describe(context.Background(), specs)
@@ -548,7 +596,8 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			continue
 		}
 		p := f.Path
-		for _, sc := range f.Spec.Scenarios {
+		var table *tableWindow
+		for i, sc := range f.Spec.Scenarios {
 			n++
 			began := time.Now()
 			r.progress(Progress{Index: n, Total: total, ID: sc.ID})
@@ -563,9 +612,17 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				if groups[key] == nil {
 					groups[key] = &tableGroup{}
 				}
+				if table == nil && r.logs != nil {
+					table = &tableWindow{w: r.openLogs()}
+				}
 				res = r.tableCase(ctx, p, sc, out.RunID, groups[key])
 			default:
+				w := r.openLogs()
 				res = r.scenario(ctx, p, sc, out.RunID)
+				if w != nil {
+					res.AppLogs = r.closeLogs(ctx, w, sc.ExpectLogs)
+					applyLogs(res.AppLogs, &res.Result, &res.Reason, &res.Cause)
+				}
 			}
 			if sc.Case != nil {
 				res.Table = sc.Case.Table
@@ -575,7 +632,23 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				out.addTableRow(p, sc, res)
 			}
 			out.Scenarios = append(out.Scenarios, res)
-			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Done: true, Result: res.Result, Elapsed: time.Since(began)})
+			done := Progress{Index: n, Total: total, ID: sc.ID, Done: true, Result: res.Result, Elapsed: time.Since(began)}
+			if table == nil {
+				r.progress(done)
+				continue
+			}
+			table.rows = append(table.rows, len(out.Scenarios)-1)
+			table.done = append(table.done, done)
+			if next := i + 1; next < len(f.Spec.Scenarios) && f.Spec.Scenarios[next].Case != nil && f.Spec.Scenarios[next].Case.Table == sc.Case.Table {
+				continue
+			}
+			al := r.closeLogs(ctx, table.w, sc.ExpectLogs)
+			out.applyTableLogs(p, sc.Case.Table, table.rows, al)
+			for j, ev := range table.done {
+				ev.Result = out.Scenarios[table.rows[j]].Result
+				r.progress(ev)
+			}
+			table = nil
 		}
 	}
 	r.sess.close()

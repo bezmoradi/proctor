@@ -85,7 +85,11 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 			d.Proofs[j].Detail = s.clean(d.Proofs[j].Detail)
 		}
 	}
+	for i := range out.Tables {
+		r.scrubAppLogs(out.Tables[i].AppLogs)
+	}
 	for i := range out.Scenarios {
+		r.scrubAppLogs(out.Scenarios[i].AppLogs)
 		for j := range out.Scenarios[i].Handles {
 			hr := &out.Scenarios[i].Handles[j]
 			hr.Handle, hr.Message = s.clean(hr.Handle), s.clean(hr.Message)
@@ -105,6 +109,23 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 				a.Expected, a.Actual, a.Message, a.Target = s.walk(a.Expected), s.walk(a.Actual), s.clean(a.Message), s.clean(a.Target)
 			}
 		}
+	}
+}
+
+func (r *Runner) scrubAppLogs(al *AppLogResult) {
+	if al == nil {
+		return
+	}
+	s := r.scrub
+	al.Message, al.Note = s.clean(al.Message), s.clean(al.Note)
+	for i := range al.Unexpected {
+		l := &al.Unexpected[i]
+		l.Level, l.Time = cut(s.clean(l.Level), r.excerpt), cut(s.clean(l.Time), r.excerpt)
+		l.Message, l.Line = cut(s.clean(l.Message), r.excerpt), cut(s.clean(l.Line), r.excerpt)
+	}
+	for i := range al.Expected {
+		e := &al.Expected[i]
+		e.Message = s.clean(e.Message)
 	}
 }
 

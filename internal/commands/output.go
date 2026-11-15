@@ -158,6 +158,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 			writeSteps(w, sc)
 		}
 		writeHandles(w, sc)
+		writeAppLogs(w, sc.AppLogs)
 	}
 	s := out.Summary
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
@@ -199,6 +200,40 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 			}
 			fmt.Fprintf(w, "                    %s %s\n", safe(label)+":", safe(describe(a)))
 		}
+	}
+}
+
+func writeAppLogs(w io.Writer, al *runner.AppLogResult) {
+	if al == nil || (al.Result == runner.Pass && al.Note == "") {
+		return
+	}
+	line := fmt.Sprintf("           %-8s %s", al.Result, runner.AppLogCheck)
+	if al.Cause != "" {
+		line += "  (" + safe(al.Cause) + ")"
+	}
+	if al.Message != "" {
+		line += "  " + safe(al.Message)
+	}
+	fmt.Fprintln(w, line)
+	if al.Note != "" {
+		fmt.Fprintf(w, "                    note: %s\n", safe(al.Note))
+	}
+	for _, l := range al.Unexpected {
+		at := ""
+		if l.Time != "" {
+			at = " at " + safe(l.Time)
+		}
+		fmt.Fprintf(w, "                    unexpected %s %s%s: %s\n", safe(l.Level), safe(show(l.Message)), at, safe(l.Line))
+	}
+	for _, e := range al.Expected {
+		if e.Result == runner.Pass {
+			continue
+		}
+		count := ""
+		if e.Count != nil {
+			count = fmt.Sprintf(" (count %d)", *e.Count)
+		}
+		fmt.Fprintf(w, "                    expect_logs %s %s%s: %s\n", safe(e.Level), safe(show(e.Message)), count, safe(e.Problem))
 	}
 }
 
@@ -275,6 +310,7 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 		}
 		writeSteps(w, sc)
 	}
+	writeAppLogs(w, t.AppLogs)
 }
 
 func causeText(c string) string {

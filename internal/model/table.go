@@ -22,6 +22,7 @@ type Table struct {
 	Rows         []yaml.Node       `yaml:"rows"`
 	NoStateCheck string            `yaml:"no_state_check"`
 	Waive        map[string]string `yaml:"waive"`
+	ExpectLogs   []LogExpectation  `yaml:"expect_logs,omitempty"`
 }
 
 type TableCase struct {
@@ -218,10 +219,11 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 				continue
 			}
 			s.Scenarios = append(s.Scenarios, Scenario{
-				ID:    caseID,
-				Name:  t.Name,
-				Setup: st,
-				Steps: []Step{step},
+				ID:         caseID,
+				Name:       t.Name,
+				Setup:      st,
+				Steps:      []Step{step},
+				ExpectLogs: t.ExpectLogs,
 				Case: &TableCase{Table: t.ID, Group: g, SetupFrom: t.SetupFrom, Columns: t.Columns, Cells: display,
 					First: !firstSeen[g], Canon: canon},
 			})

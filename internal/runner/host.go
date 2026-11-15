@@ -195,6 +195,7 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		for _, name := range sortedKeys(cfg.Drivers) {
 			conns[name], secrets[name] = resolveConnection(name, b.Drivers[name], opt.LookupEnv, &probs, s)
 		}
+		checkBindingAppLogs(cfg, b, &probs)
 	}
 	if err := probs.err(s); err != nil {
 		return nil, err
@@ -211,6 +212,18 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		return nil, err
 	}
 	return sess, nil
+}
+
+func checkBindingAppLogs(cfg *model.Config, b *model.Binding, probs *problems) {
+	switch {
+	case cfg.AppLogs == nil && b.AppLogs != nil:
+		probs.add(ExitInvalid, "binding: app_logs is set, but proctor.yaml has no app_logs, so the application's log would not be checked; remove app_logs from the binding or add it to proctor.yaml (EXE-10)")
+	case cfg.AppLogs == nil:
+	case b.AppLogs == nil || b.AppLogs.File == "":
+		probs.add(ExitInvalid, "binding: app_logs.file is required, because proctor.yaml has app_logs: give the path of the application's log file (EXE-10)")
+	case !filepath.IsAbs(b.AppLogs.File):
+		probs.add(ExitInvalid, "binding: app_logs.file %q must be an absolute path", b.AppLogs.File)
+	}
 }
 
 func (sess *session) ordered() []*host {

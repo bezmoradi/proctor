@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"go.yaml.in/yaml/v3"
+
 	"proctor/internal/expr"
 	"proctor/internal/model"
 	"proctor/internal/strictyaml"
@@ -50,6 +52,9 @@ func Load(src Source, configPath string) *Report {
 		return r
 	}
 	r.Config = &cfg
+	if data, ok, err := src.ReadFile(configPath); err == nil && ok {
+		r.checkNullAppLogs(data)
+	}
 	r.validateConfig(&cfg)
 	if cfg.Manifest == "" {
 		return r
@@ -153,7 +158,10 @@ func (r *Report) validateConfig(c *model.Config) {
 		case !driverName.MatchString(d.Official):
 			r.add(Invalid, "INT-12", p, "driver %q: invalid official driver name %q (a lower-case letter, then lower-case letters, digits or _)", name, d.Official)
 		}
-		if parkedDrivers[name] || parkedDrivers[d.Official] {
+		switch {
+		case name == "logs" || d.Official == "logs":
+			r.add(Invalid, "INT-12", p, "driver %q isn't available: the logs driver (Phase 5) is parked; to fail scenarios on errors in the application's log, use app_logs in proctor.yaml (EXE-10) instead", name)
+		case parkedDrivers[name] || parkedDrivers[d.Official]:
 			r.add(Invalid, "INT-12", p, "driver %q isn't available: Temporal and log evidence (Phase 5) is parked", name)
 		}
 	}
@@ -203,6 +211,50 @@ func (r *Report) validateConfig(c *model.Config) {
 		}
 	}
 	r.validateTimeLimits(c)
+	r.validateAppLogs(c)
+}
+
+func (r *Report) validateAppLogs(c *model.Config) {
+	a := c.AppLogs
+	if a == nil {
+		return
+	}
+	p := r.ConfigPath
+	if a.Levels != nil && len(a.Levels) == 0 {
+		r.add(Invalid, "EXE-10", p, "app_logs.levels lists no levels, so no log line could fail a scenario; leave levels out for the default (%s)", strings.Join(model.DefaultAppLogLevels, ", "))
+	}
+	seen := map[string]bool{}
+	for i, l := range a.Levels {
+		u := strings.ToUpper(l)
+		switch {
+		case strings.TrimSpace(l) == "":
+			r.add(Invalid, "EXE-10", p, "app_logs.levels[%d] is empty", i)
+		case seen[u]:
+			r.add(Invalid, "EXE-10", p, "app_logs.levels lists %s twice (levels are compared ignoring case)", l)
+		}
+		seen[u] = true
+	}
+	for _, f := range []struct{ key, value string }{{"level_field", a.LevelField}, {"message_field", a.MessageField}} {
+		if f.value != "" && strings.TrimSpace(f.value) != f.value {
+			r.add(Invalid, "EXE-10", p, "app_logs.%s %q has leading or trailing spaces", f.key, f.value)
+		}
+	}
+	if a.LevelKey() == a.MessageKey() {
+		r.add(Invalid, "EXE-10", p, "app_logs.level_field and app_logs.message_field both name %q", a.LevelKey())
+	}
+}
+
+func (r *Report) checkNullAppLogs(data []byte) {
+	doc, err := strictyaml.Parse(data)
+	if err != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return
+	}
+	m := doc.Content[0]
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == "app_logs" && m.Content[i+1].ShortTag() == "!!null" {
+			r.add(Invalid, "EXE-10", r.ConfigPath, "line %d: app_logs has no value; write app_logs: {} to check the application's log with the default settings, or remove the key", m.Content[i].Line)
+		}
+	}
 }
 
 func (r *Report) validateTimeLimits(c *model.Config) {

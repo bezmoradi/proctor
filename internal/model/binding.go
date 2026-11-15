@@ -6,6 +6,11 @@ type Binding struct {
 	Secrets     map[string]BindingSecret   `yaml:"secrets"`
 	Environment string                     `yaml:"environment"`
 	Image       *BindingImage              `yaml:"image"`
+	AppLogs     *BindingAppLogs            `yaml:"app_logs"`
+}
+
+type BindingAppLogs struct {
+	File string `yaml:"file"`
 }
 
 type BindingIdentity struct {

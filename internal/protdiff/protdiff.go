@@ -191,8 +191,21 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	res.Unparsed = dedupe(append(bUnparsed, hUnparsed...))
 	res.Scenarios = compareScenarios(bs, hs)
+	logTables := map[string]bool{}
 	for _, c := range res.Scenarios {
 		b, h := bs[c.ID].typed, hs[c.ID].typed
+		if (c.Change == "modified" || c.Modified) && b != nil && h != nil {
+			switch {
+			case b.Case == nil && h.Case == nil:
+				res.Weakenings = append(res.Weakenings, compareExpectLogs(c.ID, b.ExpectLogs, h.ExpectLogs)...)
+			case b.Case != nil && h.Case != nil:
+				key := hs[c.ID].file + "\x00" + h.Case.Table
+				if !logTables[key] {
+					logTables[key] = true
+					res.Weakenings = append(res.Weakenings, compareExpectLogs("table "+h.Case.Table, b.ExpectLogs, h.ExpectLogs)...)
+				}
+			}
+		}
 		switch {
 		case c.Change == "removed" && b != nil && b.Case != nil:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "table_row_removed",
@@ -411,7 +424,66 @@ func compareConfig(b, h *model.Config) []Weakening {
 			weaken("redaction_removed", "redaction.json_paths entry %s was removed; that value is no longer redacted in the evidence", jp)
 		}
 	}
+	out = append(out, compareAppLogs(b.AppLogs, h.AppLogs)...)
 	return out
+}
+
+func compareAppLogs(b, h *model.AppLogs) []Weakening {
+	var out []Weakening
+	weaken := func(kind, format string, args ...any) {
+		out = append(out, Weakening{Kind: kind, Detail: fmt.Sprintf(format, args...)})
+	}
+	switch {
+	case b == nil:
+		return nil
+	case h == nil:
+		weaken("app_logs_removed", "app_logs was removed; errors in the application's log no longer fail a scenario")
+		return out
+	}
+	hl := h.EffectiveLevels()
+	for _, l := range b.EffectiveLevels() {
+		if !containsString(hl, l) {
+			weaken("app_log_level_removed", "app_logs.levels no longer includes %s; lines at that level no longer fail a scenario", l)
+		}
+	}
+	if b.LevelKey() != h.LevelKey() {
+		weaken("app_log_field_changed", "app_logs.level_field %s became %s; lines are now judged by another field, and may no longer be seen as errors", b.LevelKey(), h.LevelKey())
+	}
+	if b.MessageKey() != h.MessageKey() {
+		weaken("app_log_field_changed", "app_logs.message_field %s became %s; expect_logs entries are now matched against another field", b.MessageKey(), h.MessageKey())
+	}
+	return out
+}
+
+func compareExpectLogs(scenario string, b, h []model.LogExpectation) []Weakening {
+	var out []Weakening
+	weaken := func(kind, format string, args ...any) {
+		out = append(out, Weakening{Scenario: scenario, Kind: kind, Detail: fmt.Sprintf(format, args...)})
+	}
+	base := map[string]model.LogExpectation{}
+	for _, e := range b {
+		base[e.Key()] = e
+	}
+	for _, e := range h {
+		what := fmt.Sprintf("%s %s", strings.ToUpper(e.Level), canonical(e.Message))
+		was, ok := base[e.Key()]
+		switch {
+		case !ok:
+			weaken("log_error_allowed", "expect_logs now allows %s%s; such lines no longer fail the scenario", what, countText(e.Count))
+		case was.Count != nil && e.Count == nil:
+			weaken("log_count_removed", "expect_logs %s: count %d was removed; any number of such lines is now accepted", what, *was.Count)
+		case was.Count != nil && *e.Count > *was.Count:
+			weaken("log_count_raised", "expect_logs %s: count %d became %d; more such lines are now accepted", what, *was.Count, *e.Count)
+		}
+	}
+	return out
+}
+
+func countText(c *int) string {
+	if c == nil {
+		return " (any number of times)"
+	}
+	return fmt.Sprintf(" (count %d)", *c)
 }
 
 type limits struct {

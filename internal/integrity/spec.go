@@ -67,6 +67,7 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 	if len(s.Scenarios) == 0 && len(s.Tables) == 0 {
 		r.add(Violation, "INT-04", p, "the specification defines no scenarios")
 	}
+	logTables := map[string]bool{}
 	for i := range s.Scenarios {
 		sc := &s.Scenarios[i]
 		where := fmt.Sprintf("scenarios[%d]", i)
@@ -92,6 +93,13 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 		if len(sc.Steps) == 0 {
 			r.add(Invalid, "EXE-01", p, "%s: at least one verification step is required", where)
 		}
+		switch {
+		case sc.Case == nil:
+			r.checkExpectLogs(p, where, sc.ExpectLogs, c)
+		case !logTables[sc.Case.Table]:
+			logTables[sc.Case.Table] = true
+			r.checkExpectLogs(p, "table "+sc.Case.Table, sc.ExpectLogs, c)
+		}
 		ids := map[string]bool{}
 		saved := map[string]bool{}
 		hs := handleScope{opened: map[string]string{}, later: map[string]string{}}
@@ -110,6 +118,42 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 			for name := range at.step.Save {
 				saved[name] = true
 			}
+		}
+	}
+}
+
+func (r *Report) checkExpectLogs(p, where string, list []model.LogExpectation, c *model.Config) {
+	if list == nil {
+		return
+	}
+	if c.AppLogs == nil {
+		r.add(Invalid, "EXE-10", p, "%s: expect_logs needs app_logs in proctor.yaml; without it the application's log isn't read, so nothing could be expected", where)
+		return
+	}
+	if len(list) == 0 {
+		r.add(Invalid, "EXE-10", p, "%s: expect_logs lists no entries; remove it", where)
+		return
+	}
+	levels := c.AppLogs.EffectiveLevels()
+	seen := map[string]int{}
+	for i, e := range list {
+		at := fmt.Sprintf("%s: expect_logs[%d]", where, i)
+		switch {
+		case strings.TrimSpace(e.Level) == "":
+			r.add(Invalid, "EXE-10", p, "%s: level is required", at)
+		case !contains(levels, strings.ToUpper(e.Level)):
+			r.add(Invalid, "EXE-10", p, "%s: level %s isn't one of app_logs.levels (%s), so no line at it could fail the scenario", at, e.Level, strings.Join(levels, ", "))
+		}
+		if e.Message == "" {
+			r.add(Invalid, "EXE-10", p, "%s: message is required, the exact text of the log line's %s field", at, c.AppLogs.MessageKey())
+		}
+		if e.Count != nil && *e.Count < 1 {
+			r.add(Invalid, "EXE-10", p, "%s: count must be at least 1, got %d", at, *e.Count)
+		}
+		if j, dup := seen[e.Key()]; dup {
+			r.add(Invalid, "EXE-10", p, "%s: repeats expect_logs[%d] (same level, ignoring case, and message)", at, j)
+		} else {
+			seen[e.Key()] = i
 		}
 	}
 }

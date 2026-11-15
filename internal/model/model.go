@@ -23,6 +23,44 @@ type Config struct {
 	Redaction       *Redaction              `yaml:"redaction"`
 	Secrets         []string                `yaml:"secrets"`
 	Report          *ReportPolicy           `yaml:"report"`
+	AppLogs         *AppLogs                `yaml:"app_logs"`
+}
+
+type AppLogs struct {
+	Levels       []string `yaml:"levels"`
+	LevelField   string   `yaml:"level_field"`
+	MessageField string   `yaml:"message_field"`
+}
+
+var DefaultAppLogLevels = []string{"ERROR", "FATAL", "PANIC"}
+
+func (a *AppLogs) EffectiveLevels() []string {
+	if a == nil {
+		return nil
+	}
+	src := a.Levels
+	if src == nil {
+		src = DefaultAppLogLevels
+	}
+	out := make([]string, 0, len(src))
+	for _, l := range src {
+		out = append(out, strings.ToUpper(l))
+	}
+	return out
+}
+
+func (a *AppLogs) LevelKey() string {
+	if a == nil || a.LevelField == "" {
+		return "level"
+	}
+	return a.LevelField
+}
+
+func (a *AppLogs) MessageKey() string {
+	if a == nil || a.MessageField == "" {
+		return "msg"
+	}
+	return a.MessageField
 }
 
 type DriverConfig struct {
@@ -69,12 +107,23 @@ type Spec struct {
 }
 
 type Scenario struct {
-	ID    string `yaml:"id"`
-	Name  string `yaml:"name"`
-	Setup []Step `yaml:"setup"`
-	Steps []Step `yaml:"steps"`
+	ID         string           `yaml:"id"`
+	Name       string           `yaml:"name"`
+	Setup      []Step           `yaml:"setup"`
+	Steps      []Step           `yaml:"steps"`
+	ExpectLogs []LogExpectation `yaml:"expect_logs"`
 
 	Case *TableCase `yaml:"-"`
+}
+
+type LogExpectation struct {
+	Level   string `yaml:"level" json:"level"`
+	Message string `yaml:"message" json:"message"`
+	Count   *int   `yaml:"count,omitempty" json:"count,omitempty"`
+}
+
+func (e LogExpectation) Key() string {
+	return strings.ToUpper(e.Level) + "\x00" + e.Message
 }
 
 type Step struct {
