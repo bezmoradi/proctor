@@ -57,7 +57,7 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 	if r.Config != nil {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
-		dc.drivers, dc.setup = describeSteps(ctx, r, nil, runner.Options{})
+		_, dc.drivers, dc.setup = describeSteps(ctx, r, nil, runner.Options{})
 	}
 	code := r.ExitCode()
 	if dc.setup != nil && dc.setup.ExitCode > code {

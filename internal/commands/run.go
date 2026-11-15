@@ -91,13 +91,14 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	drivers, se := describeSteps(ctx, rep, b, opt)
+	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
 		return setupFailed(stdout, c.json, rep, se)
 	}
 	if code := rep.ExitCode(); code != exitOK {
 		return write(stdout, c.json, "RUN", rep, &driverCheck{drivers: drivers}, code, resultName(code))
 	}
+	opt.Described = info
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		return setupFailed(stdout, c.json, rep, asSetupError(err))
@@ -152,16 +153,16 @@ func specFiles(rep *integrity.Report) []runner.SpecFile {
 	return out
 }
 
-func describeSteps(ctx context.Context, rep *integrity.Report, b *model.Binding, opt runner.Options) ([]runner.DriverInfo, *runner.SetupError) {
+func describeSteps(ctx context.Context, rep *integrity.Report, b *model.Binding, opt runner.Options) (map[model.StepRef]model.StepInfo, []runner.DriverInfo, *runner.SetupError) {
 	info, drivers, err := runner.Describe(ctx, rep.Config, specFiles(rep), b, opt)
 	if err != nil {
-		return nil, asSetupError(err)
+		return nil, nil, asSetupError(err)
 	}
 	rep.ApplyStepInfo(info)
 	if drivers == nil {
 		drivers = []runner.DriverInfo{}
 	}
-	return drivers, nil
+	return info, drivers, nil
 }
 
 func asSetupError(err error) *runner.SetupError {

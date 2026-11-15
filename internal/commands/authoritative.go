@@ -306,7 +306,7 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 		return se.ExitCode
 	}
 	mark := len(rep.Findings)
-	drivers, se := describeSteps(ctx, rep, b, opt)
+	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
 		return refused(se), nil
 	}
@@ -325,6 +325,7 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 	case len(ar.Errors) > 0:
 		return exitInvalid, nil
 	}
+	opt.Described = info
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		return refused(asSetupError(err)), nil

@@ -425,11 +425,7 @@ func (d *Driver) Ready(ctx context.Context) (protocol.ReadyResult, error) {
 			if !errors.As(err, &e) {
 				return protocol.ReadyResult{Detail: fmt.Sprintf("connection %s: %v", name, err)}, nil
 			}
-			detail := e.Message
-			if e.Data.Lasting {
-				detail += "; waiting won't fix this"
-			}
-			return protocol.ReadyResult{Detail: detail, Lasting: e.Data.Lasting}, nil
+			return protocol.ReadyResult{Detail: e.Message, Lasting: e.Data.Lasting}, nil
 		}
 	}
 	return protocol.ReadyResult{Ready: true, Detail: fmt.Sprintf("connections ready: %s", strings.Join(d.names, ", "))}, nil

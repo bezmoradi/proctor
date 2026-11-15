@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"proctor/internal/expr"
+	"proctor/internal/integrity"
 	"proctor/internal/model"
 	"proctor/protocol"
 )
@@ -226,6 +227,7 @@ type Options struct {
 	LookupEnv     func(string) (string, bool)
 	Authoritative bool
 	DriverDir     string
+	Described     map[model.StepRef]model.StepInfo
 }
 
 func (o Options) withDefaults() (Options, error) {
@@ -300,22 +302,37 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 		return nil, err
 	}
 	r.sess = sess
-	infos, err := sess.describe(context.Background(), specs)
-	if err != nil {
-		sess.close()
-		return nil, err
-	}
-	for _, ref := range sortedRefs(infos) {
-		for _, p := range infos[ref].Problems {
-			where := fmt.Sprintf("%s: scenario %s %s[%d]", ref.Spec, ref.Scenario, ref.Phase, ref.Index)
-			probs.add(ExitInvalid, "%s: %s %s", where, p.Rule, p.Message)
+	infos := opt.Described
+	if infos == nil {
+		infos, err = sess.describe(context.Background(), specs)
+		if err != nil {
+			sess.close()
+			return nil, err
 		}
 	}
+	checkDescribed(cfg, specs, infos, &probs)
 	if err := probs.err(r.scrub); err != nil {
 		sess.close()
 		return nil, err
 	}
 	return r, nil
+}
+
+func checkDescribed(cfg *model.Config, specs []SpecFile, infos map[model.StepRef]model.StepInfo, probs *problems) {
+	rep := &integrity.Report{Config: cfg}
+	for _, f := range specs {
+		if f.Spec != nil {
+			rep.Specs = append(rep.Specs, integrity.SpecFile{Path: f.Path, Spec: f.Spec})
+		}
+	}
+	rep.ApplyStepInfo(infos)
+	for _, f := range rep.Findings {
+		code := ExitInvalid
+		if f.Kind == integrity.Violation {
+			code = ExitIntegrity
+		}
+		probs.add(code, "%s: %s", f.Rule, strings.TrimPrefix(f.Path+": ", ": ")+f.Message)
+	}
 }
 
 func (r *Runner) loadCredentials(probs *problems) {

@@ -509,27 +509,6 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	return info, nil
 }
 
-func sortedRefs(m map[model.StepRef]model.StepInfo) []model.StepRef {
-	out := make([]model.StepRef, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Spec != b.Spec {
-			return a.Spec < b.Spec
-		}
-		if a.Scenario != b.Scenario {
-			return a.Scenario < b.Scenario
-		}
-		if a.Phase != b.Phase {
-			return a.Phase < b.Phase
-		}
-		return a.Index < b.Index
-	})
-	return out
-}
-
 func refsIn(v any) []string {
 	n, err := normalizeJSON(v)
 	if err != nil {
