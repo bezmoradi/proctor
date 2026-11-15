@@ -22,11 +22,12 @@ import (
 const hidden = "[hidden]"
 
 type requestArgs struct {
-	Method  string         `json:"method"`
-	Path    string         `json:"path"`
-	Query   map[string]any `json:"query"`
-	Headers map[string]any `json:"headers"`
-	Body    any            `json:"body"`
+	Method   string         `json:"method"`
+	Path     string         `json:"path"`
+	Query    map[string]any `json:"query"`
+	Headers  map[string]any `json:"headers"`
+	Body     any            `json:"body"`
+	BodyText any            `json:"body_text"`
 }
 
 type outgoing struct {
@@ -103,16 +104,27 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 		u += "?" + q.Encode()
 	}
 	var rd io.Reader
+	if a.Body != nil && a.BodyText != nil {
+		return out, errors.New("body and body_text can't both be set")
+	}
+	if (a.Body != nil || a.BodyText != nil) && a.Method == http.MethodHead {
+		return out, errors.New("a HEAD request can't send a body")
+	}
 	if a.Body != nil {
-		if a.Method == http.MethodHead {
-			return out, errors.New("a HEAD request can't send a body")
-		}
 		b, err := json.Marshal(a.Body)
 		if err != nil {
 			return out, fmt.Errorf("body can't be sent as JSON: %v", err)
 		}
 		out.body = b
 		rd = bytes.NewReader(b)
+	}
+	if a.BodyText != nil {
+		t, err := text(a.BodyText)
+		if err != nil {
+			return out, fmt.Errorf("body_text %v", err)
+		}
+		out.body = []byte(t)
+		rd = bytes.NewReader(out.body)
 	}
 	req, err := http.NewRequestWithContext(ctx, a.Method, u, rd)
 	if err != nil {
@@ -121,7 +133,7 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 	if req.URL.Scheme != d.base.Scheme || req.URL.Host != d.base.Host || !strings.HasPrefix(req.URL.EscapedPath(), d.basePath()+"/") {
 		return out, fmt.Errorf("request URL %s leaves the target (HTTP-05)", u)
 	}
-	if rd != nil {
+	if a.Body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	for _, name := range sortedKeys(a.Headers) {

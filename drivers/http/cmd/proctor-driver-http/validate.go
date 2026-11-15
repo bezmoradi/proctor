@@ -88,6 +88,13 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	if method == "HEAD" && hasBody && body != nil {
 		v.add("EXE-01", "$.with.body", "a HEAD request can't send a body")
 	}
+	bodyText, hasBodyText := args["body_text"]
+	if method == "HEAD" && hasBodyText && bodyText != nil {
+		v.add("EXE-01", "$.with.body_text", "a HEAD request can't send a body")
+	}
+	if hasBody && hasBodyText {
+		v.add("EXE-01", "$.with.body_text", "body and body_text can't both be set; use body for JSON or body_text for text sent as written")
+	}
 
 	v.onlyInBodyOrHeaders("$.with.method", args["method"])
 	v.onlyInBodyOrHeaders("$.with.path", args["path"])

@@ -100,6 +100,7 @@ type Evidence struct {
 
 type StepResult struct {
 	ID         string      `json:"id"`
+	Case       string      `json:"case,omitempty"`
 	Phase      string      `json:"phase"`
 	Result     Result      `json:"result"`
 	Reason     string      `json:"reason,omitempty"`
@@ -546,6 +547,9 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			}
 			if sc.Case != nil {
 				res.Table = sc.Case.Table
+				for i := range res.Steps {
+					res.Steps[i].Case = sc.ID
+				}
 				out.addTableRow(p, sc, res)
 			}
 			out.Scenarios = append(out.Scenarios, res)

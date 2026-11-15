@@ -171,6 +171,13 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 		if st.Phase == runner.PhaseSetup {
 			label = "setup " + label
 		}
+		switch {
+		case st.Case == "":
+		case st.Phase != runner.PhaseSetup && st.ID == "case":
+			label = "case " + safe(st.Case)
+		default:
+			label = "case " + safe(st.Case) + " " + label
+		}
 		act := actionText(st)
 		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, act)
 		if st.Reason != "" {
@@ -262,7 +269,6 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 		if sc.Result == runner.Pass || (sc.Reason == runner.ReasonSetupFailed && !failedSetup) {
 			continue
 		}
-		fmt.Fprintf(w, "           case %s:\n", safe(sc.ID))
 		writeSteps(w, sc)
 	}
 }

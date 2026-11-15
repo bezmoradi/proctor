@@ -319,17 +319,27 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string) Assertion {
 	switch c.kind {
 	case "keys":
-		if r.redactPath(c.target, red) {
+		switch {
+		case r.listedPath(c.target, red):
 			if a.Expected != nil {
 				a.Expected = redacted
 			}
 			if a.Actual != nil {
 				a.Actual = redacted
 			}
+		case sensitivePath(c.target):
+			if a.Expected != nil {
+				a.Expected = redacted
+			}
+			if _, names := a.Actual.([]string); names {
+				a.Actual = redacted
+			} else {
+				a.Actual = r.redactValue(c.target, a.Actual, red)
+			}
 		}
 		return a
 	case "any", "none":
-		if r.redactPath(c.target, red) {
+		if r.listedPath(c.target, red) {
 			if a.Expected != nil {
 				a.Expected = redacted
 			}
@@ -364,10 +374,14 @@ func (r *Runner) redactValue(path string, v any, red []string) any {
 	if v == nil {
 		return nil
 	}
-	if r.redactPath(path, red) {
+	if r.listedPath(path, red) {
 		return redacted
 	}
 	switch x := v.(type) {
+	case string:
+		if sensitivePath(path) {
+			return redacted
+		}
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
@@ -385,13 +399,17 @@ func (r *Runner) redactValue(path string, v any, red []string) any {
 }
 
 func (r *Runner) scrubRedacted(path string, v any, red []string) {
-	if r.redactPath(path, red) {
+	if r.listedPath(path, red) {
 		for _, s := range textLeaves(v) {
 			r.scrub.add(s)
 		}
 		return
 	}
 	switch x := v.(type) {
+	case string:
+		if sensitivePath(path) {
+			r.scrub.add(x)
+		}
 	case map[string]any:
 		for k, e := range x {
 			r.scrubRedacted(path+"."+k, e, red)
@@ -423,7 +441,7 @@ func textLeaves(v any) []string {
 	return nil
 }
 
-func (r *Runner) redactPath(p string, red []string) bool {
+func (r *Runner) listedPath(p string, red []string) bool {
 	for q := range r.redactJS {
 		if pathUnder(p, q) {
 			return true
@@ -434,11 +452,20 @@ func (r *Runner) redactPath(p string, red []string) bool {
 			return true
 		}
 	}
-	return sensitiveName(p[strings.LastIndexAny(p, ".[")+1:])
+	return false
 }
 
 func pathUnder(p, root string) bool {
 	return p == root || strings.HasPrefix(p, root+".") || strings.HasPrefix(p, root+"[")
+}
+
+func sensitivePath(p string) bool {
+	for _, part := range strings.FieldsFunc(p, func(c rune) bool { return c == '.' || c == '[' }) {
+		if sensitiveName(part) {
+			return true
+		}
+	}
+	return false
 }
 
 func sensitiveName(name string) bool {

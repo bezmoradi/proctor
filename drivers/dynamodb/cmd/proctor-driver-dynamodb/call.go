@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -172,6 +173,7 @@ func (d *driver) get(ctx context.Context, a getArgsT) (protocol.CallResult, erro
 	}
 	fact := map[string]any{"found": false, "item": nil}
 	outcome := "not found"
+	var found any
 	if out.Item != nil {
 		item, err := fromAttrMap(out.Item, "$.item")
 		if err != nil {
@@ -179,12 +181,14 @@ func (d *driver) get(ctx context.Context, a getArgsT) (protocol.CallResult, erro
 		}
 		fact = map[string]any{"found": true, "item": item}
 		outcome = "found"
+		found = item
 	}
 	return protocol.CallResult{
 		Fact: fact,
 		Evidence: protocol.Evidence{
-			Summary:        fmt.Sprintf("get on %s (%s) -> %s", a.Table, name, outcome),
-			RequestExcerpt: d.excerpt(fmt.Sprintf("GetItem %s consistent=%t key=", name, consistent), a.Key),
+			Summary:         fmt.Sprintf("get on %s (%s) -> %s", a.Table, name, outcome),
+			RequestExcerpt:  d.excerpt(fmt.Sprintf("GetItem %s consistent=%t key=", name, consistent), a.Key),
+			ResponseExcerpt: d.excerpt("item=", found),
 		},
 	}, nil
 }
@@ -282,8 +286,9 @@ func (d *driver) query(ctx context.Context, a queryArgsT) (protocol.CallResult, 
 	return protocol.CallResult{
 		Fact: map[string]any{"count": len(items), "items": items},
 		Evidence: protocol.Evidence{
-			Summary:        fmt.Sprintf("query on %s (%s)%s -> %d %s", a.Table, name, via, len(items), noun),
-			RequestExcerpt: d.excerpt(fmt.Sprintf("Query %s%s key=", name, via), a.Key),
+			Summary:         fmt.Sprintf("query on %s (%s)%s -> %d %s", a.Table, name, via, len(items), noun),
+			RequestExcerpt:  d.excerpt(fmt.Sprintf("Query %s%s key=", name, via), a.Key),
+			ResponseExcerpt: d.excerpt("items=", items),
 		},
 	}, nil
 }
@@ -331,8 +336,9 @@ func (d *driver) put(ctx context.Context, a putArgsT) (protocol.CallResult, erro
 	return protocol.CallResult{
 		Fact: map[string]any{"written": true},
 		Evidence: protocol.Evidence{
-			Summary:        fmt.Sprintf("put on %s (%s) -> written", a.Table, name),
-			RequestExcerpt: d.excerpt(fmt.Sprintf("PutItem %s if attribute_not_exists(%s) key=", name, tk.table.partition), key),
+			Summary:         fmt.Sprintf("put on %s (%s) -> written", a.Table, name),
+			RequestExcerpt:  d.excerpt(fmt.Sprintf("PutItem %s if attribute_not_exists(%s) key=", name, tk.table.partition), key),
+			ResponseExcerpt: d.excerpt("written item=", a.Item),
 		},
 	}, nil
 }
@@ -344,7 +350,11 @@ func (d *driver) excerpt(prefix string, v any) string {
 	}
 	s := d.scrub(prefix + string(b))
 	if len(s) > excerptBytes {
-		s = s[:excerptBytes] + "..."
+		n := excerptBytes
+		for n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		s = s[:n] + "..."
 	}
 	return s
 }
