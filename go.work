@@ -5,8 +5,10 @@ use (
 	./drivers/dynamodb
 	./drivers/http
 	./drivers/postgres
+	./drivers/ses
 	./drivers/sqs
 	./drivers/ws
 	./protocol
+	./simulators/ses
 	./simulators/token
 )
