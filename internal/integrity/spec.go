@@ -94,9 +94,18 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 		}
 		ids := map[string]bool{}
 		saved := map[string]bool{}
+		hs := handleScope{opened: map[string]string{}, later: map[string]string{}}
+		for _, at := range stepsOf(p, sc) {
+			if at.step.As != "" {
+				if _, seen := hs.later[at.step.As]; !seen {
+					hs.later[at.step.As] = at.step.ID
+				}
+			}
+		}
 		for _, at := range stepsOf(p, sc) {
 			r.quietly(at.quiet, func() {
 				r.validateStep(p, at, sc, c, ids, saved)
+				r.checkHandles(p, at, sc, hs)
 			})
 			for name := range at.step.Save {
 				saved[name] = true
@@ -165,6 +174,53 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 			r.add(Invalid, "EXE-07", p, "%s: waive names %q; only FIX-05, HTTP-09 and EXE-09 can be waived (EXE-07 uses no_state_check)", where, rule)
 		case strings.TrimSpace(st.Waive[rule]) == "":
 			r.add(Invalid, rule, p, "%s: the %s waiver must state a reason", where, rule)
+		}
+	}
+}
+
+type handleScope struct {
+	opened map[string]string
+	later  map[string]string
+}
+
+func (r *Report) checkHandles(p string, at stepAt, sc *model.Scenario, hs handleScope) {
+	st := at.step
+	if st.As == "" && st.On == "" {
+		return
+	}
+	where := fmt.Sprintf("%s (%s)", at.label, st.ID)
+	driver, _, _ := model.SplitDo(st.Do)
+	for _, f := range []struct{ key, name string }{{"as", st.As}, {"on", st.On}} {
+		if f.name != "" && !model.HandleName.MatchString(f.name) {
+			r.add(Invalid, "HND-01", p, "%s: %s %q isn't a valid handle name (a lower-case letter, then lower-case letters, digits or _)", where, f.key, f.name)
+		}
+	}
+	if st.As != "" && st.On != "" {
+		r.add(Invalid, "HND-04", p, "%s: a step can't have both as and on; it either opens a handle or uses one", where)
+	}
+	if sc.Case != nil {
+		r.add(Invalid, "HND-08", p, "%s: a table's setup can't open or use handles, because the table's cases can't use them", where)
+	}
+	if st.On != "" {
+		d, ok := hs.opened[st.On]
+		switch {
+		case ok && d != driver:
+			r.add(Invalid, "HND-07", p, "%s: on %q names a handle of driver %s, but this step's driver is %s; a handle can only be used by the driver that opened it", where, st.On, d, driver)
+		case ok:
+		case hs.later[st.On] != "" && hs.later[st.On] != st.ID:
+			r.add(Invalid, "HND-03", p, "%s: on %q names a handle that is opened only later, by step %s; open it with as in an earlier step", where, st.On, hs.later[st.On])
+		default:
+			r.add(Invalid, "HND-03", p, "%s: on %q doesn't name a handle opened with as by an earlier step of this scenario", where, st.On)
+		}
+	}
+	if st.As != "" {
+		if _, dup := hs.opened[st.As]; dup {
+			r.add(Invalid, "HND-02", p, "%s: as %q is already used by an earlier step of this scenario; each handle needs its own name", where, st.As)
+		} else {
+			hs.opened[st.As] = driver
+		}
+		if hasTime(st) {
+			r.add(Invalid, "HND-09", p, "%s: as can't be used with eventually, consistently or never, because every sample would open another handle", where)
 		}
 	}
 }

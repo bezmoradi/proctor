@@ -42,6 +42,7 @@ type host struct {
 	stderr   string
 	dropped  int64
 	closed   bool
+	dead     bool
 }
 
 type session struct {
@@ -412,6 +413,9 @@ func (sess *session) describe(ctx context.Context, specs []SpecFile) (map[model.
 			}{{"setup", sc.Setup}, {"steps", sc.Steps}} {
 				phase := part.phase
 				for i, st := range part.steps {
+					if name, _, ok := model.SplitDo(st.Do); !ok || sess.hosts[name] == nil {
+						continue
+					}
 					info, err := sess.validateStep(ctx, st, phase == "setup")
 					if err != nil {
 						probs.add(ExitError, "%s: scenario %s %s[%d]: %v", f.Path, sc.ID, phase, i, err)
@@ -448,9 +452,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 		problem("EXE-01", "do", "driver %s has no operation %q (it has %s)", name, opName, strings.Join(sortedKeys(h.ops), ", "))
 		return info, nil
 	}
-	if op.OpensHandle || op.UsesHandle {
-		problem("EXE-01", "do", "operation %s uses handles, which this proctor doesn't support yet", st.Do)
-	}
+	info.OpensHandle, info.UsesHandle = op.OpensHandle, op.UsesHandle
 	switch {
 	case st.Variant != "" && st.Identity == "":
 		problem("EXE-01", "variant", "variant %q needs an identity", st.Variant)

@@ -87,6 +87,8 @@ type Action struct {
 	Op       string `json:"op"`
 	Identity string `json:"identity,omitempty"`
 	Variant  string `json:"variant,omitempty"`
+	As       string `json:"as,omitempty"`
+	On       string `json:"on,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 }
 
@@ -114,14 +116,15 @@ type StepResult struct {
 }
 
 type ScenarioResult struct {
-	ID     string       `json:"id"`
-	Name   string       `json:"name"`
-	Spec   string       `json:"specification"`
-	Table  string       `json:"table,omitempty"`
-	Result Result       `json:"result"`
-	Reason string       `json:"reason,omitempty"`
-	Cause  string       `json:"cause,omitempty"`
-	Steps  []StepResult `json:"steps"`
+	ID      string         `json:"id"`
+	Name    string         `json:"name"`
+	Spec    string         `json:"specification"`
+	Table   string         `json:"table,omitempty"`
+	Result  Result         `json:"result"`
+	Reason  string         `json:"reason,omitempty"`
+	Cause   string         `json:"cause,omitempty"`
+	Steps   []StepResult   `json:"steps"`
+	Handles []HandleRecord `json:"handles,omitempty"`
 }
 
 type TableRow struct {
@@ -656,6 +659,13 @@ type tableGroup struct {
 }
 
 func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup) ScenarioResult {
+	hs := newHandleSet()
+	res := r.tableCaseSteps(ctx, p, sc, runID, g, hs)
+	res.Handles = r.closeHandles(ctx, hs)
+	return res
+}
+
+func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup, hs *handleSet) ScenarioResult {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
 	if !g.ran {
 		g.ran, g.ok = true, true
@@ -665,7 +675,7 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseSetup, Result: NotRun, Reason: ReasonSetupFailed})
 				continue
 			}
-			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseSetup}, g.vars)
+			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseSetup}, g.vars, hs)
 			if sr.Result != Pass {
 				sr.Result, sr.Reason = Error, ReasonSetupFailed
 				g.ok, g.cause = false, sr.Cause
@@ -696,7 +706,7 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
-		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseVerification}, vars)
+		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseVerification}, vars, hs)
 		switch sr.Result {
 		case Fail:
 			res.Result, stop = Fail, ReasonEarlierStepFailed
@@ -711,6 +721,7 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runID string) ScenarioResult {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
 	vars := r.baseVars(runID + "-" + sc.ID)
+	hs := newHandleSet()
 	stop := ""
 	run := func(st model.Step, phase string) {
 		if stop != "" {
@@ -723,7 +734,7 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
 			return
 		}
-		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: phase}, vars)
+		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: phase}, vars, hs)
 		switch {
 		case phase == PhaseSetup && sr.Result != Pass:
 			sr.Result, sr.Reason = Error, ReasonSetupFailed
@@ -744,6 +755,7 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 	for _, st := range sc.Steps {
 		run(st, PhaseVerification)
 	}
+	res.Handles = r.closeHandles(ctx, hs)
 	return res
 }
 

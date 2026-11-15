@@ -1,6 +1,11 @@
 package model
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+var HandleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 type Config struct {
 	Version         int                     `yaml:"version"`
@@ -73,6 +78,8 @@ type Step struct {
 	Do           string            `yaml:"do"`
 	Identity     string            `yaml:"identity"`
 	Variant      string            `yaml:"variant"`
+	As           string            `yaml:"as"`
+	On           string            `yaml:"on"`
 	With         any               `yaml:"with"`
 	Expect       *Expect           `yaml:"expect"`
 	Eventually   *Within           `yaml:"eventually"`
@@ -120,6 +127,7 @@ type StepInfo struct {
 	Kind                     string
 	Destructive, FixedTarget bool
 	StateCheck               bool
+	OpensHandle, UsesHandle  bool
 	Refs                     []string
 	Data                     []string
 	Problems                 []Problem

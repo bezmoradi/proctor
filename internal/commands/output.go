@@ -157,6 +157,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		if sc.Result != runner.Pass {
 			writeSteps(w, sc)
 		}
+		writeHandles(w, sc)
 	}
 	s := out.Summary
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
@@ -187,6 +188,19 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 			}
 			fmt.Fprintf(w, "                    %s %s\n", safe(strings.TrimSpace(a.Kind+" "+a.Target))+":", safe(describe(a)))
 		}
+	}
+}
+
+func writeHandles(w io.Writer, sc runner.ScenarioResult) {
+	for _, h := range sc.Handles {
+		if h.Close == runner.HandleClosed {
+			continue
+		}
+		name := h.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Fprintf(w, "           close %s (driver %s, opened by %s): %s: %s\n", safe(name), safe(h.Driver), safe(h.OpenedBy), safe(h.Close), safe(h.Message))
 	}
 }
 

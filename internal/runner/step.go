@@ -74,13 +74,14 @@ func (t timing) done(pass bool, elapsed time.Duration) bool {
 }
 
 type sampleResult struct {
+	handle  string
 	fact    any
 	ev      protocol.Evidence
 	asserts []Assertion
 	pass    bool
 }
 
-func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars) StepResult {
+func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars, hs *handleSet) StepResult {
 	errorf := func(cause, format string, args ...any) StepResult {
 		sr.Result, sr.Cause = Error, cause
 		sr.Message = fmt.Sprintf(format, args...)
@@ -88,7 +89,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	}
 	name, opName, _ := model.SplitDo(st.Do)
 	sr.Driver = name
-	sr.Action = &Action{Driver: name, Op: opName, Identity: st.Identity, Variant: st.Variant}
+	sr.Action = &Action{Driver: name, Op: opName, Identity: st.Identity, Variant: st.Variant, As: st.As, On: st.On}
 	h := r.sess.hosts[name]
 	if h == nil {
 		return errorf(CauseInvalidRequest, "driver %q isn't declared in proctor.yaml", name)
@@ -97,6 +98,17 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	op, ok := h.ops[opName]
 	if !ok {
 		return errorf(CauseInvalidRequest, "driver %s has no operation %q", name, opName)
+	}
+	handle := ""
+	if st.On != "" {
+		ref, msg := hs.use(st.On, h)
+		if ref == nil {
+			return errorf(CauseInvalidRequest, "%s", msg)
+		}
+		handle = ref.id
+	}
+	if st.As != "" {
+		hs.missing[st.As] = st.ID
 	}
 	args, err := argsFor(st.With, vars, op.Escape)
 	if err != nil {
@@ -129,7 +141,12 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	var last sampleResult
 	n := 0
 	for {
-		s, perr, d := r.sample(ctx, h, op, args, cred, checks)
+		s, perr, d := r.sample(ctx, h, op, args, cred, handle, checks)
+		if s.handle != "" {
+			if kerr := hs.keep(st, h, op, s.handle); kerr != nil && perr == nil {
+				perr = kerr
+			}
+		}
 		n++
 		sr.DurationMS += float64(d.Microseconds()) / 1000
 		if t.mode != "" {
@@ -231,29 +248,29 @@ func (r *Runner) record(sr *StepResult, ev protocol.Evidence) {
 	sr.Evidence = &Evidence{RequestExcerpt: ev.RequestExcerpt, ResponseExcerpt: ev.ResponseExcerpt, DriverDurationMS: ev.DurationMS}
 }
 
-func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, cred *protocol.Credential, checks []check) (sampleResult, *protocol.Error, time.Duration) {
+func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, cred *protocol.Credential, handle string, checks []check) (sampleResult, *protocol.Error, time.Duration) {
 	cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
 	defer cancel()
 	var res protocol.CallResult
-	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, DeadlineMS: r.opt.CallTimeout.Milliseconds()}
+	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, DeadlineMS: r.opt.CallTimeout.Milliseconds()}
 	t0 := time.Now()
 	err := h.client.Call(cctx, protocol.MethodCall, p, &res)
 	d := time.Since(t0)
 	if err != nil {
+		if brokenClient(err) {
+			h.dead = true
+		}
 		return sampleResult{}, asProtocolError(err), d
-	}
-	if res.Handle != "" {
-		return sampleResult{}, protocol.Errorf(protocol.CauseDriverFailed, "the driver returned a handle for %s, but this proctor doesn't support handles", op.Name), d
 	}
 	if op.FactSchema != nil {
 		if msgs := schema.Check(op.FactSchema, res.Fact); len(msgs) > 0 {
 			if len(msgs) > 5 {
 				msgs = append(msgs[:5], fmt.Sprintf("and %d more", len(msgs)-5))
 			}
-			return sampleResult{}, protocol.Errorf(protocol.CauseDriverFailed, "the fact doesn't match the fact_schema of %s: %s", op.Name, strings.Join(msgs, "; ")), d
+			return sampleResult{handle: res.Handle}, protocol.Errorf(protocol.CauseDriverFailed, "the fact doesn't match the fact_schema of %s: %s", op.Name, strings.Join(msgs, "; ")), d
 		}
 	}
-	s := sampleResult{fact: res.Fact, ev: res.Evidence, pass: true}
+	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true}
 	for _, c := range checks {
 		a := r.judge(c, res.Fact, op.Redact)
 		if a.Result != Pass {

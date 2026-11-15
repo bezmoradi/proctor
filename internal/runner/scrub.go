@@ -86,6 +86,10 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 		}
 	}
 	for i := range out.Scenarios {
+		for j := range out.Scenarios[i].Handles {
+			hr := &out.Scenarios[i].Handles[j]
+			hr.Handle, hr.Message = s.clean(hr.Handle), s.clean(hr.Message)
+		}
 		for j := range out.Scenarios[i].Steps {
 			st := &out.Scenarios[i].Steps[j]
 			st.Message = s.clean(st.Message)

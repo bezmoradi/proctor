@@ -645,6 +645,8 @@ func (d *stepDiff) compare(b, h model.Step, verify bool) {
 		d.change("do", b.Do, h.Do)
 	}
 	d.change("changed action", canonical(b.With), canonical(h.With))
+	d.change("changed action", "as "+orNone(b.As), "as "+orNone(h.As))
+	d.change("changed action", "on "+orNone(b.On), "on "+orNone(h.On))
 	d.change("identity", orNone(b.Identity), orNone(h.Identity))
 	switch {
 	case b.Variant != "" && h.Variant == "":

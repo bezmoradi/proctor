@@ -113,6 +113,11 @@ func (r *Report) describe(p string, sc *model.Scenario, info map[model.StepRef]m
 			switch in.Kind {
 			case kindAct, kindObserve:
 				d.info, d.known = in, true
+				r.checkHandleUse(p, where, st, in)
+			case "":
+				if len(in.Problems) == 0 {
+					r.add(Invalid, "EXE-01", p, "%s: driver %q gave no kind for this step; a step must act or observe", where, driver)
+				}
 			default:
 				r.add(Invalid, "EXE-01", p, "%s: driver %q described this step as %q; a step must act or observe", where, driver, in.Kind)
 			}
@@ -144,6 +149,21 @@ func (r *Report) describe(p string, sc *model.Scenario, info map[model.StepRef]m
 		out[k] = d
 	}
 	return out
+}
+
+func (r *Report) checkHandleUse(p, where string, st *model.Step, in model.StepInfo) {
+	switch {
+	case st.As != "" && !in.OpensHandle:
+		r.add(Invalid, "HND-05", p, "%s: as %q: operation %s doesn't open a handle, so the step can't name one", where, st.As, st.Do)
+	case st.As == "" && in.OpensHandle:
+		r.add(Invalid, "HND-05", p, "%s: operation %s opens a handle; name it with as, so later steps can use it with on", where, st.Do)
+	}
+	switch {
+	case st.On != "" && !in.UsesHandle:
+		r.add(Invalid, "HND-06", p, "%s: on %q: operation %s doesn't use a handle, so the step can't name one", where, st.On, st.Do)
+	case st.On == "" && in.UsesHandle:
+		r.add(Invalid, "HND-06", p, "%s: operation %s works on a handle; name the handle with on, as opened by an earlier step's as", where, st.Do)
+	}
 }
 
 func acceptedVariant(st *model.Step, c *model.Config) bool {
