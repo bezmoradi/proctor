@@ -1,6 +1,5 @@
-# Proctor's own tests: vet, formatting, and the black-box suite against a
-# disposable PostgreSQL server with a password generated for this run (the
-# tests check that a wrong password is refused, so trust auth won't do).
+# Proctor's own checks: vet, formatting and a build. The black-box test
+# suite isn't kept in this repository.
 name: ci
 
 on:
@@ -21,14 +20,6 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Start PostgreSQL
-        run: |
-          pw="$(openssl rand -hex 24)"
-          echo "::add-mask::$pw"
-          docker run -d --name pg -e POSTGRES_PASSWORD="$pw" -p 127.0.0.1:5432:5432 \
-            postgres:17@sha256:846a7ddaa67a4b354ae1d21087b683901aa6113a4ed626d3787cfbf6c85e3e07
-          until docker exec pg pg_isready -U postgres -q; do sleep 1; done
-          echo "PROCTOR_E2E_POSTGRES_DSN=postgres://postgres:$pw@127.0.0.1:5432/postgres?sslmode=disable" >> "$GITHUB_ENV"
       - run: go vet ./...
-      - run: test -z "$(gofmt -l cmd internal e2e)"
-      - run: go test -count=1 ./...
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go build ./...

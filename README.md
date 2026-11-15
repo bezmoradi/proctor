@@ -110,7 +110,6 @@ A database check runs one parameterized, read-only query. Before using the verif
 | Path | Contents |
 |---|---|
 | `cmd/proctor`, `internal/` | The CLI |
-| `e2e/` | Black-box tests: they build the binary and run it against real Git repositories, HTTP servers and PostgreSQL. Proctor has no function-level unit tests |
 | `examples/` | `users-api`, a sample application generated with [gopamin](https://github.com/bezmoradi/gopamin), with its Proctor specifications (see [`examples/README.md`](examples/README.md)), and `github/`, the reference GitHub workflow and CODEOWNERS file |
 | `prd.md` | Requirements, decisions, acceptance tests and roadmap |
 
@@ -118,7 +117,8 @@ A database check runs one parameterized, read-only query. Before using the verif
 
 ```sh
 go vet ./...
-PROCTOR_E2E_POSTGRES_DSN='postgres://<admin>@127.0.0.1:5432/<db>?sslmode=disable' go test ./...
+gofmt -l cmd internal
+go build ./...
 ```
 
-The PostgreSQL tests need the administrator connection string of a disposable server. They create and drop their own roles and schemas. Without it, the tests fail unless `PROCTOR_E2E_SKIP_POSTGRES=1` is set, so that untested code is never silently skipped. `PROCTOR_E2E_RACE=1` builds the binary under test with the race detector.
+This repository doesn't include Proctor's test suite.

@@ -1,6 +1,6 @@
 # Example application
 
-`users-api` is a sample application for trying Proctor. It isn't part of Proctor. It is its own Go module, so `go test ./...` at the repository root doesn't build it.
+`users-api` is a sample application for trying Proctor. It isn't part of Proctor. It is its own Go module, so `go build ./...` at the repository root doesn't build it.
 
 It was generated with [gopamin](https://github.com/bezmoradi/gopamin) v1.3.0 (MIT), then changed in two ways:
 
@@ -45,7 +45,7 @@ Proctor waits up to 15 seconds for `/readyz`, runs the five scenarios and exits 
 
 ## What this example can't exercise
 
-- **Database checks (DB-*):** it keeps users in memory. The black-box tests in `e2e/postgres_test.go` exercise the PostgreSQL checks.
+- **Database checks (DB-*):** it keeps users in memory.
 - **Logs (LOG-01):** it writes `log/slog` text lines to standard error, not JSON Lines files.
 - **Identities and authorization tables (§11.3, AUTH-*):** it has no login, so every request is anonymous.
 - **The probe endpoints the acceptance tests use (`prd.md` Appendix C)** (`/probe/echo`, `/probe/headers`, `/probe/redirect-external`): not present.
