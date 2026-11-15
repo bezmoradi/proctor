@@ -10,5 +10,4 @@ use (
 	./drivers/ws
 	./protocol
 	./simulators/ses
-	./simulators/token
 )
