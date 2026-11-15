@@ -88,7 +88,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	repo, err := gitrepo.Open(o.c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Scenarios: []runner.ScenarioResult{}}
@@ -289,7 +289,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		err = os.WriteFile(o.report, append(data, '\n'), 0o644)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: writing the report: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
 		return exitError
 	}
 	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
@@ -405,31 +405,31 @@ func unowned(repo *gitrepo.Repo, base, tested string, rep *integrity.Report) []s
 func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out *runner.Outcome) {
 	fmt.Fprintf(w, "PROCTOR RUN  (authoritative)\n\n")
 	p := ar.Provenance
-	fmt.Fprintf(w, "Repository:      %s\n", orDash(p.Repository))
-	fmt.Fprintf(w, "Tested commit:   %s\n", orDash(p.TestedCommit))
-	fmt.Fprintf(w, "Base:            %s\n", orDash(p.Base))
+	fmt.Fprintf(w, "Repository:      %s\n", safe(orDash(p.Repository)))
+	fmt.Fprintf(w, "Tested commit:   %s\n", safe(orDash(p.TestedCommit)))
+	fmt.Fprintf(w, "Base:            %s\n", safe(orDash(p.Base)))
 	if p.PRHead != "" {
-		fmt.Fprintf(w, "Pull request:    %s\n", p.PRHead)
+		fmt.Fprintf(w, "Pull request:    %s\n", safe(p.PRHead))
 	}
 	if id, ok := ar.Trust.WorkflowIdentity.(*github.Identity); ok {
-		fmt.Fprintf(w, "Workflow:        %s (verified)\n", id.JobWorkflowRef)
+		fmt.Fprintf(w, "Workflow:        %s (verified)\n", safe(id.JobWorkflowRef))
 	} else {
 		fmt.Fprintf(w, "Workflow:        unverified\n")
 	}
 	fmt.Fprintf(w, "Workflow changed: %v\n", ar.Trust.WorkflowChanged)
 	if ar.ProtectedChanges != nil {
 		for _, f := range ar.ProtectedChanges.Files {
-			fmt.Fprintf(w, "APPROVAL REQUIRED  %s %s\n", f.Change, f.Path)
+			fmt.Fprintf(w, "APPROVAL REQUIRED  %s %s\n", safe(f.Change), safe(f.Path))
 		}
 	}
 	for _, u := range ar.Trust.UnownedProtectedPaths {
-		fmt.Fprintf(w, "UNOWNED            %s (no owner from protected_owners; reported only, OD-16)\n", u)
+		fmt.Fprintf(w, "UNOWNED            %s (no owner from protected_owners; reported only, OD-16)\n", safe(u))
 	}
 	for _, v := range ar.Violations {
-		fmt.Fprintf(w, "INTEGRITY %s\n", v)
+		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
 	}
 	for _, e := range ar.Errors {
-		fmt.Fprintf(w, "INVALID   %s\n", e)
+		fmt.Fprintf(w, "INVALID   %s\n", safe(e))
 	}
 	if out == nil {
 		fmt.Fprintf(w, "\nNo scenario was run.\nRESULT: %s (exit %d, authoritative)\n", strings.ToUpper(ar.Result), ar.ExitCode)
@@ -442,9 +442,9 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 func writeSummary(w io.Writer, ar *authReport) {
 	fmt.Fprintf(w, "## Proctor: %s (exit %d)\n\n", strings.ToUpper(ar.Result), ar.ExitCode)
 	p := ar.Provenance
-	fmt.Fprintf(w, "Tested commit `%s`, base `%s`", orDash(p.TestedCommit), orDash(p.Base))
+	fmt.Fprintf(w, "Tested commit %s, base %s", code(orDash(p.TestedCommit)), code(orDash(p.Base)))
 	if p.PRHead != "" {
-		fmt.Fprintf(w, ", pull request head `%s`", p.PRHead)
+		fmt.Fprintf(w, ", pull request head %s", code(p.PRHead))
 	}
 	fmt.Fprintln(w, ".")
 	fmt.Fprintln(w)
@@ -460,23 +460,23 @@ func writeSummary(w io.Writer, ar *authReport) {
 		fmt.Fprintln(w, "### Protected changes: approval required")
 		fmt.Fprintln(w)
 		for _, f := range ar.ProtectedChanges.Files {
-			fmt.Fprintf(w, "- %s `%s`\n", f.Change, f.Path)
+			fmt.Fprintf(w, "- %s %s\n", md(f.Change), code(f.Path))
 		}
 		for _, wk := range ar.ProtectedChanges.Weakenings {
-			fmt.Fprintf(w, "- weakening in %s %s: %s\n", wk.Scenario, wk.Step, wk.Detail)
+			fmt.Fprintf(w, "- weakening in %s: %s\n", md(strings.TrimSpace(wk.Scenario+" "+wk.Step)), md(wk.Detail))
 		}
 		fmt.Fprintln(w)
 	}
 	for _, v := range ar.Violations {
-		fmt.Fprintf(w, "- integrity violation: %s\n", v)
+		fmt.Fprintf(w, "- integrity violation: %s\n", md(v))
 	}
 	for _, e := range ar.Errors {
-		fmt.Fprintf(w, "- invalid: %s\n", e)
+		fmt.Fprintf(w, "- invalid: %s\n", md(e))
 	}
 	if len(ar.Scenarios) > 0 {
 		fmt.Fprintln(w, "\n| Scenario | Result |\n|---|---|")
 		for _, s := range ar.Scenarios {
-			fmt.Fprintf(w, "| %s | %s |\n", s.ID, s.Result)
+			fmt.Fprintf(w, "| %s | %s |\n", md(s.ID), md(string(s.Result)))
 		}
 	}
 }

@@ -75,7 +75,7 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	}
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
@@ -139,9 +139,9 @@ func configError(stdout, stderr io.Writer, asJSON bool, rep *integrity.Report, m
 		_ = enc.Encode(map[string]any{"result": "invalid", "exit_code": exitInvalid, "mode": "local", "errors": msgs})
 		return exitInvalid
 	}
-	fmt.Fprintf(stdout, "PROCTOR RUN  (local, non-authoritative)\n\nConfiguration:   %s\n\n", rep.ConfigPath)
+	fmt.Fprintf(stdout, "PROCTOR RUN  (local, non-authoritative)\n\nConfiguration:   %s\n\n", safe(rep.ConfigPath))
 	for _, m := range msgs {
-		fmt.Fprintf(stdout, "INVALID   %s\n", m)
+		fmt.Fprintf(stdout, "INVALID   %s\n", safe(m))
 	}
 	fmt.Fprintf(stdout, "\nNothing was sent to the application.\nRESULT: INVALID (exit %d)\n", exitInvalid)
 	return exitInvalid

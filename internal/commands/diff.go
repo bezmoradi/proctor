@@ -43,7 +43,7 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 	}
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	if prHead != "" {
@@ -62,27 +62,27 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 		_ = enc.Encode(map[string]any{"result": "passed", "exit_code": exitOK, "protected_changes": res.Count(), "weakenings": len(res.Weakenings), "diff": res})
 		return exitOK
 	}
-	fmt.Fprintf(stdout, "PROCTOR DIFF\n\nBase: %s\nHead: %s\n\n", res.Base, res.Head)
+	fmt.Fprintf(stdout, "PROCTOR DIFF\n\nBase: %s\nHead: %s\n\n", safe(res.Base), safe(res.Head))
 	if res.Count() == 0 {
 		fmt.Fprintln(stdout, "Protected changes against base: none")
 		return exitOK
 	}
 	for _, f := range res.Files {
-		line := fmt.Sprintf("  %-9s %s", f.Change, f.Path)
+		line := fmt.Sprintf("  %-9s %s", safe(f.Change), safe(f.Path))
 		if f.From != "" {
-			line += " (from " + f.From + ")"
+			line += " (from " + safe(f.From) + ")"
 		}
 		if f.OldMode != "" || f.NewMode != "" {
-			line += fmt.Sprintf(" [mode %s -> %s]", orDash(f.OldMode), orDash(f.NewMode))
+			line += fmt.Sprintf(" [mode %s -> %s]", safe(orDash(f.OldMode)), safe(orDash(f.NewMode)))
 		}
 		fmt.Fprintln(stdout, line+"  approval required")
 	}
 	if len(res.Scenarios) > 0 {
 		fmt.Fprintln(stdout, "\nScenarios:")
 		for _, s := range res.Scenarios {
-			line := fmt.Sprintf("  %-9s %s  %s", s.Change, s.ID, s.File)
+			line := fmt.Sprintf("  %-9s %s  %s", safe(s.Change), safe(s.ID), safe(s.File))
 			if s.FromFile != "" {
-				line += " (from " + s.FromFile + ")"
+				line += " (from " + safe(s.FromFile) + ")"
 				if s.Modified {
 					line += ", modified"
 				}
@@ -97,7 +97,7 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 			if wk.Step != "" {
 				loc += " " + wk.Step
 			}
-			line := fmt.Sprintf("  %-20s %s: %s", wk.Kind, loc, wk.Detail)
+			line := fmt.Sprintf("  %-20s %s: %s", safe(wk.Kind), safe(loc), safe(wk.Detail))
 			if wk.AssertionsLost > 0 {
 				line += fmt.Sprintf(" (%d assertion(s) lost)", wk.AssertionsLost)
 			}
@@ -107,11 +107,11 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 	if len(res.Expectations) > 0 {
 		fmt.Fprintln(stdout, "\nChanged requests and expectations:")
 		for _, e := range res.Expectations {
-			fmt.Fprintf(stdout, "  %s %s %s: %s -> %s\n", e.Scenario, e.Step, e.What, e.From, e.To)
+			fmt.Fprintf(stdout, "  %s %s %s: %s -> %s\n", safe(e.Scenario), safe(e.Step), safe(e.What), safe(e.From), safe(e.To))
 		}
 	}
 	for _, u := range res.Unparsed {
-		fmt.Fprintf(stdout, "  scenarios not compared (file doesn't parse on one side): %s\n", u)
+		fmt.Fprintf(stdout, "  scenarios not compared (file doesn't parse on one side): %s\n", safe(u))
 	}
 	fmt.Fprintf(stdout, "\nProtected changes against base: %d (approval required)\n", res.Count())
 	return exitOK
@@ -123,7 +123,7 @@ func diffError(stdout, stderr io.Writer, asJSON bool, err error) int {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{"result": "integrity_violation", "exit_code": exitIntegrity, "error": err.Error()})
 	} else {
-		fmt.Fprintf(stderr, "proctor diff: integrity violation (INT-08): %v\n", err)
+		fmt.Fprintf(stderr, "proctor diff: integrity violation (INT-08): %s\n", safe(err.Error()))
 	}
 	return exitIntegrity
 }

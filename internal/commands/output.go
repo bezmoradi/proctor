@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"proctor/internal/integrity"
 	"proctor/internal/runner"
@@ -34,12 +35,12 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int
 	}
 	fmt.Fprintf(w, "PROCTOR %s  (local, non-authoritative)\n\n", title)
 	if r.Commit != "" {
-		fmt.Fprintf(w, "Commit:          %s\n", r.Commit)
+		fmt.Fprintf(w, "Commit:          %s\n", safe(r.Commit))
 	}
-	fmt.Fprintf(w, "Configuration:   %s\n", r.ConfigPath)
+	fmt.Fprintf(w, "Configuration:   %s\n", safe(r.ConfigPath))
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d   Unlisted: %d\n", len(r.Specs), len(r.ScenarioIDs), len(r.Unlisted))
 	for _, u := range r.Unlisted {
-		fmt.Fprintf(w, "  unlisted (not executed): %s\n", u)
+		fmt.Fprintf(w, "  unlisted (not executed): %s\n", safe(u))
 	}
 	if len(r.Findings) > 0 {
 		fmt.Fprintln(w)
@@ -53,7 +54,7 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, code int
 		if loc != "" {
 			loc += ": "
 		}
-		fmt.Fprintf(w, "%s %-7s %s%s\n", label, f.Rule, loc, f.Message)
+		fmt.Fprintf(w, "%s %-7s %s%s\n", label, safe(f.Rule), safe(loc), safe(f.Message))
 	}
 	fmt.Fprintf(w, "\nRESULT: %s (exit %d)\n", strings.ToUpper(result), code)
 	return code
@@ -63,15 +64,15 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	if mode != "authoritative" {
 		fmt.Fprintf(w, "PROCTOR RUN  (%s)\n\n", mode)
 	}
-	fmt.Fprintf(w, "Target:          %s\n", out.Target)
-	fmt.Fprintf(w, "Configuration:   %s\n", rep.ConfigPath)
+	fmt.Fprintf(w, "Target:          %s\n", safe(out.Target))
+	fmt.Fprintf(w, "Configuration:   %s\n", safe(rep.ConfigPath))
 	if out.Readiness != "" {
-		fmt.Fprintf(w, "Readiness:       %s\n", out.Readiness)
+		fmt.Fprintf(w, "Readiness:       %s\n", safe(out.Readiness))
 	}
-	fmt.Fprintf(w, "Run ID:          %s\n", out.RunID)
+	fmt.Fprintf(w, "Run ID:          %s\n", safe(out.RunID))
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d\n\n", len(rep.Specs), out.Summary.Scenarios)
 	for _, v := range out.Violations {
-		fmt.Fprintf(w, "INTEGRITY %s\n", v)
+		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
 	}
 	if len(out.Violations) > 0 {
 		fmt.Fprintln(w, "No scenario was run.")
@@ -86,11 +87,11 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 			}
 			continue
 		}
-		line := fmt.Sprintf("%-8s %-10s %s", sc.Result, sc.ID, sc.Name)
+		line := fmt.Sprintf("%-8s %-10s %s", sc.Result, safe(sc.ID), safe(sc.Name))
 		if sc.Reason != "" {
-			line += "  (" + sc.Reason + causeText(sc.Cause) + ")"
+			line += "  (" + safe(sc.Reason) + causeText(sc.Cause) + ")"
 		} else if sc.Cause != "" && sc.Result == runner.Error {
-			line += "  (" + sc.Cause + ")"
+			line += "  (" + safe(sc.Cause) + ")"
 		}
 		fmt.Fprintln(w, line)
 		if sc.Result != runner.Pass {
@@ -105,38 +106,38 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 
 func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 	for _, st := range sc.Steps {
-		label := st.ID
+		label := safe(st.ID)
 		if st.Phase == "setup" {
-			label = "setup " + st.ID
+			label = "setup " + label
 		}
 		req := ""
 		if st.Request != nil {
-			req = "  " + st.Request.Method + " " + st.Request.URL
+			req = "  " + safe(st.Request.Method) + " " + safe(st.Request.URL)
 			if st.Request.Credential != "" {
-				req += " [" + st.Request.Identity + ", " + st.Request.Credential + " credential]"
+				req += " [" + safe(st.Request.Identity) + ", " + safe(st.Request.Credential) + " credential]"
 			}
 			if st.Status != 0 {
 				req += fmt.Sprintf(" -> %d", st.Status)
 			}
 		}
 		if st.Check != nil {
-			req = "  postgres " + st.Check.Connection
+			req = "  postgres " + safe(st.Check.Connection)
 		}
 		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, req)
 		if st.Reason != "" {
-			stepLine += "  (" + st.Reason + causeText(st.Cause) + ")"
+			stepLine += "  (" + safe(st.Reason) + causeText(st.Cause) + ")"
 		} else if st.Cause != "" && st.Result == runner.Error {
-			stepLine += "  (" + st.Cause + ")"
+			stepLine += "  (" + safe(st.Cause) + ")"
 		}
 		fmt.Fprintln(w, stepLine)
 		if st.Message != "" {
-			fmt.Fprintf(w, "                    %s\n", st.Message)
+			fmt.Fprintf(w, "                    %s\n", safe(st.Message))
 		}
 		for _, a := range st.Assertions {
 			if a.Result == runner.Pass {
 				continue
 			}
-			fmt.Fprintf(w, "                    %s %s\n", strings.TrimSpace(a.Kind+" "+a.Target)+":", describe(a))
+			fmt.Fprintf(w, "                    %s %s\n", safe(strings.TrimSpace(a.Kind+" "+a.Target))+":", safe(describe(a)))
 		}
 	}
 }
@@ -151,22 +152,25 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 	if t == nil {
 		return
 	}
-	line := fmt.Sprintf("%-8s %-10s %s  (table", t.Result, t.ID, t.Name)
+	line := fmt.Sprintf("%-8s %-10s %s  (table", t.Result, safe(t.ID), safe(t.Name))
 	if t.SetupFrom != "" {
-		line += ", setup from " + t.SetupFrom
+		line += ", setup from " + safe(t.SetupFrom)
 	}
 	if t.Reason != "" {
-		line += ", " + t.Reason
+		line += ", " + safe(t.Reason)
 	}
 	fmt.Fprintln(w, line+")")
-	widths := make([]int, len(t.Columns))
-	for i, c := range t.Columns {
-		widths[i] = len(c)
+	columns := safeAll(t.Columns)
+	rows := make([][]string, len(t.Rows))
+	widths := make([]int, len(columns))
+	for i, c := range columns {
+		widths[i] = utf8.RuneCountInString(c)
 	}
-	for _, r := range t.Rows {
-		for i, c := range r.Cells {
-			if i < len(widths) && len(c) > widths[i] {
-				widths[i] = len(c)
+	for j, r := range t.Rows {
+		rows[j] = safeAll(r.Cells)
+		for i, c := range rows[j] {
+			if n := utf8.RuneCountInString(c); i < len(widths) && n > widths[i] {
+				widths[i] = n
 			}
 		}
 	}
@@ -174,14 +178,14 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 		var b strings.Builder
 		for i, v := range vals {
 			if i < len(widths) {
-				fmt.Fprintf(&b, "  %-*s", widths[i], v)
+				b.WriteString("  " + v + strings.Repeat(" ", widths[i]-utf8.RuneCountInString(v)))
 			}
 		}
 		return strings.TrimRight(b.String(), " ")
 	}
-	fmt.Fprintf(w, "           %-8s%s\n", "", cells(t.Columns))
-	for _, r := range t.Rows {
-		fmt.Fprintf(w, "           %-8s%s\n", r.Result, cells(r.Cells))
+	fmt.Fprintf(w, "           %-8s%s\n", "", cells(columns))
+	for j, r := range t.Rows {
+		fmt.Fprintf(w, "           %-8s%s\n", r.Result, cells(rows[j]))
 	}
 	for _, sc := range out.Scenarios {
 		if sc.Table != id || sc.Spec != spec {
@@ -196,7 +200,7 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 		if sc.Result == runner.Pass || (sc.Reason == runner.ReasonSetupFailed && !failedSetup) {
 			continue
 		}
-		fmt.Fprintf(w, "           case %s:\n", sc.ID)
+		fmt.Fprintf(w, "           case %s:\n", safe(sc.ID))
 		writeSteps(w, sc)
 	}
 }
@@ -205,7 +209,7 @@ func causeText(c string) string {
 	if c == "" {
 		return ""
 	}
-	return ", cause " + c
+	return ", cause " + safe(c)
 }
 
 func describe(a runner.Assertion) string {

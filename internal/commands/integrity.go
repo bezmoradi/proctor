@@ -36,7 +36,7 @@ func checkIntegrity(o integrityOptions, stdout, stderr io.Writer) int {
 	c, commit := o.common, o.commit
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	r := integrity.CheckCommit(repo, commit, c.config)

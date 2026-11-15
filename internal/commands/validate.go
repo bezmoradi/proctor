@@ -36,14 +36,14 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 	c, commit := o.common, o.commit
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %v\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	var src integrity.Source = integrity.WorkTreeSource{Root: repo.Dir()}
 	if commit != "" {
 		cs, err := integrity.NewCommitSource(repo, commit)
 		if err != nil {
-			fmt.Fprintf(stderr, "proctor: %v\n", err)
+			fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 			return exitInvalid
 		}
 		src = cs

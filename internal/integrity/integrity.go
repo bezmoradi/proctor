@@ -115,7 +115,7 @@ var adapterNames = map[string]bool{"http": true, "postgres": true}
 
 var parkedAdapters = map[string]bool{"temporal": true, "logs": true}
 
-var httpMethods = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
+var httpMethods = map[string]bool{"GET": true, "HEAD": true, "OPTIONS": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
 var stateChanging = map[string]bool{"POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 
@@ -641,6 +641,9 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 				r.add(Invalid, rule, p, "%s: header %q can't be set by a specification: %s", where, name, why)
 			}
 		}
+		if st.Request.Method == "HEAD" && st.Request.Body != nil {
+			r.add(Invalid, "EXE-01", p, "%s: a HEAD request can't send a body", where)
+		}
 		if st.Request.Body != nil {
 			if err := checkJSONValue(st.Request.Body); err != nil {
 				r.add(Invalid, "EXE-01", p, "%s: body can't be sent as JSON: %v", where, err)
@@ -674,6 +677,12 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 	status := *st.Expect.Status
 	if status < 100 || status > 599 {
 		r.add(Invalid, "EXE-03", p, "%s: status %d is not an HTTP status", where, status)
+	}
+	if st.Request != nil && st.Request.Method == "HEAD" {
+		ex := st.Expect
+		if len(ex.JSON) > 0 || len(ex.Present) > 0 || len(ex.Absent) > 0 || len(ex.Length) > 0 || len(ex.Keys) > 0 || len(st.Save) > 0 {
+			r.add(Invalid, "EXE-03", p, "%s: a HEAD response has no body, so it can only assert status and headers", where)
+		}
 	}
 	for _, k := range sortedKeys(st.Expect.JSON) {
 		if _, err := expr.ParsePath(k); err != nil {

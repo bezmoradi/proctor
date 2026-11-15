@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"regexp"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -28,9 +31,119 @@ func Decode(data []byte, v any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil {
-		return &Error{Msg: err.Error()}
+		return &Error{Msg: explain(err, reflect.TypeOf(v))}
 	}
 	return nil
+}
+
+var (
+	unknownField = regexp.MustCompile(`field (\S+) not found in type ([\w.\[\]*]+)`)
+	badValue     = regexp.MustCompile("cannot unmarshal !!(\\w+)(?: `([^`]*)`)? into ([\\w.\\[\\]*]+)")
+)
+
+type schema struct {
+	where map[string][]string
+	keys  map[string][]string
+	kinds map[string]string
+}
+
+func explain(err error, root reflect.Type) string {
+	sc := schema{where: map[string][]string{}, keys: map[string][]string{}, kinds: map[string]string{}}
+	sc.walk(root, "the top level", map[reflect.Type]bool{})
+	msg := err.Error()
+	msg = strings.TrimPrefix(msg, "yaml: unmarshal errors:\n  ")
+	msg = strings.ReplaceAll(msg, "\n  ", "; ")
+	msg = unknownField.ReplaceAllStringFunc(msg, func(m string) string {
+		g := unknownField.FindStringSubmatch(m)
+		out := fmt.Sprintf("unknown key %q", g[1])
+		if w := sc.where[g[2]]; len(w) > 0 {
+			out += " in " + strings.Join(w, " or ")
+		}
+		if k := sc.keys[g[2]]; len(k) > 0 {
+			out += " (allowed: " + strings.Join(k, ", ") + ")"
+		}
+		return out
+	})
+	msg = badValue.ReplaceAllStringFunc(msg, func(m string) string {
+		g := badValue.FindStringSubmatch(m)
+		want := sc.kinds[g[3]]
+		if want == "" {
+			want = "another kind of value"
+		}
+		got := map[string]string{"str": "text", "int": "a number", "float": "a number", "bool": "true or false", "seq": "a list", "map": "a mapping", "null": "null", "timestamp": "a date"}[g[1]]
+		if got == "" {
+			got = "!!" + g[1]
+		}
+		if g[2] != "" {
+			got += " " + g[2]
+		}
+		return "expected " + want + ", got " + got
+	})
+	return msg
+}
+
+func (sc schema) walk(t reflect.Type, where string, seen map[reflect.Type]bool) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	name := t.String()
+	if _, ok := sc.kinds[name]; !ok {
+		sc.kinds[name] = kindName(t)
+	}
+	if t.Kind() == reflect.Struct && !contains(sc.where[name], where) {
+		sc.where[name] = append(sc.where[name], where)
+	}
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		sc.walk(t.Elem(), where, seen)
+	case reflect.Struct:
+		if seen[t] {
+			return
+		}
+		seen[t] = true
+		if t.PkgPath() != "" && strings.HasPrefix(t.PkgPath(), "go.yaml.in/") {
+			return
+		}
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			tag := strings.Split(f.Tag.Get("yaml"), ",")[0]
+			if tag == "-" || !f.IsExported() {
+				continue
+			}
+			if tag == "" {
+				tag = strings.ToLower(f.Name)
+			}
+			sc.keys[name] = append(sc.keys[name], tag)
+			sc.walk(f.Type, tag, seen)
+		}
+	}
+}
+
+func kindName(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map:
+		return "a mapping"
+	case reflect.Slice, reflect.Array:
+		return "a list"
+	case reflect.String:
+		return "text"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "a whole number"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	}
+	return "a value"
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func Parse(data []byte) (*yaml.Node, error) {
@@ -57,10 +170,10 @@ func Parse(data []byte) (*yaml.Node, error) {
 
 func check(n *yaml.Node) error {
 	if n.Anchor != "" {
-		return &Error{Line: n.Line, Msg: fmt.Sprintf("anchor &%s is not allowed", n.Anchor)}
+		return &Error{Line: n.Line, Msg: fmt.Sprintf("anchor &%s is not allowed: one anchor edit could change many scenarios while the diff shows one line; write the repeated part out in full", n.Anchor)}
 	}
 	if n.Kind == yaml.AliasNode {
-		return &Error{Line: n.Line, Msg: "alias is not allowed"}
+		return &Error{Line: n.Line, Msg: "alias is not allowed: one anchor edit could change many scenarios while the diff shows one line; write the repeated part out in full"}
 	}
 	if n.Style&yaml.TaggedStyle != 0 {
 		return &Error{Line: n.Line, Msg: fmt.Sprintf("explicit tag %s is not allowed", n.Tag)}

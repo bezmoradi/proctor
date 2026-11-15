@@ -56,7 +56,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case errors.As(err, &code):
 		return int(code)
 	default:
-		fmt.Fprintf(stderr, "proctor: %v\nRun 'proctor --help' for usage.\n", err)
+		fmt.Fprintf(stderr, "proctor: %s\nRun 'proctor --help' for usage.\n", safe(err.Error()))
 		return exitInvalid
 	}
 }
