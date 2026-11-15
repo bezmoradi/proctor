@@ -7,9 +7,11 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
+	"proctor/internal/expr"
 	"proctor/internal/gitrepo"
 	"proctor/internal/integrity"
 	"proctor/internal/model"
@@ -35,6 +37,7 @@ type ScenarioChange struct {
 type Weakening struct {
 	Scenario       string `json:"scenario"`
 	Step           string `json:"step,omitempty"`
+	Driver         string `json:"driver,omitempty"`
 	Kind           string `json:"kind"`
 	Detail         string `json:"detail"`
 	AssertionsLost int    `json:"assertions_lost"`
@@ -151,6 +154,23 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	sort.Slice(res.Files, func(i, j int) bool { return res.Files[i].Path < res.Files[j].Path })
 
+	res.Weakenings, res.Expectations = []Weakening{}, []ExpectationChange{}
+	bc, bFound, err := readConfig(repo, bt, configPath)
+	if err != nil {
+		return nil, err
+	}
+	hc, hFound, err := readConfig(repo, ht, configPath)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case bc != nil && hc != nil:
+		res.Weakenings = append(res.Weakenings, compareDrivers(bc, hc)...)
+	case bFound && hFound && (bt[configPath].OID != ht[configPath].OID || bt[configPath].Mode != ht[configPath].Mode):
+		res.Weakenings = append(res.Weakenings, Weakening{Kind: "not_analysed",
+			Detail: configPath + " changed but one side doesn't decode as a version 2 configuration, so its drivers weren't compared; read the file diff"})
+	}
+
 	bs, bUnparsed, err := scenarios(repo, bt, root, configPath)
 	if err != nil {
 		return nil, err
@@ -161,7 +181,6 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	res.Unparsed = dedupe(append(bUnparsed, hUnparsed...))
 	res.Scenarios = compareScenarios(bs, hs)
-	res.Weakenings, res.Expectations = []Weakening{}, []ExpectationChange{}
 	for _, c := range res.Scenarios {
 		b, h := bs[c.ID].typed, hs[c.ID].typed
 		switch {
@@ -194,7 +213,7 @@ type scenarioVersion struct {
 func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath string) (map[string]scenarioVersion, []string, error) {
 	out := map[string]scenarioVersion{}
 	var unparsed []string
-	for _, p := range sortedPaths(tree) {
+	for _, p := range sortedKeys(tree) {
 		e := tree[p]
 		if !strings.HasPrefix(p, root+"/") || !(strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) ||
 			p == configPath || strings.HasPrefix(p, root+"/environments/") || !e.Regular() {
@@ -249,7 +268,7 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 
 func compareScenarios(base, head map[string]scenarioVersion) []ScenarioChange {
 	var out []ScenarioChange
-	for _, id := range sortedPaths(base) {
+	for _, id := range sortedKeys(base) {
 		b := base[id]
 		h, ok := head[id]
 		switch {
@@ -261,7 +280,7 @@ func compareScenarios(base, head map[string]scenarioVersion) []ScenarioChange {
 			out = append(out, ScenarioChange{Change: "modified", ID: id, File: h.file})
 		}
 	}
-	for _, id := range sortedPaths(head) {
+	for _, id := range sortedKeys(head) {
 		if _, ok := base[id]; !ok {
 			out = append(out, ScenarioChange{Change: "added", ID: id, File: head[id].file})
 		}
@@ -278,11 +297,59 @@ func protectedPaths(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, configPat
 	if err != nil {
 		return nil
 	}
-	var cfg model.Config
-	if strictyaml.Decode(data, &cfg) != nil {
+	doc, err := strictyaml.Parse(data)
+	if err != nil {
 		return nil
 	}
-	return cfg.ProtectedPaths
+	n := mappingValue(doc, "protected_paths")
+	if n == nil {
+		return nil
+	}
+	var paths []string
+	if n.Decode(&paths) != nil {
+		return nil
+	}
+	return paths
+}
+
+func readConfig(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, configPath string) (*model.Config, bool, error) {
+	e, ok := tree[configPath]
+	if !ok {
+		return nil, false, nil
+	}
+	if !e.Regular() {
+		return nil, true, nil
+	}
+	data, err := repo.Blob(e.OID)
+	if err != nil {
+		return nil, true, err
+	}
+	var cfg model.Config
+	if strictyaml.Decode(data, &cfg) != nil || cfg.Version != 2 {
+		return nil, true, nil
+	}
+	return &cfg, true, nil
+}
+
+func compareDrivers(b, h *model.Config) []Weakening {
+	var out []Weakening
+	for _, name := range sortedKeys(b.Drivers) {
+		hd, ok := h.Drivers[name]
+		if !ok {
+			continue
+		}
+		bd := b.Drivers[name]
+		if bd.Official != hd.Official {
+			out = append(out, Weakening{Driver: name, Kind: "driver_origin_changed",
+				Detail: fmt.Sprintf("driver %s: official %s became official %s; every step that names %s now runs another program",
+					name, orNone(bd.Official), orNone(hd.Official), name)})
+		}
+		if bp, hp := canonical(bd.Policy), canonical(hd.Policy); bp != hp {
+			out = append(out, Weakening{Driver: name, Kind: "driver_policy_changed",
+				Detail: fmt.Sprintf("driver %s: policy %s became %s; judge whether the driver may now touch more", name, bp, hp)})
+		}
+	}
+	return out
 }
 
 func mappingValue(doc *yaml.Node, key string) *yaml.Node {
@@ -317,10 +384,10 @@ func union(a, b map[string]gitrepo.Entry) []string {
 	for k := range b {
 		seen[k] = true
 	}
-	return sortedPaths(seen)
+	return sortedKeys(seen)
 }
 
-func sortedPaths[V any](m map[string]V) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -340,47 +407,60 @@ func dedupe(s []string) []string {
 	return out
 }
 
+type assertion struct {
+	matcher string
+	path    string
+	value   any
+	valued  bool
+}
+
+func (a assertion) label() string { return a.matcher + " " + a.path }
+
+func (a assertion) shown() string {
+	if !a.valued {
+		return "(asserted)"
+	}
+	return canonical(a.value)
+}
+
+func assertionsOf(ex *model.Expect) []assertion {
+	if ex == nil {
+		return nil
+	}
+	var out []assertion
+	for p, v := range ex.Equal {
+		out = append(out, assertion{"equal", p, v, true})
+	}
+	for _, p := range ex.Present {
+		out = append(out, assertion{"present", p, nil, false})
+	}
+	for _, p := range ex.Absent {
+		out = append(out, assertion{"absent", p, nil, false})
+	}
+	for p, v := range ex.Keys {
+		out = append(out, assertion{"keys", p, v, true})
+	}
+	for p, v := range ex.Length {
+		out = append(out, assertion{"length", p, v, true})
+	}
+	for p, v := range ex.Unordered {
+		out = append(out, assertion{"unordered", p, v, true})
+	}
+	for p, v := range ex.Any {
+		out = append(out, assertion{"any", p, v, true})
+	}
+	for p, v := range ex.None {
+		out = append(out, assertion{"none", p, v, true})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].label() < out[j].label() })
+	return out
+}
+
 func stepAssertions(st model.Step) []string {
 	var out []string
-	if ex := st.Expect; ex != nil {
-		if ex.Status != nil {
-			out = append(out, "status")
-		}
-		for k := range ex.Headers {
-			out = append(out, "header "+strings.ToLower(k))
-		}
-		for k := range ex.JSON {
-			out = append(out, "json "+k)
-		}
-		for _, k := range ex.Present {
-			out = append(out, "present "+k)
-		}
-		for _, k := range ex.Absent {
-			out = append(out, "absent "+k)
-		}
-		for k := range ex.Length {
-			out = append(out, "length "+k)
-		}
-		for k := range ex.Keys {
-			out = append(out, "keys "+k)
-		}
-		for _, h := range ex.AbsentHeaders {
-			out = append(out, "absent_header "+strings.ToLower(h))
-		}
-		for k := range ex.HeaderSets {
-			out = append(out, "header_set "+strings.ToLower(k))
-		}
+	for _, a := range assertionsOf(st.Expect) {
+		out = append(out, a.label())
 	}
-	if st.Verify != nil && st.Verify.Postgres != nil && st.Verify.Postgres.Expect != nil {
-		ex := st.Verify.Postgres.Expect
-		if ex.Rows != nil {
-			out = append(out, "rows")
-		}
-		for k := range ex.FirstRow {
-			out = append(out, "first_row "+k)
-		}
-	}
-	sort.Strings(out)
 	return out
 }
 
@@ -411,6 +491,22 @@ func indexSteps(sc *model.Scenario) (map[string]located, []string) {
 	return m, order
 }
 
+type stepDiff struct {
+	scenario, step string
+	ws             []Weakening
+	es             []ExpectationChange
+}
+
+func (d *stepDiff) weaken(kind string, lost int, format string, args ...any) {
+	d.ws = append(d.ws, Weakening{Scenario: d.scenario, Step: d.step, Kind: kind, Detail: fmt.Sprintf(format, args...), AssertionsLost: lost})
+}
+
+func (d *stepDiff) change(what, from, to string) {
+	if from != to {
+		d.es = append(d.es, ExpectationChange{Scenario: d.scenario, Step: d.step, What: what, From: from, To: to})
+	}
+}
+
 func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationChange) {
 	var ws []Weakening
 	var es []ExpectationChange
@@ -419,125 +515,289 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 	for _, sid := range border {
 		bs := bm[sid]
 		hs, ok := hm[sid]
+		d := &stepDiff{scenario: id, step: sid}
 		lost := 0
 		if !bs.setup {
 			lost = len(stepAssertions(bs.step))
 		}
 		switch {
 		case !ok && bs.setup:
-			ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "setup_step_removed", Detail: "a setup step was removed; the scenario's starting state changed"})
-			continue
+			d.weaken("setup_step_removed", 0, "a setup step was removed; the scenario's starting state changed")
 		case !ok:
-			ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "step_removed", Detail: "a verification step was removed", AssertionsLost: lost})
-			continue
+			d.weaken("step_removed", lost, "a verification step was removed")
 		case !bs.setup && hs.setup:
-			ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "step_moved_to_setup",
-				Detail: "a verification step became setup; its expectations no longer count as evidence and a mismatch is ERROR, not FAIL", AssertionsLost: lost})
-			continue
+			d.weaken("step_moved_to_setup", lost,
+				"a verification step became setup; its expectations no longer count as evidence and a mismatch is ERROR, not FAIL")
+		default:
+			d.compare(bs.step, hs.step, !bs.setup)
 		}
-		if !bs.setup {
-			had := map[string]bool{}
-			for _, a := range stepAssertions(hs.step) {
-				had[a] = true
-			}
-			for _, a := range stepAssertions(bs.step) {
-				if !had[a] {
-					ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "assertion_removed", Detail: a + " is no longer asserted", AssertionsLost: 1})
-				}
-			}
-		}
-		if bs.step.NoStateCheck == "" && hs.step.NoStateCheck != "" {
-			ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "state_check_waived", Detail: "no_state_check added: " + hs.step.NoStateCheck})
-		}
-		for _, rule := range sortedKeys(hs.step.Waive) {
-			if _, had := bs.step.Waive[rule]; !had {
-				ws = append(ws, Weakening{Scenario: id, Step: sid, Kind: "rule_waived", Detail: rule + " waived: " + hs.step.Waive[rule]})
-			}
-		}
-		for _, c := range stepChanges(bs.step, hs.step) {
-			c.Scenario, c.Step = id, sid
-			es = append(es, c)
-		}
+		sort.SliceStable(d.es, func(i, j int) bool { return d.es[i].What < d.es[j].What })
+		ws = append(ws, d.ws...)
+		es = append(es, d.es...)
 	}
 	return ws, es
 }
 
-func stepChanges(b, h model.Step) []ExpectationChange {
-	var out []ExpectationChange
-	diff := func(what string, x, y any) {
-		xs, ys := canonical(x), canonical(y)
-		if xs != ys {
-			out = append(out, ExpectationChange{What: what, From: xs, To: ys})
+func (d *stepDiff) compare(b, h model.Step, verify bool) {
+	bDriver, _, _ := model.SplitDo(b.Do)
+	hDriver, _, _ := model.SplitDo(h.Do)
+	switch {
+	case b.Do == h.Do:
+	case bDriver != hDriver:
+		d.weaken("driver_changed", 0, "do %s became %s; another driver now performs the step and reports its facts", orNone(b.Do), orNone(h.Do))
+	default:
+		d.change("do", b.Do, h.Do)
+	}
+	d.change("changed action", canonical(b.With), canonical(h.With))
+	d.change("identity", orNone(b.Identity), orNone(h.Identity))
+	switch {
+	case b.Variant != "" && h.Variant == "":
+		d.weaken("variant_removed", 0, "credential variant %s is no longer used; the step now acts with the identity's own credential", b.Variant)
+	default:
+		d.change("variant", orNone(b.Variant), orNone(h.Variant))
+	}
+	d.change("save", canonical(b.Save), canonical(h.Save))
+	d.compareTime(b, h)
+	d.compareAssertions(b.Expect, h.Expect, verify)
+	switch {
+	case b.NoStateCheck == "" && h.NoStateCheck != "":
+		d.weaken("state_check_waived", 0, "no_state_check added: %s", h.NoStateCheck)
+	case b.NoStateCheck != "" && h.NoStateCheck != "" && b.NoStateCheck != h.NoStateCheck:
+		d.weaken("state_check_waiver_changed", 0, "no_state_check changed from %q to %q", b.NoStateCheck, h.NoStateCheck)
+	}
+	for _, rule := range sortedKeys(h.Waive) {
+		was, had := b.Waive[rule]
+		switch {
+		case !had:
+			d.weaken("rule_waived", 0, "%s waived: %s", rule, h.Waive[rule])
+		default:
+			d.change("waive "+rule, was, h.Waive[rule])
 		}
 	}
-	if b.Request != nil && h.Request != nil {
-		diff("method", b.Request.Method, h.Request.Method)
-		diff("path", b.Request.Path, h.Request.Path)
-		diff("identity", b.Request.Identity, h.Request.Identity)
-		diff("credential", b.Request.Credential, h.Request.Credential)
-		diff("query", b.Request.Query, h.Request.Query)
-		diff("body", b.Request.Body, h.Request.Body)
+}
+
+type timing struct {
+	construct, field, window, every string
+}
+
+func timingOf(st model.Step) *timing {
+	switch {
+	case st.Eventually != nil:
+		return &timing{"eventually", "within", st.Eventually.Within, st.Eventually.Every}
+	case st.Consistently != nil:
+		return &timing{"consistently", "for", st.Consistently.For, st.Consistently.Every}
+	case st.Never != nil:
+		return &timing{"never", "for", st.Never.For, st.Never.Every}
 	}
-	if b.Expect != nil && h.Expect != nil {
-		diff("status", b.Expect.Status, h.Expect.Status)
-		for k, v := range b.Expect.JSON {
-			if w, ok := h.Expect.JSON[k]; ok {
-				diff("json "+k, v, w)
-			}
+	return nil
+}
+
+func (t *timing) String() string {
+	if t == nil {
+		return "(none)"
+	}
+	every := t.every
+	if every == "" {
+		every = "500ms (default)"
+	}
+	return fmt.Sprintf("%s %s %s every %s", t.construct, t.field, t.window, every)
+}
+
+func (d *stepDiff) compareTime(b, h model.Step) {
+	bt, ht := timingOf(b), timingOf(h)
+	switch {
+	case bt == nil && ht == nil:
+		return
+	case bt == nil || ht == nil || bt.construct != ht.construct:
+		d.change("time", bt.String(), ht.String())
+		if (bt != nil && bt.construct != "eventually") || (bt == nil && ht.construct == "eventually") {
+			d.weaken("time_check_changed", 0, "%s became %s", bt.String(), ht.String())
 		}
-		for k, v := range b.Expect.Headers {
-			for hk, w := range h.Expect.Headers {
-				if strings.EqualFold(k, hk) {
-					diff("header "+k, v, w)
-				}
-			}
+		return
+	}
+	what := bt.construct + "." + bt.field
+	bw, berr := time.ParseDuration(bt.window)
+	hw, herr := time.ParseDuration(ht.window)
+	switch {
+	case berr != nil || herr != nil:
+		d.change(what, bt.window, ht.window)
+	case bt.construct == "eventually" && hw > bw:
+		d.weaken("wait_longer", 0, "%s %s became %s; the step may now pass later", what, bt.window, ht.window)
+	case bt.construct != "eventually" && hw < bw:
+		d.weaken("window_shorter", 0, "%s %s became %s; the step now watches for less time", what, bt.window, ht.window)
+	case bw != hw:
+		d.change(what, bt.window, ht.window)
+	}
+	be, hev := orDefault(bt.every), orDefault(ht.every)
+	what = bt.construct + ".every"
+	bd, berr := time.ParseDuration(be)
+	hd, herr := time.ParseDuration(hev)
+	switch {
+	case berr != nil || herr != nil:
+		d.change(what, be, hev)
+	case hd > bd:
+		d.weaken("sampling_sparser", 0, "%s %s became %s; the step samples less often", what, be, hev)
+	case hd != bd:
+		d.change(what, be, hev)
+	}
+}
+
+func orDefault(every string) string {
+	if every == "" {
+		return "500ms"
+	}
+	return every
+}
+
+func (d *stepDiff) compareAssertions(b, h *model.Expect, verify bool) {
+	head := map[string]assertion{}
+	onPath := map[string][]string{}
+	for _, a := range assertionsOf(h) {
+		head[a.label()] = a
+		onPath[a.path] = append(onPath[a.path], a.label())
+	}
+	weaker := func(a assertion, format string, args ...any) {
+		if verify {
+			d.weaken("assertion_weakened", 0, format, args...)
+			return
 		}
-		for k, v := range b.Expect.HeaderSets {
-			for hk, w := range h.Expect.HeaderSets {
-				if strings.EqualFold(k, hk) {
-					bs, hs := append([]string{}, v...), append([]string{}, w...)
-					sort.Strings(bs)
-					sort.Strings(hs)
-					diff("header_set "+k, bs, hs)
-				}
-			}
+		d.change(a.label(), a.shown(), canonical(head[a.label()].value))
+	}
+	for _, a := range assertionsOf(b) {
+		if c, ok := head[a.label()]; ok {
+			d.compareValues(a, c, weaker)
+			continue
 		}
-		for k, v := range b.Expect.Keys {
-			if w, ok := h.Expect.Keys[k]; ok {
-				diff("keys "+k, v, w)
-			}
+		if cover := coveringEqual(a, h); cover != "" {
+			d.change(a.label(), a.shown(), "(covered by equal "+cover+")")
+			continue
 		}
-		for k, v := range b.Expect.Length {
-			if w, ok := h.Expect.Length[k]; ok {
-				diff("length "+k, v, w)
-			}
+		switch {
+		case !verify:
+			d.change(a.label(), a.shown(), "(not asserted)")
+		case len(onPath[a.path]) > 0:
+			d.weaken("assertion_weakened", 0, "%s became %s", a.label(), strings.Join(onPath[a.path], " and "))
+		default:
+			d.weaken("assertion_removed", 1, "%s is no longer asserted", a.label())
 		}
 	}
-	if b.Verify != nil && h.Verify != nil && b.Verify.Postgres != nil && h.Verify.Postgres != nil {
-		bp, hp := b.Verify.Postgres, h.Verify.Postgres
-		diff("connection", bp.Connection, hp.Connection)
-		diff("query", strings.TrimSpace(bp.Query), strings.TrimSpace(hp.Query))
-		diff("args", bp.Args, hp.Args)
-		if bp.Expect != nil && hp.Expect != nil {
-			diff("rows", bp.Expect.Rows, hp.Expect.Rows)
-			for k, v := range bp.Expect.FirstRow {
-				if w, ok := hp.Expect.FirstRow[k]; ok {
-					diff("first_row "+k, v, w)
-				}
+}
+
+func (d *stepDiff) compareValues(b, h assertion, weaker func(assertion, string, ...any)) {
+	switch b.matcher {
+	case "unordered":
+		bv, hv := sortedCanon(b.value.([]any)), sortedCanon(h.value.([]any))
+		if strings.Join(bv, "\x00") == strings.Join(hv, "\x00") {
+			return
+		}
+		if lost := missing(bv, hv); len(hv) < len(bv) && len(lost) == len(bv)-len(hv) {
+			weaker(b, "%s no longer lists %s", b.label(), strings.Join(lost, ", "))
+			return
+		}
+		d.change(b.label(), "["+strings.Join(bv, ",")+"]", "["+strings.Join(hv, ",")+"]")
+	case "keys":
+		bk, hk := append([]string(nil), b.value.([]string)...), append([]string(nil), h.value.([]string)...)
+		sort.Strings(bk)
+		sort.Strings(hk)
+		d.change(b.label(), canonical(bk), canonical(hk))
+	case "any", "none":
+		bm, hm := b.value.(map[string]any), h.value.(map[string]any)
+		if canonical(bm) == canonical(hm) {
+			return
+		}
+		small, large := hm, bm
+		if b.matcher == "none" {
+			small, large = bm, hm
+		}
+		if subMap(small, large) {
+			if b.matcher == "any" {
+				weaker(b, "%s now matches an element on fewer fields: %s became %s", b.label(), canonical(bm), canonical(hm))
+			} else {
+				weaker(b, "%s now forbids only elements that also match more fields: %s became %s", b.label(), canonical(bm), canonical(hm))
 			}
+			return
+		}
+		d.change(b.label(), canonical(bm), canonical(hm))
+	default:
+		d.change(b.label(), b.shown(), h.shown())
+	}
+}
+
+func coveringEqual(a assertion, h *model.Expect) string {
+	if h == nil {
+		return ""
+	}
+	for _, p := range sortedKeys(h.Equal) {
+		rel, ok := under(a.path, p)
+		if !ok {
+			continue
+		}
+		if a.matcher != "absent" {
+			return p
+		}
+		if rel == "" {
+			continue
+		}
+		rp, err := expr.ParsePath("$" + rel)
+		if err != nil {
+			continue
+		}
+		if _, found := rp.Select(h.Equal[p]); !found {
+			return p
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].What < out[j].What })
+	return ""
+}
+
+func under(q, p string) (string, bool) {
+	switch {
+	case q == p:
+		return "", true
+	case strings.HasPrefix(q, p+".") || strings.HasPrefix(q, p+"["):
+		return q[len(p):], true
+	}
+	return "", false
+}
+
+func sortedCanon(vs []any) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = canonical(v)
+	}
+	sort.Strings(out)
 	return out
 }
 
-func canonical(v any) string {
-	if p, ok := v.(*int); ok {
-		if p == nil {
-			return "(none)"
-		}
-		return fmt.Sprint(*p)
+func missing(base, head []string) []string {
+	left := map[string]int{}
+	for _, v := range head {
+		left[v]++
 	}
+	var out []string
+	for _, v := range base {
+		if left[v] > 0 {
+			left[v]--
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func subMap(small, large map[string]any) bool {
+	if len(small) >= len(large) {
+		return false
+	}
+	for k, v := range small {
+		w, ok := large[k]
+		if !ok || canonical(v) != canonical(w) {
+			return false
+		}
+	}
+	return true
+}
+
+func canonical(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Sprint(v)
@@ -545,11 +805,9 @@ func canonical(v any) string {
 	return string(b)
 }
 
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
 	}
-	sort.Strings(out)
-	return out
+	return s
 }
