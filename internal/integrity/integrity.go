@@ -265,6 +265,9 @@ func (r *Report) validateConfig(c *model.Config) {
 			r.add(Invalid, "INT-12", p, "adapter %q must be enabled or disabled, got %q", name, a)
 		}
 	}
+	if c.IdentityCheck != nil {
+		r.add(Invalid, "AUTH-04", p, "identity_check isn't available: the identity check (AUTH-04) is parked, so it would never run")
+	}
 	if c.Adapters["http"] == "disabled" {
 		r.add(Invalid, "INT-12", p, "the http adapter can't be disabled: every Phase 0 scenario uses it")
 	}
