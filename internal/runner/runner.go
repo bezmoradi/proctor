@@ -5,17 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"proctor/internal/expr"
-	"proctor/internal/integrity"
 	"proctor/internal/model"
-	"proctor/internal/postgres"
+	"proctor/protocol"
 )
 
 type Result string
@@ -38,16 +36,40 @@ const (
 
 const (
 	CauseUnexpectedResponse = "unexpected_response"
-	CauseUnreachable        = "unreachable"
-	CauseTimeout            = "timeout"
-	CauseUnreadableResponse = "unreadable_response"
-	CauseResponseTooLarge   = "response_too_large"
-	CauseInvalidRequest     = "invalid_request"
+	CauseUnreachable        = protocol.CauseUnreachable
+	CauseTimeout            = protocol.CauseTimeout
+	CauseUnreadableResponse = protocol.CauseUnreadableResponse
+	CauseResponseTooLarge   = protocol.CauseResponseTooLarge
+	CauseInvalidRequest     = protocol.CauseInvalidRequest
+	CauseQueryError         = protocol.CauseQueryError
+	CauseUnsupportedResult  = protocol.CauseUnsupportedResult
+	CauseDriverFailed       = protocol.CauseDriverFailed
+	CauseNotConfigured      = protocol.CauseNotConfigured
 )
 
-const MaxBodyBytes = 10 << 20
+const (
+	OriginOfficial = "official"
+	OriginUnpinned = "unpinned"
+)
+
+const (
+	PhaseSetup        = "setup"
+	PhaseVerification = "verification"
+)
 
 const redacted = "[redacted]"
+
+const (
+	defaultCallTimeout  = 10 * time.Second
+	defaultReadyTimeout = 30 * time.Second
+	defaultEvery        = 500 * time.Millisecond
+	defaultExcerpt      = 4096
+	callMargin          = time.Second
+	readyPause          = 250 * time.Millisecond
+	stderrKeep          = 64 << 10
+)
+
+var CoreVersion = "dev"
 
 type Assertion struct {
 	Kind     string `json:"kind"`
@@ -59,16 +81,18 @@ type Assertion struct {
 	Message  string `json:"message,omitempty"`
 }
 
-type Request struct {
-	Method     string `json:"method"`
-	URL        string `json:"url"`
-	Identity   string `json:"identity"`
-	Credential string `json:"credential,omitempty"`
+type Action struct {
+	Driver   string `json:"driver"`
+	Op       string `json:"op"`
+	Identity string `json:"identity,omitempty"`
+	Variant  string `json:"variant,omitempty"`
+	Summary  string `json:"summary,omitempty"`
 }
 
-type Check struct {
-	Connection string `json:"connection"`
-	Query      string `json:"query"`
+type Evidence struct {
+	RequestExcerpt   string `json:"request_excerpt,omitempty"`
+	ResponseExcerpt  string `json:"response_excerpt,omitempty"`
+	DriverDurationMS int64  `json:"driver_duration_ms,omitempty"`
 }
 
 type StepResult struct {
@@ -78,10 +102,12 @@ type StepResult struct {
 	Reason     string      `json:"reason,omitempty"`
 	Cause      string      `json:"cause,omitempty"`
 	Message    string      `json:"message,omitempty"`
-	Request    *Request    `json:"request,omitempty"`
-	Check      *Check      `json:"check,omitempty"`
-	Status     int         `json:"status,omitempty"`
+	Driver     string      `json:"driver,omitempty"`
+	Origin     string      `json:"origin,omitempty"`
+	Action     *Action     `json:"action,omitempty"`
+	Evidence   *Evidence   `json:"evidence,omitempty"`
 	DurationMS float64     `json:"duration_ms,omitempty"`
+	Samples    int         `json:"samples,omitempty"`
 	Assertions []Assertion `json:"assertions,omitempty"`
 	Saved      []string    `json:"saved,omitempty"`
 }
@@ -123,11 +149,29 @@ type Summary struct {
 	Assertions int `json:"assertions"`
 }
 
+type Proof struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type DriverInfo struct {
+	Name          string  `json:"name"`
+	Official      string  `json:"official"`
+	Version       string  `json:"version"`
+	Origin        string  `json:"origin"`
+	SHA256        string  `json:"sha256"`
+	Proofs        []Proof `json:"proofs,omitempty"`
+	Stderr        string  `json:"stderr,omitempty"`
+	StderrDropped int64   `json:"stderr_dropped_bytes,omitempty"`
+}
+
 type Outcome struct {
 	RunID      string           `json:"run_id"`
 	Target     string           `json:"target"`
 	Readiness  string           `json:"readiness,omitempty"`
 	Violations []string         `json:"violations,omitempty"`
+	Drivers    []DriverInfo     `json:"drivers,omitempty"`
 	Scenarios  []ScenarioResult `json:"scenarios"`
 	Tables     []TableResult    `json:"tables,omitempty"`
 	Summary    Summary          `json:"summary"`
@@ -135,64 +179,149 @@ type Outcome struct {
 	Result     string           `json:"result"`
 }
 
-type ConfigError struct{ Msgs []string }
+const (
+	ExitError     = 2
+	ExitInvalid   = 3
+	ExitIntegrity = 4
+)
 
-func (e *ConfigError) Error() string { return strings.Join(e.Msgs, "; ") }
+type SetupError struct {
+	ExitCode int
+	Msgs     []string
+}
 
-type Runner struct {
-	report       *integrity.Report
-	base         *url.URL
-	ua           string
-	tokens       map[string]string
-	client       *http.Client
-	redactJS     map[string]bool
-	redactH      map[string]bool
-	ready        string
-	readyFor     time.Duration
-	queryTimeout time.Duration
-	dsns         map[string]string
-	pg           map[string]*postgres.Conn
-	secrets      map[string]string
+func (e *SetupError) Error() string { return strings.Join(e.Msgs, "; ") }
+
+type problems struct {
+	code int
+	msgs []string
+}
+
+func (p *problems) add(code int, format string, args ...any) {
+	if code > p.code {
+		p.code = code
+	}
+	p.msgs = append(p.msgs, fmt.Sprintf(format, args...))
+}
+
+func (p *problems) err(s *scrubber) error {
+	if len(p.msgs) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(p.msgs))
+	for i, m := range p.msgs {
+		msgs[i] = s.clean(m)
+	}
+	return &SetupError{ExitCode: p.code, Msgs: msgs}
+}
+
+type SpecFile struct {
+	Path string
+	Spec *model.Spec
 }
 
 type Options struct {
-	RequestTimeout time.Duration
+	CallTimeout   time.Duration
+	ReadyTimeout  time.Duration
+	LookupEnv     func(string) (string, bool)
+	Authoritative bool
+	DriverDir     string
+}
 
-	QueryTimeout time.Duration
+func (o Options) withDefaults() (Options, error) {
+	if o.CallTimeout <= 0 {
+		o.CallTimeout = defaultCallTimeout
+	}
+	if o.ReadyTimeout <= 0 {
+		o.ReadyTimeout = defaultReadyTimeout
+	}
+	if o.LookupEnv == nil {
+		o.LookupEnv = func(string) (string, bool) { return "", false }
+	}
+	if o.DriverDir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return o, fmt.Errorf("cannot find the folder of the proctor program: %v", err)
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		o.DriverDir = filepath.Dir(exe)
+	}
+	abs, err := filepath.Abs(o.DriverDir)
+	if err != nil {
+		return o, fmt.Errorf("driver folder %s: %v", o.DriverDir, err)
+	}
+	o.DriverDir = abs
+	return o, nil
+}
 
-	LookupEnv func(string) (string, bool)
+type Runner struct {
+	cfg      *model.Config
+	specs    []SpecFile
+	b        *model.Binding
+	opt      Options
+	sess     *session
+	creds    map[string]protocol.Credential
+	secrets  map[string]string
+	values   map[string]string
+	redactJS map[string]bool
+	excerpt  int
+	scrub    *scrubber
 }
 
 func credKey(identity, variant string) string { return identity + "\x00" + variant }
 
-func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, error) {
-	var msgs []string
-	bad := func(format string, args ...any) { msgs = append(msgs, fmt.Sprintf(format, args...)) }
+func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*Runner, error) {
+	opt, err := opt.withDefaults()
+	if err != nil {
+		return nil, &SetupError{ExitCode: ExitError, Msgs: []string{err.Error()}}
+	}
+	if b == nil {
+		return nil, &SetupError{ExitCode: ExitInvalid, Msgs: []string{"a binding is required to run specifications"}}
+	}
+	r := &Runner{cfg: cfg, specs: specs, b: b, opt: opt, creds: map[string]protocol.Credential{}, secrets: map[string]string{},
+		values: map[string]string{}, redactJS: map[string]bool{}, excerpt: defaultExcerpt, scrub: &scrubber{}}
+	if cfg.Redaction != nil {
+		for _, p := range cfg.Redaction.JSONPaths {
+			r.redactJS[p] = true
+		}
+	}
+	if cfg.Report != nil && cfg.Report.ExcerptBytes > 0 {
+		r.excerpt = cfg.Report.ExcerptBytes
+	}
+	var probs problems
+	r.loadCredentials(&probs)
+	if err := probs.err(r.scrub); err != nil {
+		return nil, err
+	}
+	sess, err := openSession(context.Background(), cfg, b, opt, r.scrub)
+	if err != nil {
+		return nil, err
+	}
+	r.sess = sess
+	infos, err := sess.describe(context.Background(), specs)
+	if err != nil {
+		sess.close()
+		return nil, err
+	}
+	for _, ref := range sortedRefs(infos) {
+		for _, p := range infos[ref].Problems {
+			where := fmt.Sprintf("%s: scenario %s %s[%d]", ref.Spec, ref.Scenario, ref.Phase, ref.Index)
+			probs.add(ExitInvalid, "%s: %s %s", where, p.Rule, p.Message)
+		}
+	}
+	if err := probs.err(r.scrub); err != nil {
+		sess.close()
+		return nil, err
+	}
+	return r, nil
+}
 
-	base, err := url.Parse(b.Target.BaseURL)
-	switch {
-	case b.Target.BaseURL == "":
-		bad("binding: target.base_url is required")
-	case err != nil:
-		bad("binding: target.base_url: %v", err)
-	case base.Scheme != "http" && base.Scheme != "https":
-		bad("binding: target.base_url must be an http or https URL")
-	case base.Host == "":
-		bad("binding: target.base_url has no host")
-	case base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.ForceQuery:
-		bad("binding: target.base_url can't contain credentials, a query or a fragment")
-	}
-	if strings.TrimSpace(b.Target.UserAgent) == "" {
-		bad("binding: target.user_agent is required (HTTP-04)")
-	} else if strings.ContainsAny(b.Target.UserAgent, "\r\n") {
-		bad("binding: target.user_agent contains a line break")
-	}
-
-	lookup := opt.LookupEnv
-	if lookup == nil {
-		lookup = func(string) (string, bool) { return "", false }
-	}
-	cfg := report.Config
+func (r *Runner) loadCredentials(probs *problems) {
+	bad := func(format string, args ...any) { probs.add(ExitInvalid, format, args...) }
+	lookup := r.opt.LookupEnv
+	cfg, b := r.cfg, r.b
 	for _, name := range sortedKeys(b.Identities) {
 		id, ok := cfg.Identities[name]
 		if !ok {
@@ -204,10 +333,16 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 				bad("binding: identity %q: credential variant %q is not declared in proctor.yaml", name, v)
 			}
 		}
+		for _, k := range sortedKeys(b.Identities[name].Values) {
+			if !expr.VarName(k) {
+				bad("binding: identity %q: value name %q must be letters, digits and _", name, k)
+				continue
+			}
+			r.values[name+"."+k] = b.Identities[name].Values[k]
+		}
 	}
-	tokens := map[string]string{}
 	owner := map[string]string{}
-	load := func(who, key, env, prefix string) {
+	load := func(who, key, env, scheme, prefix, identity, variant string) {
 		tok, ok := lookup(env)
 		switch {
 		case !ok || tok == "":
@@ -218,13 +353,18 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 			bad("%s and %s send the same credential; each identity and credential variant needs its own (AUTH-03)", owner[prefix+tok], who)
 		default:
 			owner[prefix+tok] = who
-			tokens[key] = prefix + tok
+			r.creds[key] = protocol.Credential{Identity: identity, Variant: variant, Scheme: scheme, Value: tok}
+			r.scrub.add(tok)
 		}
 	}
-	idents, variants, conns := used(report)
+	idents, variants := r.usedIdentities()
 	for _, name := range idents {
-		typ := cfg.Identities[name].Type
-		switch typ {
+		it, ok := cfg.Identities[name]
+		if !ok {
+			bad("identity %q is used by a step but not declared in proctor.yaml", name)
+			continue
+		}
+		switch it.Type {
 		case "none":
 		case "bearer":
 			bi := b.Identities[name]
@@ -232,31 +372,36 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 				bad("binding: identity %q (bearer) needs token_env", name)
 				continue
 			}
-			load(fmt.Sprintf("identity %q", name), credKey(name, ""), bi.TokenEnv, "Bearer ")
+			load(fmt.Sprintf("identity %q", name), credKey(name, ""), bi.TokenEnv, protocol.SchemeBearer, "Bearer ", name, "")
 		default:
-			bad("identity %q: type %q is not supported yet (use none or bearer)", name, typ)
+			bad("identity %q: type %q is not supported yet (use none or bearer)", name, it.Type)
 		}
 	}
 	for _, iv := range variants {
+		if _, ok := cfg.Identities[iv[0]]; !ok {
+			continue
+		}
 		bv, ok := b.Identities[iv[0]].Variants[iv[1]]
 		who := fmt.Sprintf("identity %q variant %q", iv[0], iv[1])
 		switch {
 		case !ok || (bv.TokenEnv == "") == (bv.HeaderEnv == ""):
 			bad("binding: identity %q needs exactly one of variants.%s.token_env or variants.%s.header_env", iv[0], iv[1], iv[1])
 		case bv.TokenEnv != "":
-			load(who, credKey(iv[0], iv[1]), bv.TokenEnv, "Bearer ")
+			load(who, credKey(iv[0], iv[1]), bv.TokenEnv, protocol.SchemeBearer, "Bearer ", iv[0], iv[1])
 		default:
-			load(who, credKey(iv[0], iv[1]), bv.HeaderEnv, "")
+			load(who, credKey(iv[0], iv[1]), bv.HeaderEnv, protocol.SchemeHeader, "", iv[0], iv[1])
 		}
 	}
-
-	secrets := map[string]string{}
 	for _, name := range sortedKeys(b.Secrets) {
 		if !contains(cfg.Secrets, name) {
 			bad("binding: secret %q is not declared in proctor.yaml", name)
 		}
 	}
-	for _, name := range usedSecrets(report) {
+	for _, name := range r.usedSecrets() {
+		if !contains(cfg.Secrets, name) {
+			bad("secret %q is used by a step but not declared in proctor.yaml", name)
+			continue
+		}
 		bs, ok := b.Secrets[name]
 		if !ok || bs.Env == "" {
 			bad("binding: secret %q needs env", name)
@@ -267,108 +412,62 @@ func New(report *integrity.Report, b *model.Binding, opt Options) (*Runner, erro
 			bad("secret %q: environment variable %s is not set", name, bs.Env)
 			continue
 		}
-		secrets["secret."+name] = v
+		r.secrets["secret."+name] = v
+		r.scrub.add(v)
 	}
-
-	dsns := map[string]string{}
-	for _, name := range sortedKeys(b.Connections.Postgres) {
-		if _, ok := cfg.Connections.Postgres[name]; !ok {
-			bad("binding: PostgreSQL connection %q is not declared in proctor.yaml", name)
-		}
-	}
-	for _, name := range conns {
-		bc := b.Connections.Postgres[name]
-		if bc.DSNEnv == "" {
-			bad("binding: PostgreSQL connection %q needs dsn_env", name)
-			continue
-		}
-		dsn, ok := lookup(bc.DSNEnv)
-		if !ok || dsn == "" {
-			bad("PostgreSQL connection %q: environment variable %s is not set", name, bc.DSNEnv)
-			continue
-		}
-		dsns[name] = dsn
-	}
-
-	r := &Runner{report: report, base: base, ua: b.Target.UserAgent, tokens: tokens, dsns: dsns, secrets: secrets,
-		pg:       map[string]*postgres.Conn{},
-		redactJS: map[string]bool{}, redactH: map[string]bool{"authorization": true, "cookie": true, "set-cookie": true}}
-	if cfg.Redaction != nil {
-		for _, p := range cfg.Redaction.JSONPaths {
-			r.redactJS[p] = true
-		}
-		for _, h := range cfg.Redaction.Headers {
-			r.redactH[strings.ToLower(h)] = true
-		}
-	}
-	r.readyFor = 30 * time.Second
-	if rd := cfg.Readiness; rd != nil {
-		r.ready = rd.Path
-		if rd.StartupTimeout != "" {
-			d, err := time.ParseDuration(rd.StartupTimeout)
-			if err != nil || d <= 0 {
-				bad("proctor.yaml: readiness.startup_timeout %q is not a positive duration", rd.StartupTimeout)
-			} else {
-				r.readyFor = d
-			}
-		}
-		if rd.Path != "" && (!strings.HasPrefix(rd.Path, "/") || strings.HasPrefix(rd.Path, "//") || strings.ContainsAny(rd.Path, "?#")) {
-			bad("proctor.yaml: readiness.path %q must be a path starting with a single /", rd.Path)
-		}
-	}
-	if len(msgs) > 0 {
-		return nil, &ConfigError{Msgs: msgs}
-	}
-
-	timeout := opt.RequestTimeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	r.queryTimeout = opt.QueryTimeout
-	if r.queryTimeout <= 0 {
-		r.queryTimeout = 5 * time.Second
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-
-	transport.Proxy = nil
-	r.client = &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
-
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	return r, nil
 }
 
-func used(rep *integrity.Report) (idents []string, variants [][2]string, conns []string) {
-	seenI, seenV, seenC := map[string]bool{}, map[[2]string]bool{}, map[string]bool{}
-	for _, p := range rep.Specs {
-		s := rep.Parsed[p]
-		if s == nil {
+func allSteps(sc model.Scenario) []model.Step {
+	return append(append([]model.Step{}, sc.Setup...), sc.Steps...)
+}
+
+func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
+	seenI, seenV := map[string]bool{}, map[[2]string]bool{}
+	for _, f := range r.specs {
+		if f.Spec == nil {
 			continue
 		}
-		for _, sc := range s.Scenarios {
-			for _, st := range append(append([]model.Step{}, sc.Setup...), sc.Steps...) {
-				if st.Request != nil {
-					seenI[st.Request.Identity] = true
-					if st.Request.Credential != "" {
-						seenV[[2]string{st.Request.Identity, st.Request.Credential}] = true
-					}
+		for _, sc := range f.Spec.Scenarios {
+			for _, st := range allSteps(sc) {
+				if st.Identity == "" {
+					continue
 				}
-				if st.Verify != nil && st.Verify.Postgres != nil {
-					seenC[st.Verify.Postgres.Connection] = true
+				seenI[st.Identity] = true
+				if st.Variant != "" {
+					seenV[[2]string{st.Identity, st.Variant}] = true
 				}
 			}
 		}
 	}
-	idents, conns = sortedKeys(seenI), sortedKeys(seenC)
+	idents = sortedKeys(seenI)
 	for v := range seenV {
 		variants = append(variants, v)
 	}
 	sort.Slice(variants, func(i, j int) bool {
 		return variants[i][0]+"\x00"+variants[i][1] < variants[j][0]+"\x00"+variants[j][1]
 	})
-	return idents, variants, conns
+	return idents, variants
+}
+
+func (r *Runner) usedSecrets() []string {
+	seen := map[string]bool{}
+	for _, f := range r.specs {
+		if f.Spec == nil {
+			continue
+		}
+		for _, sc := range f.Spec.Scenarios {
+			for _, st := range allSteps(sc) {
+				for _, v := range []any{st.With, st.Expect} {
+					for _, n := range refsIn(v) {
+						if expr.IsSecret(n) {
+							seen[expr.SecretName(n)] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return sortedKeys(seen)
 }
 
 func NewRunID() string {
@@ -379,39 +478,37 @@ func NewRunID() string {
 	return hex.EncodeToString(b)
 }
 
-func (r *Runner) Run(ctx context.Context) *Outcome {
-	out := &Outcome{Target: r.base.String(), RunID: NewRunID()}
-	defer func() {
-		for _, c := range r.pg {
-			c.Close()
-		}
-	}()
-	stopAll := ""
-	if err := r.waitReady(ctx); err != nil {
-		stopAll = ReasonEnvironmentNotReady
-		out.Readiness = "not ready: " + err.Error()
-	} else {
-		if r.ready != "" || len(r.dsns) > 0 {
-			out.Readiness = "ready"
-		}
-		v, err := r.checkRoles(ctx)
-		switch {
-		case err != nil:
-			stopAll = ReasonEnvironmentNotReady
-			out.Readiness = "not ready: " + err.Error()
-		case len(v) > 0:
+func (r *Runner) Close() {
+	if r.sess != nil {
+		r.sess.close()
+	}
+}
 
+func (r *Runner) Run(ctx context.Context) *Outcome {
+	out := &Outcome{Target: r.b.Environment, RunID: NewRunID()}
+	stopAll := ""
+	if msg := r.waitReady(ctx); msg != "" {
+		stopAll = ReasonEnvironmentNotReady
+		out.Readiness = "not ready: " + msg
+	} else {
+		out.Readiness = "ready"
+		v, msg := r.prove(ctx)
+		switch {
+		case msg != "":
+			stopAll = ReasonEnvironmentNotReady
+			out.Readiness = "not ready: " + msg
+		case len(v) > 0:
 			stopAll = ReasonTrustViolation
 			out.Violations = v
 		}
 	}
 	groups := map[string]*tableGroup{}
-	for _, p := range r.report.Specs {
-		spec := r.report.Parsed[p]
-		if spec == nil {
+	for _, f := range r.specs {
+		if f.Spec == nil {
 			continue
 		}
-		for _, sc := range spec.Scenarios {
+		p := f.Path
+		for _, sc := range f.Spec.Scenarios {
 			var res ScenarioResult
 			switch {
 			case stopAll != "":
@@ -434,99 +531,104 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			out.Scenarios = append(out.Scenarios, res)
 		}
 	}
+	r.sess.close()
+	out.Drivers = r.sess.infos()
 	out.finish()
-	r.scrub(out)
+	r.scrubOutcome(out)
 	return out
 }
 
-func (r *Runner) scrub(out *Outcome) {
-	var values []string
-	for _, v := range r.tokens {
-		values = append(values, v, strings.TrimPrefix(v, "Bearer "))
+func (r *Runner) baseVars(runID string) expr.Vars {
+	vars := expr.Vars{expr.RunID: runID}
+	for k, v := range r.secrets {
+		vars[k] = v
 	}
-	for _, v := range r.secrets {
-		values = append(values, v)
+	for k, v := range r.values {
+		vars[k] = v
 	}
-	for _, v := range r.dsns {
-		values = append(values, v)
-	}
-
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	clean := func(s string) string {
-		for _, v := range values {
-			if len(v) >= 4 {
-				s = strings.ReplaceAll(s, v, redacted)
-			}
-		}
-		return s
-	}
-	var walk func(any) any
-	walk = func(v any) any {
-		switch t := v.(type) {
-		case string:
-			return clean(t)
-		case []any:
-			for i := range t {
-				t[i] = walk(t[i])
-			}
-		case map[string]any:
-			for k, x := range t {
-				t[k] = walk(x)
-			}
-		case []string:
-			for i := range t {
-				t[i] = clean(t[i])
-			}
-		}
-		return v
-	}
-	out.Readiness = clean(out.Readiness)
-	for i := range out.Violations {
-		out.Violations[i] = clean(out.Violations[i])
-	}
-	for i := range out.Scenarios {
-		for j := range out.Scenarios[i].Steps {
-			st := &out.Scenarios[i].Steps[j]
-			st.Message = clean(st.Message)
-			if st.Request != nil {
-				st.Request.URL = clean(st.Request.URL)
-			}
-			for k := range st.Assertions {
-				a := &st.Assertions[k]
-				a.Expected, a.Actual, a.Message, a.Target = walk(a.Expected), walk(a.Actual), clean(a.Message), clean(a.Target)
-			}
-		}
-	}
+	return vars
 }
 
-func usedSecrets(rep *integrity.Report) []string {
-	seen := map[string]bool{}
-	for _, p := range rep.Specs {
-		s := rep.Parsed[p]
-		if s == nil {
-			continue
-		}
-		for _, sc := range s.Scenarios {
-			for _, st := range append(append([]model.Step{}, sc.Setup...), sc.Steps...) {
-				if st.Request == nil {
-					continue
+func (r *Runner) waitReady(ctx context.Context) string {
+	rctx, cancel := context.WithTimeout(ctx, r.opt.ReadyTimeout)
+	defer cancel()
+	for _, h := range r.sess.ordered() {
+		last := "no answer"
+		for {
+			var res protocol.ReadyResult
+			cctx, ccancel := context.WithTimeout(rctx, r.opt.CallTimeout+callMargin)
+			err := h.client.Call(cctx, protocol.MethodReady, protocol.Empty{}, &res)
+			ccancel()
+			if err == nil && res.Ready {
+				break
+			}
+			if err != nil {
+				pe := asProtocolError(err)
+				switch {
+				case pe.Data.Lasting:
+					return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, pe.Message)
+				case rctx.Err() != nil && ctx.Err() == nil:
+					return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
+				case brokenClient(err):
+					return fmt.Sprintf("driver %s: %s", h.name, pe.Message)
 				}
-				hs := map[string]any{}
-				for k, v := range st.Request.Headers {
-					hs[k] = v
+				last = pe.Data.Cause + ": " + pe.Message
+			} else {
+				if res.Lasting {
+					return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, res.Detail)
 				}
-				for _, v := range []any{st.Request.Body, hs} {
-					names, _ := expr.ReferencesIn(v)
-					for _, n := range names {
-						if expr.IsSecret(n) {
-							seen[expr.SecretName(n)] = true
-						}
-					}
+				last = res.Detail
+				if last == "" {
+					last = "the driver reports it isn't ready"
 				}
+			}
+			select {
+			case <-rctx.Done():
+				if ctx.Err() != nil {
+					return fmt.Sprintf("driver %s: the run was interrupted while waiting: %s", h.name, last)
+				}
+				return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
+			case <-time.After(readyPause):
 			}
 		}
 	}
-	return sortedKeys(seen)
+	return ""
+}
+
+func (r *Runner) prove(ctx context.Context) ([]string, string) {
+	var out []string
+	for _, h := range r.sess.ordered() {
+		var res protocol.ProveResult
+		cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
+		err := h.client.Call(cctx, protocol.MethodProve, protocol.Empty{}, &res)
+		cancel()
+		if err != nil {
+			pe := asProtocolError(err)
+			return nil, fmt.Sprintf("driver %s: proving its guarantees: %s: %s", h.name, pe.Data.Cause, pe.Message)
+		}
+		const shown = 50
+		failed := 0
+		for _, p := range res.Proofs {
+			h.proofs = append(h.proofs, Proof{Name: p.Name, Status: p.Status, Detail: p.Detail})
+			switch p.Status {
+			case protocol.ProofProven, protocol.ProofUnproven:
+				continue
+			}
+			failed++
+			if failed > shown {
+				continue
+			}
+			if p.Status == protocol.ProofFailed {
+				out = append(out, fmt.Sprintf("driver %s: proof %s failed: %s", h.name, p.Name, p.Detail))
+			} else {
+				out = append(out, fmt.Sprintf("driver %s: proof %s has unknown status %q, counted as failed: %s", h.name, p.Name, p.Status, p.Detail))
+			}
+		}
+		if failed > shown {
+			out = append(out, fmt.Sprintf("driver %s: and %d more failed proofs", h.name, failed-shown))
+		}
+	}
+	return out, ""
 }
 
 type tableGroup struct {
@@ -540,16 +642,13 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
 	if !g.ran {
 		g.ran, g.ok = true, true
-		g.vars = expr.Vars{expr.RunID: runID + "-" + sc.Case.Group}
-		for k, v := range r.secrets {
-			g.vars[k] = v
-		}
+		g.vars = r.baseVars(runID + "-" + sc.Case.Group)
 		for _, st := range sc.Setup {
 			if !g.ok {
-				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "setup", Result: NotRun, Reason: ReasonSetupFailed})
+				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseSetup, Result: NotRun, Reason: ReasonSetupFailed})
 				continue
 			}
-			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: "setup"}, g.vars)
+			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseSetup}, g.vars)
 			if sr.Result != Pass {
 				sr.Result, sr.Reason = Error, ReasonSetupFailed
 				g.ok, g.cause = false, sr.Cause
@@ -560,7 +659,7 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 	if !g.ok {
 		res.Result, res.Reason, res.Cause = NotRun, ReasonSetupFailed, g.cause
 		for _, st := range sc.Steps {
-			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: ReasonSetupFailed})
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: ReasonSetupFailed})
 		}
 		return res
 	}
@@ -571,16 +670,16 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 	stop := ""
 	for _, st := range sc.Steps {
 		if stop != "" {
-			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: stop})
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
 		if ctx.Err() != nil {
 			stop = ReasonAborted
 			res.Result, res.Reason = Error, ReasonAborted
-			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: stop})
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
-		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: "verification"}, vars)
+		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseVerification}, vars)
 		switch sr.Result {
 		case Fail:
 			res.Result, stop = Fail, ReasonEarlierStepFailed
@@ -592,11 +691,54 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 	return res
 }
 
-func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars) StepResult {
-	if st.Verify != nil {
-		return r.pgStep(ctx, st, sr, vars)
+func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runID string) ScenarioResult {
+	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
+	vars := r.baseVars(runID + "-" + sc.ID)
+	stop := ""
+	run := func(st model.Step, phase string) {
+		if stop != "" {
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
+			return
+		}
+		if ctx.Err() != nil {
+			stop = ReasonAborted
+			res.Result, res.Reason = Error, ReasonAborted
+			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
+			return
+		}
+		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: phase}, vars)
+		switch {
+		case phase == PhaseSetup && sr.Result != Pass:
+			sr.Result, sr.Reason = Error, ReasonSetupFailed
+			res.Result, res.Reason, res.Cause = Error, ReasonSetupFailed, sr.Cause
+			stop = ReasonSetupFailed
+		case sr.Result == Fail:
+			res.Result = Fail
+			stop = ReasonEarlierStepFailed
+		case sr.Result == Error:
+			res.Result, res.Cause = Error, sr.Cause
+			stop = ReasonEarlierStepErrored
+		}
+		res.Steps = append(res.Steps, sr)
 	}
-	return r.httpStep(ctx, st, sr, vars)
+	for _, st := range sc.Setup {
+		run(st, PhaseSetup)
+	}
+	for _, st := range sc.Steps {
+		run(st, PhaseVerification)
+	}
+	return res
+}
+
+func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
+	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: NotRun, Reason: reason}
+	for _, st := range sc.Setup {
+		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseSetup, Result: NotRun, Reason: reason})
+	}
+	for _, st := range sc.Steps {
+		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: reason})
+	}
+	return res
 }
 
 var tableRank = map[Result]int{Pass: 0, NotRun: 1, Error: 2, Fail: 3}
@@ -642,157 +784,16 @@ func (o *Outcome) finish() {
 			s.Assertions += len(st.Assertions)
 		}
 	}
-
 	switch {
 	case len(o.Violations) > 0:
-		o.ExitCode, o.Result = 4, "integrity_violation"
+		o.ExitCode, o.Result = ExitIntegrity, "integrity_violation"
 	case s.Failed > 0:
 		o.ExitCode, o.Result = 1, "failed"
 	case s.Errors > 0 || s.NotRun > 0 || s.Scenarios == 0:
-		o.ExitCode, o.Result = 2, "error"
+		o.ExitCode, o.Result = ExitError, "error"
 	default:
 		o.ExitCode, o.Result = 0, "passed"
 	}
-}
-
-func (r *Runner) waitReady(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, r.readyFor)
-	defer cancel()
-	pause := func(last string) error {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("not ready after %s: %s", r.readyFor, last)
-		case <-time.After(250 * time.Millisecond):
-			return nil
-		}
-	}
-	if r.ready != "" {
-		u := r.base.String() + r.ready
-		last := "no response"
-		for {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-			if err != nil {
-				return err
-			}
-			req.Header.Set("User-Agent", r.ua)
-			resp, err := r.client.Do(req)
-			if err == nil {
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxBodyBytes))
-				resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					break
-				}
-				last = fmt.Sprintf("%s answered %d", r.ready, resp.StatusCode)
-			} else {
-				last = err.Error()
-			}
-			if err := pause(last); err != nil {
-				return err
-			}
-		}
-	}
-	for _, name := range sortedKeys(r.dsns) {
-		pol := r.report.Config.Connections.Postgres[name]
-		for {
-			c, err := postgres.Open(ctx, name, r.dsns[name], pol.Schemas, r.queryTimeout)
-			if err == nil {
-				if err = c.Ping(ctx, r.queryTimeout); err == nil {
-					r.pg[name] = c
-					break
-				}
-				c.Close()
-			}
-			if postgres.Lasting(err) {
-				return fmt.Errorf("%v; not retried, because waiting won't fix it", err)
-			}
-			if err := pause(err.Error()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (r *Runner) checkRoles(ctx context.Context) ([]string, error) {
-	var out []string
-	for _, name := range sortedKeys(r.pg) {
-		pol := r.report.Config.Connections.Postgres[name]
-		problems, err := r.pg[name].RoleProblems(ctx, pol.Objects, r.queryTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("connection %s: checking the verification role: %v", name, err)
-		}
-
-		const shown = 50
-		for i, p := range problems {
-			if i == shown {
-				out = append(out, fmt.Sprintf("connection %s: and %d more problems with the verification role (DB-04)", name, len(problems)-shown))
-				break
-			}
-			out = append(out, fmt.Sprintf("connection %s: %s (DB-04)", name, p))
-		}
-	}
-	return out, nil
-}
-
-func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
-	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: NotRun, Reason: reason}
-	for _, st := range sc.Setup {
-		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "setup", Result: NotRun, Reason: reason})
-	}
-	for _, st := range sc.Steps {
-		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: "verification", Result: NotRun, Reason: reason})
-	}
-	return res
-}
-
-func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runID string) ScenarioResult {
-	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
-
-	vars := expr.Vars{expr.RunID: runID + "-" + sc.ID}
-	for k, v := range r.secrets {
-		vars[k] = v
-	}
-	stop := ""
-
-	run := func(st model.Step, phase string) {
-		if stop != "" {
-			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
-			return
-		}
-		if ctx.Err() != nil {
-			stop = ReasonAborted
-			res.Result, res.Reason = Error, ReasonAborted
-			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
-			return
-		}
-		sr := StepResult{ID: st.ID, Phase: phase}
-		if st.Verify != nil {
-			sr = r.pgStep(ctx, st, sr, vars)
-		} else {
-			sr = r.httpStep(ctx, st, sr, vars)
-		}
-		switch {
-		case phase == "setup" && sr.Result != Pass:
-
-			sr.Result, sr.Reason = Error, ReasonSetupFailed
-			res.Result, res.Reason, res.Cause = Error, ReasonSetupFailed, sr.Cause
-			stop = ReasonSetupFailed
-		case sr.Result == Fail:
-			res.Result = Fail
-			stop = ReasonEarlierStepFailed
-		case sr.Result == Error:
-			res.Result, res.Cause = Error, sr.Cause
-			stop = ReasonEarlierStepErrored
-		}
-		res.Steps = append(res.Steps, sr)
-	}
-	for _, st := range sc.Setup {
-		run(st, "setup")
-	}
-	for _, st := range sc.Steps {
-		run(st, "verification")
-	}
-	return res
 }
 
 func sortedKeys[V any](m map[string]V) []string {
