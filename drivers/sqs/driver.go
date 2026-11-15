@@ -37,8 +37,12 @@ const (
 	maxQueueName  = 80
 	callTimeout   = 10 * time.Second
 	readyAttempt  = 3 * time.Second
-	defaultPeek   = 10
-	maxPeek       = 10
+	maxPeek       = 1000
+	maxReceives   = 150
+	quietReceives = 3
+	quietBehind   = 20
+	receiveBatch  = 10
+	receiveMargin = 2 * time.Second
 	maxDelay      = 900
 	excerptBytes  = 4 << 10
 	maxCABundleSz = 1 << 20
@@ -87,7 +91,8 @@ var peekArgs = map[string]any{
 var peekFact = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"count": map[string]any{"type": "integer", "minimum": 0, "maximum": maxPeek},
+		"count":     map[string]any{"type": "integer", "minimum": 0, "maximum": maxPeek},
+		"truncated": map[string]any{"type": "boolean"},
 		"messages": map[string]any{
 			"type": "array",
 			"items": map[string]any{
@@ -103,7 +108,7 @@ var peekFact = map[string]any{
 			},
 		},
 	},
-	"required":             []string{"count", "messages"},
+	"required":             []string{"count", "messages", "truncated"},
 	"additionalProperties": false,
 }
 

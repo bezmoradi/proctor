@@ -23,6 +23,7 @@ type connectArgs struct {
 	Headers      map[string]any `json:"headers"`
 	Subprotocols []string       `json:"subprotocols"`
 	Auth         string         `json:"auth"`
+	NoOrigin     bool           `json:"no_origin"`
 }
 
 type handshake struct {
@@ -151,7 +152,10 @@ func (d *Driver) build(a connectArgs, cred *protocol.Credential) (handshake, err
 		}
 		hs.header.Set(name, v)
 	}
-	if d.origin != "" && hs.header.Get("Origin") == "" {
+	if a.NoOrigin && hs.header.Get("Origin") != "" {
+		return hs, fmt.Errorf("no_origin is set, so headers can't set Origin")
+	}
+	if !a.NoOrigin && d.origin != "" && hs.header.Get("Origin") == "" {
 		hs.header.Set("Origin", d.origin)
 	}
 	for _, sp := range a.Subprotocols {

@@ -183,48 +183,121 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 	if err := protocol.Decode(raw, &in); err != nil {
 		return protocol.CallResult{}, protocol.Lastingf(protocol.CauseInvalidRequest, "peek: %v", err)
 	}
-	n := defaultPeek
+	limit := maxPeek
 	if in.Max != nil {
-		n = *in.Max
+		limit = *in.Max
 	}
-	if n < 1 || n > maxPeek {
-		return protocol.CallResult{}, protocol.Lastingf(protocol.CauseInvalidRequest, "peek: max must be from 1 to %d, not %d", maxPeek, n)
+	if limit < 1 || limit > maxPeek {
+		return protocol.CallResult{}, protocol.Lastingf(protocol.CauseInvalidRequest, "peek: max must be from 1 to %d, not %d", maxPeek, limit)
 	}
 	q, err := d.target(ctx, in.Queue)
 	if err != nil {
 		return protocol.CallResult{}, err
 	}
-	out, err := d.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
-		QueueUrl:              aws.String(q.url),
-		MaxNumberOfMessages:   int32(n),
-		VisibilityTimeout:     0,
-		WaitTimeSeconds:       0,
-		MessageAttributeNames: []string{"All"},
-	}, forceFields(map[string]int{"VisibilityTimeout": 0, "WaitTimeSeconds": 0}))
+	want, err := d.onQueue(ctx, q)
 	if err != nil {
-		return protocol.CallResult{}, d.classify(ctx, err, "peek at queue "+q.label())
+		return protocol.CallResult{}, err
 	}
-	messages := make([]any, 0, len(out.Messages))
-	for _, msg := range out.Messages {
-		text := aws.ToString(msg.Body)
-		m := map[string]any{
-			"message_id": aws.ToString(msg.MessageId),
-			"body_text":  text,
-			"attributes": attributes(msg.MessageAttributes),
+	seen := map[string]bool{}
+	messages := make([]any, 0)
+	receives, quiet := 0, 0
+	settled := func() bool {
+		return quiet >= quietReceives && (int64(len(messages)) >= want || quiet >= quietBehind)
+	}
+	for !settled() && receives < maxReceives && len(messages) < limit {
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < receiveMargin {
+			break
 		}
-		if v, ok := parseJSON(text); ok {
-			m["body"] = v
+		out, err := d.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:              aws.String(q.url),
+			MaxNumberOfMessages:   int32(min(receiveBatch, limit-len(messages))),
+			VisibilityTimeout:     0,
+			WaitTimeSeconds:       0,
+			MessageAttributeNames: []string{"All"},
+		}, forceFields(map[string]int{"VisibilityTimeout": 0, "WaitTimeSeconds": 0}))
+		if err != nil {
+			return protocol.CallResult{}, d.classify(ctx, err, "peek at queue "+q.label())
 		}
-		messages = append(messages, m)
+		receives++
+		added := 0
+		for _, msg := range out.Messages {
+			id := aws.ToString(msg.MessageId)
+			if id == "" {
+				return protocol.CallResult{}, protocol.Errorf(protocol.CauseUnreadableResponse, "peek at queue %s: ReceiveMessage returned a message with no message id", q.label())
+			}
+			if seen[id] || len(messages) >= limit {
+				continue
+			}
+			seen[id] = true
+			added++
+			text := aws.ToString(msg.Body)
+			m := map[string]any{
+				"message_id": id,
+				"body_text":  text,
+				"attributes": attributes(msg.MessageAttributes),
+			}
+			if v, ok := parseJSON(text); ok {
+				m["body"] = v
+			}
+			messages = append(messages, m)
+		}
+		if added == 0 {
+			quiet++
+		} else {
+			quiet = 0
+		}
+	}
+	onQueue, err := d.onQueue(ctx, q)
+	if err != nil {
+		return protocol.CallResult{}, err
+	}
+	why := ""
+	switch {
+	case !settled() && len(messages) >= limit:
+		why = fmt.Sprintf("stopped at max %d", limit)
+	case !settled() && receives >= maxReceives:
+		why = fmt.Sprintf("stopped after %d receives", receives)
+	case !settled():
+		why = "stopped before the call's deadline"
+	case int64(len(messages)) < onQueue:
+		why = fmt.Sprintf("the queue reports %d messages", onQueue)
 	}
 	noun := "messages"
 	if len(messages) == 1 {
 		noun = "message"
 	}
+	summary := fmt.Sprintf("peek at %s -> %d %s in %d receives (left on the queue)", q.label(), len(messages), noun, receives)
+	if why != "" {
+		summary += ", truncated: " + why
+	}
 	return protocol.CallResult{
-		Fact:     map[string]any{"count": len(messages), "messages": messages},
-		Evidence: protocol.Evidence{Summary: fmt.Sprintf("peek at %s -> %d %s (left on the queue)", q.label(), len(messages), noun)},
+		Fact:     map[string]any{"count": len(messages), "messages": messages, "truncated": why != ""},
+		Evidence: protocol.Evidence{Summary: summary},
 	}, nil
+}
+
+func (d *Driver) onQueue(ctx context.Context, q *queue) (int64, error) {
+	names := []types.QueueAttributeName{
+		types.QueueAttributeNameApproximateNumberOfMessages,
+		types.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
+	}
+	out, err := d.client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{QueueUrl: aws.String(q.url), AttributeNames: names})
+	if err != nil {
+		return 0, d.classify(ctx, err, "peek at queue "+q.label()+": counting its messages")
+	}
+	var total int64
+	for _, name := range names {
+		s, ok := out.Attributes[string(name)]
+		if !ok {
+			return 0, protocol.Errorf(protocol.CauseUnsupportedResult, "peek at queue %s: the answer has no %s", q.label(), name)
+		}
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || v < 0 {
+			return 0, protocol.Errorf(protocol.CauseUnsupportedResult, "peek at queue %s: %s is %q, not a count", q.label(), name, s)
+		}
+		total += v
+	}
+	return total, nil
 }
 
 func attributes(in map[string]types.MessageAttributeValue) map[string]any {

@@ -51,6 +51,14 @@ type ExpectationChange struct {
 	To       string `json:"to"`
 }
 
+type AssertionMove struct {
+	Scenario  string `json:"scenario"`
+	FromStep  string `json:"from_step"`
+	ToStep    string `json:"to_step"`
+	Assertion string `json:"assertion"`
+	Value     string `json:"value,omitempty"`
+}
+
 type Result struct {
 	Base         string              `json:"base"`
 	Head         string              `json:"head"`
@@ -58,6 +66,7 @@ type Result struct {
 	Scenarios    []ScenarioChange    `json:"scenarios"`
 	Weakenings   []Weakening         `json:"weakenings"`
 	Expectations []ExpectationChange `json:"expectation_changes"`
+	Moves        []AssertionMove     `json:"assertion_moves"`
 
 	Unparsed []string `json:"unparsed,omitempty"`
 }
@@ -154,7 +163,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	sort.Slice(res.Files, func(i, j int) bool { return res.Files[i].Path < res.Files[j].Path })
 
-	res.Weakenings, res.Expectations = []Weakening{}, []ExpectationChange{}
+	res.Weakenings, res.Expectations, res.Moves = []Weakening{}, []ExpectationChange{}, []AssertionMove{}
 	bc, bFound, err := readConfig(repo, bt, configPath)
 	if err != nil {
 		return nil, err
@@ -194,9 +203,10 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 		case c.Change == "removed":
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "scenario_removed", Detail: "the scenario was removed"})
 		case (c.Change == "modified" || c.Modified) && b != nil && h != nil:
-			w, e := compareSteps(c.ID, b, h)
+			w, e, m := compareSteps(c.ID, b, h)
 			res.Weakenings = append(res.Weakenings, w...)
 			res.Expectations = append(res.Expectations, e...)
+			res.Moves = append(res.Moves, m...)
 		case c.Change == "modified" || c.Modified:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "not_analysed",
 				Detail: "the scenario changed but one side doesn't decode as a specification; read the file diff"})
@@ -662,11 +672,13 @@ func (d *stepDiff) change(what, from, to string) {
 	}
 }
 
-func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationChange) {
+func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationChange, []AssertionMove) {
 	var ws []Weakening
 	var es []ExpectationChange
+	var ms []AssertionMove
 	bm, border := indexSteps(b)
-	hm, _ := indexSteps(h)
+	hm, horder := indexSteps(h)
+	used := consumed(bm, hm)
 	for _, sid := range border {
 		bs := bm[sid]
 		hs, ok := hm[sid]
@@ -679,7 +691,16 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 		case !ok && bs.setup:
 			d.weaken("setup_step_removed", 0, "a setup step was removed; the scenario's starting state changed")
 		case !ok:
-			d.weaken("step_removed", lost, "a verification step was removed")
+			moves, left := findMoved(id, sid, bm, border, hm, horder, used)
+			if len(moves) == 0 {
+				d.weaken("step_removed", lost, "a verification step was removed")
+				break
+			}
+			ms = append(ms, moves...)
+			d.change("step", "verification step", fmt.Sprintf("removed; %d of %d assertion(s) moved to %s", len(moves), lost, movedTo(moves)))
+			if len(left) > 0 {
+				d.weaken("assertion_removed", len(left), "the step was removed and no step that makes the same request asserts %s", strings.Join(left, " or "))
+			}
 		case !bs.setup && hs.setup:
 			d.weaken("step_moved_to_setup", lost,
 				"a verification step became setup; its expectations no longer count as evidence and a mismatch is ERROR, not FAIL")
@@ -690,7 +711,157 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 		ws = append(ws, d.ws...)
 		es = append(es, d.es...)
 	}
-	return ws, es
+	return ws, es, ms
+}
+
+func consumed(bm, hm map[string]located) map[string][]bool {
+	used := map[string][]bool{}
+	for sid, hs := range hm {
+		hl := assertionsOf(hs.step.Expect)
+		used[sid] = make([]bool, len(hl))
+		bs, ok := bm[sid]
+		if !ok {
+			continue
+		}
+		groups := map[string][]int{}
+		for i, a := range hl {
+			groups[a.label()] = append(groups[a.label()], i)
+		}
+		base := map[string][]assertion{}
+		for _, a := range assertionsOf(bs.step.Expect) {
+			base[a.label()] = append(base[a.label()], a)
+		}
+		for label, bl := range base {
+			idx := groups[label]
+			group := make([]assertion, len(idx))
+			for k, i := range idx {
+				group[k] = hl[i]
+			}
+			for _, pr := range pairClaims(bl, group) {
+				if !pr.matched {
+					continue
+				}
+				for _, i := range idx {
+					if !used[sid][i] && sameAssertion(hl[i], pr.head) && hl[i].claim == pr.head.claim {
+						used[sid][i] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	return used
+}
+
+func findMoved(scenario, sid string, bm map[string]located, border []string, hm map[string]located, horder []string, used map[string][]bool) ([]AssertionMove, []string) {
+	r := bm[sid].step
+	at := precedingOthers(r, sid, bm, border)
+	var candidates []string
+	for _, hid := range horder {
+		hs := hm[hid]
+		if hs.setup || !sameRequest(r, hs.step) || !equalStrings(at, precedingOthers(r, hid, hm, horder)) {
+			continue
+		}
+		if r.Never != nil && !sameAssertionSet(assertionsOf(r.Expect), assertionsOf(hs.step.Expect)) {
+			continue
+		}
+		candidates = append(candidates, hid)
+	}
+	var moves []AssertionMove
+	var left []string
+	list := assertionsOf(r.Expect)
+	for _, a := range list {
+		found := false
+		for _, hid := range candidates {
+			for i, c := range assertionsOf(hm[hid].step.Expect) {
+				if used[hid][i] || !sameAssertion(a, c) {
+					continue
+				}
+				used[hid][i] = true
+				found = true
+				mv := AssertionMove{Scenario: scenario, FromStep: sid, ToStep: hid, Assertion: a.label()}
+				if a.multi || c.multi {
+					mv.Assertion += " claim"
+				}
+				if a.valued {
+					mv.Value = canonical(a.value)
+				}
+				moves = append(moves, mv)
+				break
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			left = append(left, a.name(a.multi))
+		}
+	}
+	return moves, left
+}
+
+func precedingOthers(r model.Step, sid string, m map[string]located, order []string) []string {
+	var out []string
+	for _, id := range order {
+		if id == sid {
+			return out
+		}
+		if !sameRequest(r, m[id].step) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func sameRequest(a, b model.Step) bool {
+	return a.Do == b.Do && a.On == b.On && a.As == b.As && a.Identity == b.Identity && a.Variant == b.Variant &&
+		canonical(a.With) == canonical(b.With) && timingOf(a).String() == timingOf(b).String()
+}
+
+func sameAssertion(a, b assertion) bool {
+	return a.matcher == b.matcher && a.path == b.path && a.valued == b.valued && canonical(a.value) == canonical(b.value)
+}
+
+func sameAssertionSet(a, b []assertion) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	used := make([]bool, len(b))
+	for _, x := range a {
+		found := false
+		for j, y := range b {
+			if !used[j] && sameAssertion(x, y) {
+				used[j], found = true, true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func movedTo(moves []AssertionMove) string {
+	var out []string
+	for _, m := range moves {
+		if !containsString(out, m.ToStep) {
+			out = append(out, m.ToStep)
+		}
+	}
+	return strings.Join(out, " and ")
 }
 
 func (d *stepDiff) compare(b, h model.Step, verify bool) {

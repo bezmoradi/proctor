@@ -46,6 +46,13 @@ func (v *validation) connect(args map[string]any, p protocol.ValidateParams) {
 	query, _ := args["query"].(map[string]any)
 	headers, _ := args["headers"].(map[string]any)
 	v.checkHeaders(headers)
+	if noOrigin, _ := args["no_origin"].(bool); noOrigin {
+		for name := range headers {
+			if strings.EqualFold(name, "origin") {
+				v.add("EXE-01", "$.with.no_origin", "no_origin sends the handshake without an Origin header, but headers also sets %s", name)
+			}
+		}
+	}
 	if list, ok := args["subprotocols"].([]any); ok {
 		for i, raw := range list {
 			if sp, ok := raw.(string); ok && !strings.Contains(sp, "${") && !isToken(sp) {

@@ -43,6 +43,7 @@ var ConnectArgsSchema = map[string]any{
 		"headers":      map[string]any{"type": "object", "additionalProperties": scalar},
 		"subprotocols": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"auth":         map[string]any{"type": "string"},
+		"no_origin":    map[string]any{"type": "boolean"},
 	},
 	"required":             []string{"path"},
 	"additionalProperties": false,

@@ -107,6 +107,16 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %s %s %s: %s -> %s\n", safe(e.Scenario), safe(e.Step), safe(e.What), safe(e.From), safe(e.To))
 		}
 	}
+	if len(res.Moves) > 0 {
+		fmt.Fprintln(stdout, "\nMoved assertions (not lost):")
+		for _, m := range res.Moves {
+			line := fmt.Sprintf("  assertion_moved %s %s -> %s: %s", safe(m.Scenario), safe(m.FromStep), safe(m.ToStep), safe(m.Assertion))
+			if m.Value != "" {
+				line += " " + safe(m.Value)
+			}
+			fmt.Fprintln(stdout, line)
+		}
+	}
 	for _, u := range res.Unparsed {
 		fmt.Fprintf(stdout, "  scenarios not compared (file doesn't parse on one side): %s\n", safe(u))
 	}

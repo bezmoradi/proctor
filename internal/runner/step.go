@@ -141,14 +141,14 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	var last sampleResult
 	n := 0
 	for {
-		s, perr, d := r.sample(ctx, h, op, args, cred, handle, checks)
+		s, perr := r.sample(ctx, h, op, args, cred, handle, checks)
 		if s.handle != "" {
 			if kerr := hs.keep(st, h, op, s.handle); kerr != nil && perr == nil {
 				perr = kerr
 			}
 		}
 		n++
-		sr.DurationMS += float64(d.Microseconds()) / 1000
+		sr.DurationMS = millis(time.Since(start))
 		if t.mode != "" {
 			sr.Samples = n
 		}
@@ -176,6 +176,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			sr.DurationMS = millis(time.Since(start))
 			sr.Result, sr.Reason = Error, ReasonAborted
 			sr.Message = fmt.Sprintf("the run was interrupted after %d samples", n)
 			return sr
@@ -248,26 +249,24 @@ func (r *Runner) record(sr *StepResult, ev protocol.Evidence) {
 	sr.Evidence = &Evidence{RequestExcerpt: ev.RequestExcerpt, ResponseExcerpt: ev.ResponseExcerpt, DriverDurationMS: ev.DurationMS}
 }
 
-func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, cred *protocol.Credential, handle string, checks []check) (sampleResult, *protocol.Error, time.Duration) {
+func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, cred *protocol.Credential, handle string, checks []check) (sampleResult, *protocol.Error) {
 	cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
 	defer cancel()
 	var res protocol.CallResult
 	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, DeadlineMS: r.opt.CallTimeout.Milliseconds()}
-	t0 := time.Now()
 	err := h.client.Call(cctx, protocol.MethodCall, p, &res)
-	d := time.Since(t0)
 	if err != nil {
 		if brokenClient(err) {
 			h.dead = true
 		}
-		return sampleResult{}, asProtocolError(err), d
+		return sampleResult{}, asProtocolError(err)
 	}
 	if op.FactSchema != nil {
 		if msgs := schema.Check(op.FactSchema, res.Fact); len(msgs) > 0 {
 			if len(msgs) > 5 {
 				msgs = append(msgs[:5], fmt.Sprintf("and %d more", len(msgs)-5))
 			}
-			return sampleResult{handle: res.Handle}, protocol.Errorf(protocol.CauseDriverFailed, "the fact doesn't match the fact_schema of %s: %s", op.Name, strings.Join(msgs, "; ")), d
+			return sampleResult{handle: res.Handle}, protocol.Errorf(protocol.CauseDriverFailed, "the fact doesn't match the fact_schema of %s: %s", op.Name, strings.Join(msgs, "; "))
 		}
 	}
 	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true}
@@ -278,7 +277,11 @@ func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, arg
 		}
 		s.asserts = append(s.asserts, a)
 	}
-	return s, nil, d
+	return s, nil
+}
+
+func millis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000
 }
 
 func argsFor(with any, vars expr.Vars, escape map[string]string) (any, error) {
