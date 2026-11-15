@@ -13,7 +13,10 @@ type Table struct {
 	Name         string            `yaml:"name"`
 	Setup        []Step            `yaml:"setup"`
 	SetupFrom    string            `yaml:"setup_from"`
-	Request      yaml.Node         `yaml:"request"`
+	Do           string            `yaml:"do"`
+	Identity     string            `yaml:"identity"`
+	Variant      string            `yaml:"variant"`
+	With         yaml.Node         `yaml:"with,omitempty"`
 	Expect       yaml.Node         `yaml:"expect"`
 	Columns      []string          `yaml:"columns"`
 	Rows         []yaml.Node       `yaml:"rows"`
@@ -31,11 +34,6 @@ type TableCase struct {
 	Canon     []byte
 }
 
-type Problem struct {
-	Rule string
-	Msg  string
-}
-
 var (
 	rowRef     = regexp.MustCompile(`\$\{row\.([^}]*)\}`)
 	wholeRef   = regexp.MustCompile(`^\$\{row\.([^}]*)\}$`)
@@ -45,7 +43,7 @@ var (
 func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 	var probs []Problem
 	add := func(rule, format string, args ...any) {
-		probs = append(probs, Problem{rule, fmt.Sprintf(format, args...)})
+		probs = append(probs, Problem{Rule: rule, Message: fmt.Sprintf(format, args...)})
 	}
 	group := map[string]string{}
 	setup := map[string][]Step{}
@@ -76,8 +74,12 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 		if strings.TrimSpace(t.Name) == "" {
 			add("EXE-01", "%s: name is required", where)
 		}
-		if t.Request.Kind != yaml.MappingNode {
-			add("EXE-01", "%s: request is required, as a mapping", where)
+		if strings.TrimSpace(t.Do) == "" {
+			add("EXE-01", "%s: do is required", where)
+			continue
+		}
+		if rowRef.MatchString(t.Do) {
+			add("TBL-05", "%s: ${row...} can't be used in do", where)
 			continue
 		}
 		if t.Expect.Kind != yaml.MappingNode {
@@ -100,7 +102,8 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 		}
 		used := map[string]bool{}
 		bad := false
-		for _, n := range []*yaml.Node{&t.Request, &t.Expect} {
+		texts := []*yaml.Node{{Kind: yaml.ScalarNode, Value: t.Identity}, {Kind: yaml.ScalarNode, Value: t.Variant}}
+		for _, n := range append(texts, &t.With, &t.Expect) {
 			walkScalars(n, func(v *yaml.Node, isKey bool) {
 				for _, m := range rowRef.FindAllStringSubmatch(v.Value, -1) {
 					if isKey {
@@ -110,7 +113,7 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 					}
 					if i, ok := colIndex[m[1]]; !ok || i == 0 {
 						if ok {
-							add("TBL-05", "%s: ${row.%s} is the case id column; it can't be used in the request or expect", where, m[1])
+							add("TBL-05", "%s: ${row.%s} is the case id column; it can't be used in the step", where, m[1])
 						} else {
 							add("TBL-05", "%s: ${row.%s} isn't one of the columns", where, m[1])
 						}
@@ -123,7 +126,7 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 		}
 		for _, c := range t.Columns[1:] {
 			if !used[c] {
-				add("TBL-01", "%s: column %q isn't used by the request or expect", where, c)
+				add("TBL-01", "%s: column %q isn't used by identity, variant, with or expect", where, c)
 				bad = true
 			}
 		}
@@ -175,20 +178,30 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 			if !ok {
 				continue
 			}
-			req, err1 := substitute(&t.Request, cells)
-			exp, err2 := substitute(&t.Expect, cells)
-			if err1 != nil || err2 != nil {
-				e := err1
-				if e == nil {
-					e = err2
-				}
-				add("TBL-05", "case %s: %v", caseID, e)
+			step := Step{ID: "case", Do: t.Do, NoStateCheck: t.NoStateCheck, Waive: t.Waive, Expect: &Expect{}}
+			var err error
+			if step.Identity, err = substituteText(t.Identity, cells); err != nil {
+				add("TBL-05", "case %s: identity: %v", caseID, err)
 				continue
 			}
-			step := Step{ID: "request", NoStateCheck: t.NoStateCheck, Waive: t.Waive}
-			step.Request, step.Expect = &Request{}, &Expect{}
-			if err := decodeNode(req, step.Request, decode); err != nil {
-				add("INT-15", "case %s: request: %v", caseID, err)
+			if step.Variant, err = substituteText(t.Variant, cells); err != nil {
+				add("TBL-05", "case %s: variant: %v", caseID, err)
+				continue
+			}
+			if t.With.Kind != 0 {
+				with, err := substitute(&t.With, cells)
+				if err != nil {
+					add("TBL-05", "case %s: with: %v", caseID, err)
+					continue
+				}
+				if err := decodeNode(with, &step.With, decode); err != nil {
+					add("INT-15", "case %s: with: %v", caseID, err)
+					continue
+				}
+			}
+			exp, err := substitute(&t.Expect, cells)
+			if err != nil {
+				add("TBL-05", "case %s: expect: %v", caseID, err)
 				continue
 			}
 			if err := decodeNode(exp, step.Expect, decode); err != nil {
@@ -272,6 +285,17 @@ func substitute(n *yaml.Node, cells map[string]*yaml.Node) (*yaml.Node, error) {
 	return out, nil
 }
 
+func substituteText(s string, cells map[string]*yaml.Node) (string, error) {
+	out, err := substitute(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}, cells)
+	if err != nil {
+		return "", err
+	}
+	if out.Kind != yaml.ScalarNode {
+		return "", fmt.Errorf("%s must be a single value, not a list or mapping", s)
+	}
+	return out.Value, nil
+}
+
 func clean(n *yaml.Node) *yaml.Node {
 	out := &yaml.Node{Kind: n.Kind, Tag: n.Tag, Value: n.Value, Style: n.Style &^ yaml.FlowStyle}
 	for _, c := range n.Content {
@@ -296,7 +320,9 @@ func flow(n *yaml.Node) *yaml.Node {
 }
 
 func cleanTable(t Table) Table {
-	t.Request = *clean(&t.Request)
+	if t.With.Kind != 0 {
+		t.With = *clean(&t.With)
+	}
 	t.Expect = *clean(&t.Expect)
 	return t
 }

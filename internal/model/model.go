@@ -1,49 +1,30 @@
 package model
 
+import "strings"
+
 type Config struct {
 	Version         int                     `yaml:"version"`
 	Project         string                  `yaml:"project"`
 	Manifest        string                  `yaml:"manifest"`
 	ProtectedOwners []string                `yaml:"protected_owners"`
 	ProtectedPaths  []string                `yaml:"protected_paths"`
-	Adapters        map[string]string       `yaml:"adapters"`
-	Connections     Connections             `yaml:"connections"`
+	Drivers         map[string]DriverConfig `yaml:"drivers"`
 	Identities      map[string]IdentityType `yaml:"identities"`
-	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
-	Readiness       *Readiness              `yaml:"readiness"`
 	TimeLimits      *TimeLimits             `yaml:"time_limits"`
 	Redaction       *Redaction              `yaml:"redaction"`
-
-	Secrets []string      `yaml:"secrets"`
-	Report  *ReportPolicy `yaml:"report"`
+	Secrets         []string                `yaml:"secrets"`
+	Report          *ReportPolicy           `yaml:"report"`
 }
 
-type Connections struct {
-	Postgres map[string]PostgresPolicy `yaml:"postgres"`
-}
-
-type PostgresPolicy struct {
-	Schemas []string `yaml:"schemas"`
-	Objects []string `yaml:"objects"`
+type DriverConfig struct {
+	Official string `yaml:"official"`
+	Policy   any    `yaml:"policy"`
 }
 
 type IdentityType struct {
-	Type string `yaml:"type"`
-
-	Variants []string `yaml:"variants"`
-
+	Type             string   `yaml:"type"`
+	Variants         []string `yaml:"variants"`
 	AcceptedVariants []string `yaml:"accepted_variants"`
-}
-
-type IdentityCheck struct {
-	Path   string `yaml:"path"`
-	UserID string `yaml:"user_id"`
-}
-
-type Readiness struct {
-	Path           string   `yaml:"path"`
-	Checks         []string `yaml:"checks"`
-	StartupTimeout string   `yaml:"startup_timeout"`
 }
 
 type TimeLimits struct {
@@ -54,7 +35,6 @@ type TimeLimits struct {
 
 type Redaction struct {
 	JSONPaths []string `yaml:"json_paths"`
-	Headers   []string `yaml:"headers"`
 }
 
 type ReportPolicy struct {
@@ -80,68 +60,77 @@ type Spec struct {
 }
 
 type Scenario struct {
-	ID                       string `yaml:"id"`
-	Name                     string `yaml:"name"`
-	RequirementIsOperational bool   `yaml:"requirement_is_operational"`
-	Setup                    []Step `yaml:"setup"`
-	Steps                    []Step `yaml:"steps"`
+	ID    string `yaml:"id"`
+	Name  string `yaml:"name"`
+	Setup []Step `yaml:"setup"`
+	Steps []Step `yaml:"steps"`
 
 	Case *TableCase `yaml:"-"`
 }
 
 type Step struct {
-	ID      string   `yaml:"id"`
-	Request *Request `yaml:"request"`
-	Verify  *Verify  `yaml:"verify"`
-	Expect  *Expect  `yaml:"expect"`
-
-	Save map[string]string `yaml:"save"`
-
-	NoStateCheck string `yaml:"no_state_check"`
-
-	Waive map[string]string `yaml:"waive"`
+	ID           string            `yaml:"id"`
+	Do           string            `yaml:"do"`
+	Identity     string            `yaml:"identity"`
+	Variant      string            `yaml:"variant"`
+	With         any               `yaml:"with"`
+	Expect       *Expect           `yaml:"expect"`
+	Eventually   *Within           `yaml:"eventually"`
+	Consistently *Window           `yaml:"consistently"`
+	Never        *Window           `yaml:"never"`
+	Save         map[string]string `yaml:"save"`
+	NoStateCheck string            `yaml:"no_state_check"`
+	Waive        map[string]string `yaml:"waive"`
 }
 
-type Verify struct {
-	Postgres *PostgresCheck `yaml:"postgres"`
+type Within struct {
+	Within string `yaml:"within" json:"within"`
+	Every  string `yaml:"every" json:"every,omitempty"`
 }
 
-type PostgresCheck struct {
-	Connection string      `yaml:"connection"`
-	Query      string      `yaml:"query"`
-	Args       []any       `yaml:"args"`
-	Expect     *RowsExpect `yaml:"expect"`
-}
-
-type RowsExpect struct {
-	Rows     *int           `yaml:"rows"`
-	FirstRow map[string]any `yaml:"first_row"`
-}
-
-type Request struct {
-	Method   string `yaml:"method"`
-	Path     string `yaml:"path"`
-	Identity string `yaml:"identity"`
-
-	Credential string            `yaml:"credential"`
-	Headers    map[string]string `yaml:"headers"`
-	Query      map[string]string `yaml:"query"`
-	Body       any               `yaml:"body"`
+type Window struct {
+	For   string `yaml:"for" json:"for"`
+	Every string `yaml:"every" json:"every,omitempty"`
 }
 
 type Expect struct {
-	Status  *int              `yaml:"status"`
-	JSON    map[string]any    `yaml:"json"`
-	Headers map[string]string `yaml:"headers"`
+	Equal     map[string]any            `yaml:"equal" json:"equal,omitempty"`
+	Present   []string                  `yaml:"present" json:"present,omitempty"`
+	Absent    []string                  `yaml:"absent" json:"absent,omitempty"`
+	Keys      map[string][]string       `yaml:"keys" json:"keys,omitempty"`
+	Length    map[string]any            `yaml:"length" json:"length,omitempty"`
+	Unordered map[string][]any          `yaml:"unordered" json:"unordered,omitempty"`
+	Any       map[string]map[string]any `yaml:"any" json:"any,omitempty"`
+	None      map[string]map[string]any `yaml:"none" json:"none,omitempty"`
+}
 
-	Present []string `yaml:"present"`
-	Absent  []string `yaml:"absent"`
+func (e *Expect) Count() int {
+	if e == nil {
+		return 0
+	}
+	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None)
+}
 
-	Length map[string]any `yaml:"length"`
+type StepRef struct {
+	Spec, Scenario, Phase string
+	Index                 int
+}
 
-	AbsentHeaders []string `yaml:"absent_headers"`
+type StepInfo struct {
+	Kind                     string
+	Destructive, FixedTarget bool
+	Refs                     []string
+	Problems                 []Problem
+}
 
-	HeaderSets map[string][]string `yaml:"header_sets"`
+type Problem struct {
+	Rule, Message, Path string
+}
 
-	Keys map[string][]string `yaml:"keys"`
+func SplitDo(do string) (driver, op string, ok bool) {
+	driver, op, found := strings.Cut(do, ".")
+	if !found || driver == "" || op == "" {
+		return "", "", false
+	}
+	return driver, op, true
 }
