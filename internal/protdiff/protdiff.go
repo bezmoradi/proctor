@@ -367,6 +367,9 @@ func stepAssertions(st model.Step) []string {
 		for _, h := range ex.AbsentHeaders {
 			out = append(out, "absent_header "+strings.ToLower(h))
 		}
+		for k := range ex.HeaderSets {
+			out = append(out, "header_set "+strings.ToLower(k))
+		}
 	}
 	if st.Verify != nil && st.Verify.Postgres != nil && st.Verify.Postgres.Expect != nil {
 		ex := st.Verify.Postgres.Expect
@@ -486,6 +489,16 @@ func stepChanges(b, h model.Step) []ExpectationChange {
 			for hk, w := range h.Expect.Headers {
 				if strings.EqualFold(k, hk) {
 					diff("header "+k, v, w)
+				}
+			}
+		}
+		for k, v := range b.Expect.HeaderSets {
+			for hk, w := range h.Expect.HeaderSets {
+				if strings.EqualFold(k, hk) {
+					bs, hs := append([]string{}, v...), append([]string{}, w...)
+					sort.Strings(bs)
+					sort.Strings(hs)
+					diff("header_set "+k, bs, hs)
 				}
 			}
 		}

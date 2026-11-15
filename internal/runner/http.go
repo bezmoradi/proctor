@@ -164,6 +164,35 @@ func (r *Runner) httpStep(ctx context.Context, st model.Step, sr StepResult, var
 			return Assertion{Result: Pass}
 		})
 	}
+	for _, name := range sortedKeys(ex.HeaderSets) {
+		want := make([]string, 0, len(ex.HeaderSets[name]))
+		for _, v := range ex.HeaderSets[name] {
+			t, err := vars.Text(v, nil)
+			if err != nil {
+				return errorf(CauseInvalidRequest, "header_sets %s: %v", name, err)
+			}
+			want = append(want, t)
+		}
+		var got []string
+		for _, line := range resp.Header.Values(name) {
+			for _, part := range strings.Split(line, ",") {
+				got = append(got, strings.TrimSpace(part))
+			}
+		}
+		sort.Strings(want)
+		sort.Strings(got)
+		a := Assertion{Kind: "header_set", Target: name, Expected: want, Actual: got, Present: len(got) > 0, Result: Pass}
+		switch {
+		case len(got) == 0:
+			a.Result, a.Actual, a.Message = Fail, nil, "header not present"
+		case strings.Join(got, "\x00") != strings.Join(want, "\x00"):
+			a.Result, a.Message = Fail, "header values differ (order ignored)"
+		}
+		if r.redactH[strings.ToLower(name)] {
+			a.Expected, a.Actual = redacted, redacted
+		}
+		add(a)
+	}
 	for _, h := range ex.AbsentHeaders {
 		a := Assertion{Kind: "absent_header", Target: h, Result: Pass}
 		if vals := resp.Header.Values(h); len(vals) > 0 {

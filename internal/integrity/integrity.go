@@ -453,7 +453,9 @@ func isStateCheck(st model.Step) bool {
 	return s != 401 && s != 403
 }
 
-var waivable = map[string]bool{"FIX-05": true, "HTTP-09": true}
+var waivable = map[string]bool{"FIX-05": true, "HTTP-09": true, "EXE-09": true}
+
+var destructive = map[string]bool{"PUT": true, "PATCH": true, "DELETE": true}
 
 func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 	all := append(append([]model.Step{}, sc.Setup...), sc.Steps...)
@@ -475,6 +477,16 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 			}
 		}
 		unfiltered := st.Request != nil && st.Request.Method == "GET" && st.Expect != nil && len(st.Expect.Length) > 0 && len(st.Request.Query) == 0
+		unguarded := false
+		if st.Request != nil && destructive[st.Request.Method] && !strings.Contains(st.Request.Path, "${") {
+			unguarded = true
+			for _, earlier := range all[:i] {
+				if earlier.Verify != nil && earlier.Verify.Postgres != nil {
+					unguarded = false
+					break
+				}
+			}
+		}
 		rules := make([]string, 0, len(st.Waive))
 		for rule := range st.Waive {
 			rules = append(rules, rule)
@@ -484,10 +496,10 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 			reason := st.Waive[rule]
 			switch {
 			case !waivable[rule]:
-				r.add(Invalid, "EXE-07", p, "%s step %s: waive names %q; only FIX-05 and HTTP-09 can be waived (EXE-07 uses no_state_check)", where, st.ID, rule)
+				r.add(Invalid, "EXE-07", p, "%s step %s: waive names %q; only FIX-05, HTTP-09 and EXE-09 can be waived (EXE-07 uses no_state_check)", where, st.ID, rule)
 			case strings.TrimSpace(reason) == "":
 				r.add(Invalid, rule, p, "%s step %s: the %s waiver must state a reason", where, st.ID, rule)
-			case rule == "FIX-05" && !fired["FIX-05"], rule == "HTTP-09" && !unfiltered:
+			case rule == "FIX-05" && !fired["FIX-05"], rule == "HTTP-09" && !unfiltered, rule == "EXE-09" && !unguarded:
 				r.add(Invalid, rule, p, "%s step %s: waives %s, but the rule doesn't apply to this step; remove the waiver", where, st.ID, rule)
 			}
 		}
@@ -495,6 +507,9 @@ func (r *Report) checkRunScoped(p, where string, sc model.Scenario) {
 			for _, m := range msgs {
 				r.add(Invalid, "FIX-05", p, "%s", m)
 			}
+		}
+		if unguarded && strings.TrimSpace(st.Waive["EXE-09"]) == "" {
+			r.add(Invalid, "EXE-09", p, "%s step %s sends %s to the fixed path %s, which the scenario didn't create and may hold data that isn't the test's; check it in the database first (an earlier verify.postgres step, for example that the id doesn't exist), use a path with a saved value or ${run.id}, or waive EXE-09 with the reason it's safe", where, st.ID, st.Request.Method, st.Request.Path)
 		}
 		if unfiltered && strings.TrimSpace(st.Waive["HTTP-09"]) == "" {
 			r.add(Invalid, "HTTP-09", p, "%s step %s asserts a list length on a request with no query parameters; the list may include records the scenario didn't create (filter the request, or waive HTTP-09 with the reason it can't)", where, st.ID)
@@ -745,6 +760,37 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 			r.add(Invalid, "HTTP-08", p, "%s: %s is both absent and given a length", where, k)
 		}
 	}
+	for _, name := range sortedKeys(st.Expect.HeaderSets) {
+		vals := st.Expect.HeaderSets[name]
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " :\r\n") {
+			r.add(Invalid, "HTTP-08", p, "%s: header_sets: invalid header name %q", where, name)
+		}
+		for other := range st.Expect.Headers {
+			if strings.EqualFold(other, name) {
+				r.add(Invalid, "HTTP-08", p, "%s: header %s is in both headers and header_sets", where, name)
+			}
+		}
+		for _, h := range st.Expect.AbsentHeaders {
+			if strings.EqualFold(h, name) {
+				r.add(Invalid, "HTTP-08", p, "%s: header %s is both in header_sets and absent", where, name)
+			}
+		}
+		if len(vals) == 0 {
+			r.add(Invalid, "HTTP-08", p, "%s: header_sets.%s needs at least one value", where, name)
+		}
+		seen := map[string]bool{}
+		for _, v := range vals {
+			switch {
+			case strings.TrimSpace(v) != v || v == "":
+				r.add(Invalid, "HTTP-08", p, "%s: header_sets.%s: value %q is empty or has spaces around it", where, name, v)
+			case strings.ContainsAny(v, ",\r\n"):
+				r.add(Invalid, "HTTP-08", p, "%s: header_sets.%s: value %q can't contain a comma or line break; list each value separately", where, name, v)
+			case seen[v]:
+				r.add(Invalid, "HTTP-08", p, "%s: header_sets.%s lists %q twice", where, name, v)
+			}
+			seen[v] = true
+		}
+	}
 	for _, h := range st.Expect.AbsentHeaders {
 		if strings.TrimSpace(h) == "" || strings.ContainsAny(h, " :\r\n") {
 			r.add(Invalid, "HTTP-08", p, "%s: absent_headers: invalid header name %q", where, h)
@@ -755,7 +801,15 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 			}
 		}
 	}
-	r.checkRefs(p, where, saved, st.Expect.JSON, st.Expect.Headers, st.Expect.Length)
+	sets := map[string]any{}
+	for k, v := range st.Expect.HeaderSets {
+		list := make([]any, len(v))
+		for i, x := range v {
+			list[i] = x
+		}
+		sets[k] = list
+	}
+	r.checkRefs(p, where, saved, st.Expect.JSON, st.Expect.Headers, st.Expect.Length, sets)
 	for _, name := range sortedKeys(st.Save) {
 		if !expr.VarName(name) {
 			r.add(Invalid, "EXE-02", p, "%s: save name %q must be a letter or _ followed by letters, digits or _", where, name)
@@ -773,7 +827,7 @@ func (r *Report) validateStep(p, where string, st model.Step, setup bool, c *mod
 	}()
 	if !setup && status >= 200 && status < 300 && len(st.Expect.JSON) == 0 && len(st.Expect.Headers) == 0 &&
 		len(st.Expect.Present) == 0 && len(st.Expect.Absent) == 0 && len(st.Expect.Length) == 0 && len(st.Expect.Keys) == 0 &&
-		len(st.Expect.AbsentHeaders) == 0 {
+		len(st.Expect.AbsentHeaders) == 0 && len(st.Expect.HeaderSets) == 0 {
 		r.add(Invalid, "EXE-03", p, "%s: a verification step expecting %d must also assert a body field or header", where, status)
 	}
 }

@@ -32,6 +32,16 @@ type Error struct {
 	Class    ErrorClass
 	SQLState string
 	Msg      string
+	Lasting  bool
+}
+
+func Lasting(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Lasting
+}
+
+func lastingState(code string) bool {
+	return strings.HasPrefix(code, "28") || code == "3D000" || code == "42501"
 }
 
 func (e *Error) Error() string {
@@ -73,7 +83,7 @@ func Open(ctx context.Context, name, dsn string, schemas []string, timeout time.
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 
-		return nil, &Error{Class: Unreachable, Msg: fmt.Sprintf("connection %s: the connection string doesn't parse", name)}
+		return nil, &Error{Class: Unreachable, Msg: fmt.Sprintf("connection %s: the connection string doesn't parse", name), Lasting: true}
 	}
 	cfg.ConnectTimeout = timeout
 	if cfg.RuntimeParams == nil {
@@ -85,7 +95,9 @@ func Open(ctx context.Context, name, dsn string, schemas []string, timeout time.
 	defer cancel()
 	c, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
-		return nil, classify(ctx, err, "connection "+name)
+		e := classify(ctx, err, "connection "+name)
+		e.Lasting = lastingState(e.SQLState)
+		return nil, e
 	}
 	quoted := make([]string, len(schemas))
 	for i, s := range schemas {

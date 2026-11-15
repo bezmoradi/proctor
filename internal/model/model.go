@@ -141,5 +141,7 @@ type Expect struct {
 
 	AbsentHeaders []string `yaml:"absent_headers"`
 
+	HeaderSets map[string][]string `yaml:"header_sets"`
+
 	Keys map[string][]string `yaml:"keys"`
 }

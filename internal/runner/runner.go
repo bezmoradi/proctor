@@ -702,6 +702,9 @@ func (r *Runner) waitReady(ctx context.Context) error {
 				}
 				c.Close()
 			}
+			if postgres.Lasting(err) {
+				return fmt.Errorf("%v; not retried, because waiting won't fix it", err)
+			}
 			if err := pause(err.Error()); err != nil {
 				return err
 			}
