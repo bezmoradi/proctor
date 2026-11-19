@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -38,9 +40,17 @@ type Weakening struct {
 	Scenario       string `json:"scenario"`
 	Step           string `json:"step,omitempty"`
 	Driver         string `json:"driver,omitempty"`
+	Mutant         string `json:"mutant,omitempty"`
+	Coverage       string `json:"coverage,omitempty"`
 	Kind           string `json:"kind"`
 	Detail         string `json:"detail"`
 	AssertionsLost int    `json:"assertions_lost"`
+}
+
+type DriverChange struct {
+	Driver string `json:"driver"`
+	Kind   string `json:"kind"`
+	Detail string `json:"detail"`
 }
 
 type ExpectationChange struct {
@@ -49,6 +59,8 @@ type ExpectationChange struct {
 	What     string `json:"what"`
 	From     string `json:"from"`
 	To       string `json:"to"`
+
+	approvedFile bool
 }
 
 type AssertionMove struct {
@@ -65,6 +77,7 @@ type Result struct {
 	Files        []FileChange        `json:"files"`
 	Scenarios    []ScenarioChange    `json:"scenarios"`
 	Weakenings   []Weakening         `json:"weakenings"`
+	Drivers      []DriverChange      `json:"driver_changes"`
 	Expectations []ExpectationChange `json:"expectation_changes"`
 	Moves        []AssertionMove     `json:"assertion_moves"`
 
@@ -163,7 +176,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	sort.Slice(res.Files, func(i, j int) bool { return res.Files[i].Path < res.Files[j].Path })
 
-	res.Weakenings, res.Expectations, res.Moves = []Weakening{}, []ExpectationChange{}, []AssertionMove{}
+	res.Weakenings, res.Expectations, res.Moves, res.Drivers = []Weakening{}, []ExpectationChange{}, []AssertionMove{}, []DriverChange{}
 	bc, bFound, err := readConfig(repo, bt, configPath)
 	if err != nil {
 		return nil, err
@@ -174,47 +187,78 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	}
 	switch {
 	case bc != nil && hc != nil:
-		res.Weakenings = append(res.Weakenings, compareDrivers(bc, hc)...)
+		ws, ds := compareDrivers(bc, hc)
+		res.Weakenings = append(res.Weakenings, ws...)
+		res.Drivers = append(res.Drivers, ds...)
 		res.Weakenings = append(res.Weakenings, compareConfig(bc, hc)...)
+		mw, err := compareMutation(repo, bt, ht, bc, hc, configPath)
+		if err != nil {
+			return nil, err
+		}
+		res.Weakenings = append(res.Weakenings, mw...)
+		cw, err := compareCoverage(repo, bt, ht, bc, hc, configPath)
+		if err != nil {
+			return nil, err
+		}
+		res.Weakenings = append(res.Weakenings, cw...)
+		res.Weakenings = append(res.Weakenings, compareScrub(bc, hc)...)
+		res.Weakenings = append(res.Weakenings, compareApprovedLogs(bc, hc)...)
+	case hc != nil && !bFound:
+		ws, ds := compareDrivers(&model.Config{}, hc)
+		res.Weakenings = append(res.Weakenings, ws...)
+		res.Drivers = append(res.Drivers, ds...)
+		res.Weakenings = append(res.Weakenings, compareRelations(&model.Config{}, hc)...)
 	case bFound && hFound && (bt[configPath].OID != ht[configPath].OID || bt[configPath].Mode != ht[configPath].Mode):
 		res.Weakenings = append(res.Weakenings, Weakening{Kind: "not_analysed",
 			Detail: configPath + " changed but one side doesn't decode as a version 2 configuration, so its drivers weren't compared; read the file diff"})
 	}
 
-	bs, bUnparsed, err := scenarios(repo, bt, root, configPath)
+	bs, bUnparsed, err := scenarios(repo, bt, root, configPath, mutantsPath(bc, configPath))
 	if err != nil {
 		return nil, err
 	}
-	hs, hUnparsed, err := scenarios(repo, ht, root, configPath)
+	hs, hUnparsed, err := scenarios(repo, ht, root, configPath, mutantsPath(hc, configPath))
 	if err != nil {
 		return nil, err
 	}
 	res.Unparsed = dedupe(append(bUnparsed, hUnparsed...))
 	res.Scenarios = compareScenarios(bs, hs)
 	logTables := map[string]bool{}
+	transcriptTables := map[string]bool{}
+	logOptTables := map[string]bool{}
 	for _, c := range res.Scenarios {
 		b, h := bs[c.ID].typed, hs[c.ID].typed
+		if c.Change == "modified" || c.Modified {
+			res.Weakenings = append(res.Weakenings, transcriptDropped(c, b, h, hs[c.ID].file, transcriptTables)...)
+			res.Weakenings = append(res.Weakenings, approvedLogDropped(c, b, h, hs[c.ID].file, logOptTables)...)
+		}
 		if (c.Change == "modified" || c.Modified) && b != nil && h != nil {
 			switch {
 			case b.Case == nil && h.Case == nil:
 				res.Weakenings = append(res.Weakenings, compareExpectLogs(c.ID, b.ExpectLogs, h.ExpectLogs)...)
 			case b.Case != nil && h.Case != nil:
-				key := hs[c.ID].file + "\x00" + h.Case.Table
+				key := hs[c.ID].file + "\x00" + h.Case.Key
 				if !logTables[key] {
 					logTables[key] = true
-					res.Weakenings = append(res.Weakenings, compareExpectLogs("table "+h.Case.Table, b.ExpectLogs, h.ExpectLogs)...)
+					res.Weakenings = append(res.Weakenings, compareExpectLogs("table "+h.Case.Label(), b.ExpectLogs, h.ExpectLogs)...)
 				}
 			}
 		}
 		switch {
 		case c.Change == "removed" && b != nil && b.Case != nil:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "table_row_removed",
-				Detail: "row " + c.ID + " of table " + b.Case.Table + " and its assertions were removed", AssertionsLost: scenarioAssertions(b)})
+				Detail: "row " + c.ID + " of table " + b.Case.Label() + " and its assertions were removed", AssertionsLost: scenarioAssertions(b)})
 		case c.Change == "removed" && b != nil:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "scenario_removed",
 				Detail: "the scenario and all its assertions were removed", AssertionsLost: scenarioAssertions(b)})
 		case c.Change == "removed":
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "scenario_removed", Detail: "the scenario was removed"})
+		case c.Change == "added" && h != nil && h.Case != nil:
+			res.Weakenings = append(res.Weakenings, addedRowWaivers(c.ID, h)...)
+		case c.Change == "added" && h != nil:
+			for _, st := range append(append(append([]model.Step(nil), h.Setup...), h.Steps...), h.Cleanup...) {
+				res.Weakenings = append(res.Weakenings, addedStepWaivers(c.ID, st, "the scenario is added")...)
+			}
 		case (c.Change == "modified" || c.Modified) && b != nil && h != nil:
 			w, e, m := compareSteps(c.ID, b, h)
 			res.Weakenings = append(res.Weakenings, w...)
@@ -225,6 +269,16 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 				Detail: "the scenario changed but one side doesn't decode as a specification; read the file diff"})
 		}
 	}
+	files, err := bodyFileChanges(bodyFileSide{repo: repo, tree: bt, cfg: bc, root: root}, bodyFileSide{repo: repo, tree: ht, cfg: hc, root: root}, bs, hs)
+	if err != nil {
+		return nil, err
+	}
+	res.Expectations = append(res.Expectations, files...)
+	approved, err := approvedChanges(repo, bt, ht, configPath)
+	if err != nil {
+		return nil, err
+	}
+	res.Expectations = append(res.Expectations, approved...)
 	return res, nil
 }
 
@@ -234,13 +288,12 @@ type scenarioVersion struct {
 	typed *model.Scenario
 }
 
-func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath string) (map[string]scenarioVersion, []string, error) {
+func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath, mutants string) (map[string]scenarioVersion, []string, error) {
 	out := map[string]scenarioVersion{}
 	var unparsed []string
 	for _, p := range sortedKeys(tree) {
 		e := tree[p]
-		if !strings.HasPrefix(p, root+"/") || !(strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) ||
-			p == configPath || strings.HasPrefix(p, root+"/environments/") || !e.Regular() {
+		if !scenarioFile(p, e, root, configPath, mutants) {
 			continue
 		}
 		data, err := repo.Blob(e.OID)
@@ -270,7 +323,8 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 		var spec model.Spec
 		if strictyaml.Decode(data, &spec) == nil {
-			if len(spec.ExpandTables(strictyaml.Decode)) > 0 {
+			expandProblems, pathProblems := spec.ExpandTables(strictyaml.Decode), spec.CanonicalPaths()
+			if len(expandProblems) > 0 || len(pathProblems) > 0 {
 				unparsed = append(unparsed, p)
 			}
 			for i := range spec.Scenarios {
@@ -288,6 +342,11 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 	}
 	return out, unparsed, nil
+}
+
+func scenarioFile(p string, e gitrepo.Entry, root, configPath, mutants string) bool {
+	return strings.HasPrefix(p, root+"/") && (strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) &&
+		p != configPath && p != mutants && !strings.HasPrefix(p, root+"/environments/") && !strings.HasPrefix(p, approvedRoot(configPath)) && e.Regular()
 }
 
 func compareScenarios(base, head map[string]scenarioVersion) []ScenarioChange {
@@ -355,8 +414,9 @@ func readConfig(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, configPath st
 	return &cfg, true, nil
 }
 
-func compareDrivers(b, h *model.Config) []Weakening {
+func compareDrivers(b, h *model.Config) ([]Weakening, []DriverChange) {
 	var out []Weakening
+	var added []DriverChange
 	for _, name := range sortedKeys(b.Drivers) {
 		hd, ok := h.Drivers[name]
 		if !ok {
@@ -365,15 +425,299 @@ func compareDrivers(b, h *model.Config) []Weakening {
 		bd := b.Drivers[name]
 		if bd.Official != hd.Official {
 			out = append(out, Weakening{Driver: name, Kind: "driver_origin_changed",
-				Detail: fmt.Sprintf("driver %s: official %s became official %s; every step that names %s now runs another program",
-					name, orNone(bd.Official), orNone(hd.Official), name)})
+				Detail: fmt.Sprintf("official %s became official %s; every step that names %s now runs another program",
+					orNone(bd.Official), orNone(hd.Official), name)})
 		}
-		if bp, hp := canonical(bd.Policy), canonical(hd.Policy); bp != hp {
+		bp, hp := resolvedPolicy(b, name), resolvedPolicy(h, name)
+		if bd.PolicyFrom != hd.PolicyFrom {
+			group := fmt.Sprintf("its steps no longer share state checks with driver %s's", bd.PolicyFrom)
+			if hd.PolicyFrom != "" {
+				group = fmt.Sprintf("its steps now share state checks with driver %s's", hd.PolicyFrom)
+			}
 			out = append(out, Weakening{Driver: name, Kind: "driver_policy_changed",
-				Detail: fmt.Sprintf("driver %s: policy %s became %s; judge whether the driver may now touch more", name, bp, hp)})
+				Detail: fmt.Sprintf("policy_from %s became %s, so its policy %s became %s, and %s; judge whether the driver may now touch more", orNone(bd.PolicyFrom), orNone(hd.PolicyFrom), canonical(bp), canonical(hp), group)})
+			continue
+		}
+		if hd.PolicyFrom != "" {
+			continue
+		}
+		if canonical(bp) == canonical(hp) {
+			continue
+		}
+		if gained, declared, ok := httpPolicyGained(name, bd.Official, hd.Official, bp, hp); ok {
+			out = append(out, gained...)
+			added = append(added, declared...)
+			continue
+		}
+		if changed, ok := dockerScopeChanged(name, model.DriverConfig{Official: bd.Official, Policy: bp}, model.DriverConfig{Official: hd.Official, Policy: hp}); ok {
+			out = append(out, changed...)
+			continue
+		}
+		out = append(out, Weakening{Driver: name, Kind: "driver_policy_changed",
+			Detail: fmt.Sprintf("policy %s became %s; judge whether the driver may now touch more", canonical(bp), canonical(hp))})
+	}
+	for _, name := range sortedKeys(h.Drivers) {
+		if _, inBase := b.Drivers[name]; inBase {
+			continue
+		}
+		hd := h.Drivers[name]
+		hp := resolvedPolicy(h, name)
+		from := ""
+		if hd.PolicyFrom != "" {
+			from = fmt.Sprintf(" (policy_from %s, so it shares state checks with it)", hd.PolicyFrom)
+		}
+		added = append(added, DriverChange{Driver: name, Kind: "driver_added",
+			Detail: fmt.Sprintf("official %s with policy %s%s; its steps may touch what this policy allows", orNone(hd.Official), canonical(hp), from)})
+		if gained, declared, ok := httpPolicyGained(name, officialHTTP, hd.Official, nil, hp); ok {
+			out = append(out, gained...)
+			added = append(added, declared...)
 		}
 	}
-	return out
+	return out, added
+}
+
+func resolvedPolicy(c *model.Config, name string) any {
+	if p, err := c.PolicyOf(name); err == nil {
+		return p
+	}
+	return c.Drivers[name].Policy
+}
+
+const (
+	officialHTTP   = "http"
+	officialDocker = "docker"
+)
+
+func dockerScopeChanged(name string, b, h model.DriverConfig) ([]Weakening, bool) {
+	if b.Official != officialDocker || h.Official != officialDocker {
+		return nil, false
+	}
+	was, ok := dockerScope(b.Policy)
+	if !ok {
+		return nil, false
+	}
+	now, ok := dockerScope(h.Policy)
+	if !ok {
+		return nil, false
+	}
+	out := []Weakening{}
+	for _, e := range now {
+		if !containsString(was, e) {
+			out = append(out, Weakening{Driver: name, Kind: "docker_scope_widened",
+				Detail: fmt.Sprintf("docker scope gained %s: specifications can now read objects carrying it", e)})
+		}
+	}
+	for _, e := range was {
+		if !containsString(now, e) {
+			out = append(out, Weakening{Driver: name, Kind: "docker_scope_narrowed",
+				Detail: fmt.Sprintf("docker scope lost %s: absence checks now pass for objects carrying only it", e)})
+		}
+	}
+	return out, true
+}
+
+func dockerScope(policy any) ([]string, bool) {
+	pol, isObject := policy.(map[string]any)
+	if !isObject || len(pol) != 1 {
+		return nil, false
+	}
+	entries, isList := pol["scope"].([]any)
+	if !isList {
+		return nil, false
+	}
+	var out []string
+	for _, e := range entries {
+		entry, isObject := e.(map[string]any)
+		if !isObject || len(entry) != 2 {
+			return nil, false
+		}
+		label, labelIsText := entry["label"].(string)
+		value, valueIsText := entry["value"].(string)
+		if !labelIsText || !valueIsText {
+			return nil, false
+		}
+		out = append(out, label+"="+value)
+	}
+	return out, true
+}
+
+func httpPolicyGained(name, wasOfficial, nowOfficial string, was, now any) ([]Weakening, []DriverChange, bool) {
+	if wasOfficial != officialHTTP || nowOfficial != officialHTTP {
+		return nil, nil, false
+	}
+	wasPol, ok := httpPolicy(was)
+	if !ok {
+		return nil, nil, false
+	}
+	nowPol, ok := httpPolicy(now)
+	if !ok {
+		return nil, nil, false
+	}
+	out := []Weakening{}
+	declared := []DriverChange{}
+	for _, d := range nowPol.destructive {
+		if !containsString(wasPol.destructive, d) {
+			declared = append(declared, DriverChange{Driver: name, Kind: "destructive_declared",
+				Detail: fmt.Sprintf("destructive gained %s: EXE-09 now refuses it on a fixed target unless an earlier related read guards it", d)})
+		}
+	}
+	for _, d := range wasPol.destructive {
+		if !containsString(nowPol.destructive, d) {
+			out = append(out, Weakening{Driver: name, Kind: "destructive_removed",
+				Detail: fmt.Sprintf("destructive lost %s: EXE-09 no longer guards it, so it may act on a target the scenario didn't create without a check", d)})
+		}
+	}
+	for _, r := range nowPol.reads {
+		if !containsString(wasPol.reads, r) {
+			out = append(out, Weakening{Driver: name, Kind: "read_declared",
+				Detail: fmt.Sprintf("%s reads gained %s: its responses now count as state checks after a write, and eventually, consistently and never may repeat it", name, r)})
+		}
+	}
+	for _, s := range nowPol.shows {
+		if !containsString(wasPol.shows, s) {
+			read, act, _ := strings.Cut(s, showsSeparator)
+			out = append(out, Weakening{Driver: name, Kind: "state_check_declared",
+				Detail: fmt.Sprintf("%s now shows %s: its responses count as the state check after a request to %s, which EXE-07 would otherwise refuse as unrelated", read, act, act)})
+		}
+	}
+	if nowPol.maxBody > wasPol.maxBody {
+		out = append(out, Weakening{Driver: name, Kind: "max_body_bytes_higher",
+			Detail: fmt.Sprintf("max_body_bytes %d became %d; its steps may now send larger request bodies (HTTP-14)", wasPol.maxBody, nowPol.maxBody)})
+	}
+	return out, declared, true
+}
+
+const defaultHTTPMaxBody = 16 << 20
+
+const showsSeparator = " shows "
+
+type httpPolicyEntries struct {
+	reads, shows, destructive []string
+	maxBody                   int64
+}
+
+func httpPolicy(policy any) (httpPolicyEntries, bool) {
+	none := httpPolicyEntries{maxBody: defaultHTTPMaxBody}
+	if policy == nil {
+		return none, true
+	}
+	pol, isObject := policy.(map[string]any)
+	if !isObject || len(pol) == 0 {
+		return none, false
+	}
+	for k := range pol {
+		if k != "reads" && k != "shows" && k != "destructive" && k != "max_body_bytes" {
+			return none, false
+		}
+	}
+	maxBody := int64(defaultHTTPMaxBody)
+	if raw, has := pol["max_body_bytes"]; has {
+		n, ok := wholeNumber(raw)
+		if !ok || n < 1 {
+			return none, false
+		}
+		maxBody = n
+	}
+	var reads, shows, destructive []string
+	if raw, has := pol["reads"]; has {
+		entries, isList := raw.([]any)
+		if !isList {
+			return none, false
+		}
+		for _, e := range entries {
+			entry, isObject := e.(map[string]any)
+			if !isObject {
+				return none, false
+			}
+			method, methodIsText := entry["method"].(string)
+			p, pathIsText := entry["path"].(string)
+			_, hasShows := entry["shows"]
+			if !methodIsText || !pathIsText || len(entry) != 2 && !(len(entry) == 3 && hasShows) {
+				return none, false
+			}
+			read := method + " " + p
+			reads = append(reads, read)
+			if hasShows {
+				listed, ok := textList(entry["shows"])
+				if !ok {
+					return none, false
+				}
+				for _, act := range listed {
+					shows = append(shows, read+showsSeparator+act)
+				}
+			}
+		}
+	}
+	if raw, has := pol["shows"]; has {
+		entries, isList := raw.([]any)
+		if !isList {
+			return none, false
+		}
+		for _, e := range entries {
+			entry, isObject := e.(map[string]any)
+			if !isObject || len(entry) != 2 {
+				return none, false
+			}
+			p, pathIsText := entry["path"].(string)
+			acts, ok := textList(entry["acts"])
+			if !pathIsText || !ok {
+				return none, false
+			}
+			for _, act := range acts {
+				shows = append(shows, "GET "+p+showsSeparator+act)
+			}
+		}
+	}
+	if raw, has := pol["destructive"]; has {
+		entries, isList := raw.([]any)
+		if !isList {
+			return none, false
+		}
+		for _, e := range entries {
+			entry, isObject := e.(map[string]any)
+			if !isObject || len(entry) != 2 {
+				return none, false
+			}
+			method, methodIsText := entry["method"].(string)
+			p, pathIsText := entry["path"].(string)
+			if !methodIsText || !pathIsText {
+				return none, false
+			}
+			destructive = append(destructive, method+" "+p)
+		}
+	}
+	return httpPolicyEntries{reads: reads, shows: shows, destructive: destructive, maxBody: maxBody}, true
+}
+
+func wholeNumber(raw any) (int64, bool) {
+	switch n := raw.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint64:
+		if n > 1<<62 {
+			return 0, false
+		}
+		return int64(n), true
+	}
+	return 0, false
+}
+
+func textList(raw any) ([]string, bool) {
+	list, isList := raw.([]any)
+	if !isList {
+		return nil, false
+	}
+	out := make([]string, 0, len(list))
+	for _, e := range list {
+		s, isText := e.(string)
+		if !isText {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 const (
@@ -411,6 +755,9 @@ func compareConfig(b, h *model.Config) []Weakening {
 		if hl.minInterval < bl.minInterval {
 			weaken("min_interval_shorter", "time_limits.min_interval %s became %s; time checks may now sample the target more often", bl.minInterval, hl.minInterval)
 		}
+		if hl.maxCall > bl.maxCall {
+			weaken("max_call_longer", "time_limits.max_call %s became %s; --call-timeout and a step's timeout may now let a call wait longer before it errors", bl.maxCall, hl.maxCall)
+		}
 	}
 	var bp, hp []string
 	if b.Redaction != nil {
@@ -419,12 +766,47 @@ func compareConfig(b, h *model.Config) []Weakening {
 	if h.Redaction != nil {
 		hp = h.Redaction.JSONPaths
 	}
+	headPaths := make([]string, 0, len(hp))
+	for _, jp := range hp {
+		if c, ok := expr.Canonical(jp); ok {
+			jp = c
+		}
+		headPaths = append(headPaths, jp)
+	}
 	for _, jp := range bp {
-		if !containsString(hp, jp) {
+		c, ok := expr.Canonical(jp)
+		if !ok {
+			c = jp
+		}
+		if !containsString(headPaths, c) {
 			weaken("redaction_removed", "redaction.json_paths entry %s was removed; that value is no longer redacted in the evidence", jp)
 		}
 	}
 	out = append(out, compareAppLogs(b.AppLogs, h.AppLogs)...)
+	out = append(out, compareRelations(b, h)...)
+	return out
+}
+
+func compareRelations(b, h *model.Config) []Weakening {
+	was := map[string]bool{}
+	for _, rel := range b.Relations {
+		for _, sh := range rel.Shows {
+			was[rel.Entry(sh)] = true
+		}
+	}
+	var out []Weakening
+	reported := map[string]bool{}
+	for _, rel := range h.Relations {
+		for _, sh := range rel.Shows {
+			e := rel.Entry(sh)
+			if was[e] || reported[e] {
+				continue
+			}
+			reported[e] = true
+			out = append(out, Weakening{Driver: rel.Act.Driver, Kind: "state_check_declared",
+				Detail: fmt.Sprintf("relations gained %s: a read on driver %s of %s now counts as the state check after an act on driver %s on %s, which EXE-07 would otherwise refuse as on another driver; judge whether the act really changes what that read shows", e, sh.Driver, sh.Target, rel.Act.Driver, rel.Act.Target)})
+		}
+	}
 	return out
 }
 
@@ -451,6 +833,24 @@ func compareAppLogs(b, h *model.AppLogs) []Weakening {
 	}
 	if b.MessageKey() != h.MessageKey() {
 		weaken("app_log_field_changed", "app_logs.message_field %s became %s; expect_logs entries are now matched against another field", b.MessageKey(), h.MessageKey())
+	}
+	if b.FormatName() != h.FormatName() {
+		weaken("app_log_field_changed", "app_logs.format %s became %s; lines are now read as another format, and may no longer be seen as errors", b.FormatName(), h.FormatName())
+	}
+	if !b.UnparsedAllowed() && h.UnparsedAllowed() {
+		weaken("app_log_unparsed_allowed", "app_logs.unparsed became allow; a line that doesn't read as %s is now skipped instead of making the scenario ERROR, so an error written in another format passes", h.FormatName())
+	}
+	bn, hn := b.NumberLevels(), h.NumberLevels()
+	for _, n := range slices.Sorted(maps.Keys(bn)) {
+		was, now := bn[n], hn[n]
+		if was == now || !containsString(b.EffectiveLevels(), was) || containsString(hl, now) {
+			continue
+		}
+		if now == "" {
+			weaken("app_log_level_removed", "app_logs.level_numbers no longer maps %d to %s; lines at level %d no longer fail a scenario", n, was, n)
+		} else {
+			weaken("app_log_level_removed", "app_logs.level_numbers maps %d to %s instead of %s; lines at level %d no longer fail a scenario", n, now, was, n)
+		}
 	}
 	return out
 }
@@ -490,15 +890,16 @@ type limits struct {
 	minInterval time.Duration
 	maxSamples  int
 	maxWindow   time.Duration
+	maxCall     time.Duration
 	raw, err    string
 }
 
 func limitsOf(tl *model.TimeLimits) limits {
-	l := limits{minInterval: defaultMinInterval, maxSamples: defaultMaxSamples, maxWindow: defaultMaxWindow, raw: "(defaults)"}
+	l := limits{minInterval: defaultMinInterval, maxSamples: defaultMaxSamples, maxWindow: defaultMaxWindow, maxCall: model.DefaultMaxCall, raw: "(defaults)"}
 	if tl == nil {
 		return l
 	}
-	l.raw = fmt.Sprintf("{min_interval: %s, max_samples: %d, max_window: %s}", orNone(tl.MinInterval), tl.MaxSamples, orNone(tl.MaxWindow))
+	l.raw = fmt.Sprintf("{min_interval: %s, max_samples: %d, max_window: %s, max_call: %s}", orNone(tl.MinInterval), tl.MaxSamples, orNone(tl.MaxWindow), orNone(tl.MaxCall))
 	parse := func(s string, into *time.Duration) {
 		if s == "" {
 			return
@@ -512,6 +913,7 @@ func limitsOf(tl *model.TimeLimits) limits {
 	}
 	parse(tl.MinInterval, &l.minInterval)
 	parse(tl.MaxWindow, &l.maxWindow)
+	parse(tl.MaxCall, &l.maxCall)
 	switch {
 	case tl.MaxSamples < 0:
 		l.err = fmt.Sprint(tl.MaxSamples)
@@ -646,6 +1048,15 @@ func assertionsOf(ex *model.Expect) []assertion {
 	for p, v := range ex.Contains {
 		out = append(out, assertion{matcher: "contains", path: p, value: v, valued: true})
 	}
+	for p, v := range ex.Matches {
+		out = append(out, assertion{matcher: "matches", path: p, value: v, valued: true})
+	}
+	for p, v := range ex.Excludes {
+		out = append(out, assertion{matcher: "excludes", path: p, value: v, valued: true})
+	}
+	for p, v := range ex.Differs {
+		out = append(out, assertion{matcher: "differs", path: p, value: v, valued: true})
+	}
 	for p, c := range ex.Counts {
 		for i, v := range c.All() {
 			out = append(out, assertion{matcher: "count", path: p, value: v, valued: true, claim: i, multi: c.Multi})
@@ -710,19 +1121,24 @@ func scenarioAssertions(sc *model.Scenario) int {
 }
 
 type located struct {
-	step  model.Step
-	setup bool
+	step    model.Step
+	setup   bool
+	cleanup bool
 }
 
 func indexSteps(sc *model.Scenario) (map[string]located, []string) {
 	m := map[string]located{}
 	var order []string
 	for _, st := range sc.Setup {
-		m[st.ID] = located{st, true}
+		m[st.ID] = located{step: st, setup: true}
 		order = append(order, st.ID)
 	}
 	for _, st := range sc.Steps {
-		m[st.ID] = located{st, false}
+		m[st.ID] = located{step: st}
+		order = append(order, st.ID)
+	}
+	for _, st := range sc.Cleanup {
+		m[st.ID] = located{step: st, cleanup: true}
 		order = append(order, st.ID)
 	}
 	return m, order
@@ -762,6 +1178,8 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 		switch {
 		case !ok && bs.setup:
 			d.weaken("setup_step_removed", 0, "a setup step was removed; the scenario's starting state changed")
+		case !ok && bs.cleanup:
+			d.weaken("cleanup_step_removed", lost, "a cleanup step was removed; what it undid now stays after the scenario, where later scenarios may meet it, and its expectations no longer turn a pass into ERROR")
 		case !ok:
 			moves, left := findMoved(id, sid, bm, border, hm, horder, used)
 			if len(moves) == 0 {
@@ -773,9 +1191,17 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 			if len(left) > 0 {
 				d.weaken("assertion_removed", len(left), "the step was removed and no step that makes the same request asserts %s", strings.Join(left, " or "))
 			}
-		case !bs.setup && hs.setup:
+		case !bs.setup && !bs.cleanup && hs.setup:
 			d.weaken("step_moved_to_setup", lost,
 				"a verification step became setup; its expectations no longer count as evidence and a mismatch is ERROR, not FAIL")
+		case !bs.setup && !bs.cleanup && hs.cleanup:
+			d.weaken("step_moved_to_cleanup", lost,
+				"a verification step became cleanup; its expectations no longer count as evidence, a mismatch only turns a pass into ERROR (cleanup_failed) and never fails the scenario, and it now runs after every other step whatever they did")
+		case bs.setup && hs.cleanup:
+			d.weaken("setup_step_removed", 0, "a setup step became cleanup; the scenario's starting state changed, and the step now runs after the scenario's steps")
+		case bs.cleanup && !hs.cleanup:
+			d.change("phase", "cleanup", phaseName(hs))
+			d.compare(bs.step, hs.step, true)
 		default:
 			d.compare(bs.step, hs.step, !bs.setup)
 		}
@@ -783,7 +1209,37 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 		ws = append(ws, d.ws...)
 		es = append(es, d.es...)
 	}
+	for _, sid := range horder {
+		if _, had := bm[sid]; !had {
+			ws = append(ws, addedStepWaivers(id, hm[sid].step, "the step is added")...)
+		}
+	}
 	return ws, es, ms
+}
+
+func phaseName(l located) string {
+	switch {
+	case l.setup:
+		return "setup"
+	case l.cleanup:
+		return "cleanup"
+	}
+	return "verification"
+}
+
+func addedStepWaivers(id string, st model.Step, added string) []Weakening {
+	var out []Weakening
+	if st.NoStateCheck != "" {
+		out = append(out, Weakening{Scenario: id, Step: st.ID, Kind: "state_check_waived",
+			Detail: fmt.Sprintf("%s with no_state_check: %s", added, st.NoStateCheck)})
+	}
+	for _, rule := range sortedKeys(st.Waive) {
+		if w := st.Waive[rule]; w.Covers(id) {
+			out = append(out, Weakening{Scenario: id, Step: st.ID, Kind: "rule_waived",
+				Detail: fmt.Sprintf("%s with %s waived%s: %s", added, rule, rowNote(w, id), w.Reason)})
+		}
+	}
+	return out
 }
 
 func consumed(bm, hm map[string]located) map[string][]bool {
@@ -831,7 +1287,7 @@ func findMoved(scenario, sid string, bm map[string]located, border []string, hm 
 	var candidates []string
 	for _, hid := range horder {
 		hs := hm[hid]
-		if hs.setup || !sameRequest(r, hs.step) || !equalStrings(at, precedingOthers(r, hid, hm, horder)) {
+		if hs.setup || hs.cleanup || !sameRequest(r, hs.step) || !equalStrings(at, precedingOthers(r, hid, hm, horder)) {
 			continue
 		}
 		if r.Never != nil && !sameAssertionSet(assertionsOf(r.Expect), assertionsOf(hs.step.Expect)) {
@@ -946,7 +1402,9 @@ func (d *stepDiff) compare(b, h model.Step, verify bool) {
 	default:
 		d.change("do", b.Do, h.Do)
 	}
-	d.change("changed action", canonical(b.With), canonical(h.With))
+	if canonical(b.With) != canonical(h.With) {
+		d.change("changed action", shownWith(b.With), shownWith(h.With))
+	}
 	d.change("changed action", "as "+orNone(b.As), "as "+orNone(h.As))
 	d.change("changed action", "on "+orNone(b.On), "on "+orNone(h.On))
 	d.change("identity", orNone(b.Identity), orNone(h.Identity))
@@ -958,6 +1416,7 @@ func (d *stepDiff) compare(b, h model.Step, verify bool) {
 	}
 	d.change("save", canonical(b.Save), canonical(h.Save))
 	d.compareTime(b, h)
+	d.compareTimeout(b.Timeout, h.Timeout)
 	d.compareAssertions(b.Expect, h.Expect, verify)
 	switch {
 	case b.NoStateCheck == "" && h.NoStateCheck != "":
@@ -966,14 +1425,55 @@ func (d *stepDiff) compare(b, h model.Step, verify bool) {
 		d.weaken("state_check_waiver_changed", 0, "no_state_check changed from %q to %q", b.NoStateCheck, h.NoStateCheck)
 	}
 	for _, rule := range sortedKeys(h.Waive) {
+		now := h.Waive[rule]
+		if !now.Covers(d.scenario) {
+			continue
+		}
 		was, had := b.Waive[rule]
 		switch {
-		case !had:
-			d.weaken("rule_waived", 0, "%s waived: %s", rule, h.Waive[rule])
+		case !had || !was.Covers(d.scenario):
+			d.weaken("rule_waived", 0, "%s waived%s: %s", rule, rowNote(now, d.scenario), now.Reason)
 		default:
-			d.change("waive "+rule, was, h.Waive[rule])
+			d.change("waive "+rule, waiverText(was), waiverText(now))
 		}
 	}
+}
+
+func addedRowWaivers(id string, h *model.Scenario) []Weakening {
+	var out []Weakening
+	for _, st := range h.Setup {
+		out = append(out, addedStepWaivers(id, st, fmt.Sprintf("row %s of table %s is added, and its setup step runs", id, h.Case.Label()))...)
+	}
+	for _, st := range h.Cleanup {
+		out = append(out, addedStepWaivers(id, st, fmt.Sprintf("row %s of table %s is added, and its cleanup step runs", id, h.Case.Label()))...)
+	}
+	for _, st := range h.Steps {
+		if st.NoStateCheck != "" {
+			out = append(out, Weakening{Scenario: id, Step: st.ID, Kind: "state_check_waived",
+				Detail: fmt.Sprintf("row %s of table %s is added under the table's no_state_check: %s", id, h.Case.Label(), st.NoStateCheck)})
+		}
+		for _, rule := range sortedKeys(st.Waive) {
+			if w := st.Waive[rule]; w.Covers(id) {
+				out = append(out, Weakening{Scenario: id, Step: st.ID, Kind: "rule_waived",
+					Detail: fmt.Sprintf("row %s of table %s is added under the table's %s waiver: %s", id, h.Case.Label(), rule, w.Reason)})
+			}
+		}
+	}
+	return out
+}
+
+func rowNote(w model.Waiver, row string) string {
+	if !w.Listed {
+		return ""
+	}
+	return " in row " + row
+}
+
+func waiverText(w model.Waiver) string {
+	if !w.Listed {
+		return w.Reason
+	}
+	return fmt.Sprintf("rows %s: %s", strings.Join(w.Rows, ", "), w.Reason)
 }
 
 type timing struct {
@@ -1039,6 +1539,26 @@ func (d *stepDiff) compareTime(b, h model.Step) {
 		d.weaken("sampling_sparser", 0, "%s %s became %s; the step samples less often", what, be, hev)
 	case hd != bd:
 		d.change(what, be, hev)
+	}
+}
+
+func (d *stepDiff) compareTimeout(b, h string) {
+	if b == h {
+		return
+	}
+	bd, berr := time.ParseDuration(b)
+	hd, herr := time.ParseDuration(h)
+	switch {
+	case b == "":
+		d.weaken("step_timeout_longer", 0, "timeout %s added; the step may now wait up to %s for each call, where before it had the run's --call-timeout", h, h)
+	case h == "":
+		d.weaken("step_timeout_longer", 0, "timeout %s removed; the step now has the run's --call-timeout, which can be up to time_limits.max_call", b)
+	case berr != nil || herr != nil:
+		d.weaken("step_timeout_longer", 0, "timeout %s became %s, but one side doesn't parse; read the file diff", b, h)
+	case hd > bd:
+		d.weaken("step_timeout_longer", 0, "timeout %s became %s; a slower answer may now pass instead of timing out", b, h)
+	default:
+		d.change("timeout", b, h)
 	}
 }
 
@@ -1148,9 +1668,47 @@ func (d *stepDiff) compareValues(b, h assertion, name string, weaker func(string
 			return
 		}
 		d.change(name, b.shown(), h.shown())
+	case "matches":
+		if b.shown() != h.shown() {
+			weaker("%s's pattern %s became %s; Proctor can't tell whether the new pattern accepts more, so any change counts as weaker", name, b.shown(), h.shown())
+		}
+	case "excludes":
+		bt, _, bok := model.ExcludedTexts(b.value)
+		ht, _, hok := model.ExcludedTexts(h.value)
+		if !bok || !hok {
+			if b.shown() != h.shown() {
+				weaker("%s %s became %s", name, b.shown(), h.shown())
+			}
+			return
+		}
+		var lost []string
+		for _, t := range bt {
+			if !excludedBy(t, ht) {
+				lost = append(lost, canonical(t))
+			}
+		}
+		switch {
+		case len(lost) > 0:
+			weaker("%s no longer excludes %s: %s became %s", name, strings.Join(lost, ", "), b.shown(), h.shown())
+		case b.shown() != h.shown():
+			d.change(name, b.shown(), h.shown())
+		}
+	case "differs":
+		if b.shown() != h.shown() {
+			weaker("%s %s became %s; the value it had to differ from is now allowed", name, b.shown(), h.shown())
+		}
 	default:
 		d.change(name, b.shown(), h.shown())
 	}
+}
+
+func excludedBy(text string, now []string) bool {
+	for _, t := range now {
+		if t != "" && strings.Contains(text, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func coveringEqual(a assertion, h *model.Expect) string {

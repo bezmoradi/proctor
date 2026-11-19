@@ -29,7 +29,7 @@ func (r *Runner) openLogs() *logWindow {
 	return &logWindow{mark: m, err: err}
 }
 
-func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.LogExpectation) *AppLogResult {
+func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.LogExpectation, keep bool) *AppLogResult {
 	if w == nil {
 		return nil
 	}
@@ -56,11 +56,35 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 	for i, e := range expect {
 		index[e.Key()] = i
 	}
+	if keep {
+		res.window, res.kept = win.Lines, true
+	}
+	nonEmpty := 0
+	var tr applogs.Tracker
 	for _, line := range win.Lines {
-		c, ok := r.logRules.Candidate(line)
-		if !ok {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+		rd := r.logRules.Read(line)
+		switch tr.Next(line, rd) {
+		case applogs.LineParsed:
+			res.LinesParsed++
+		case applogs.LineUnparsed:
+			res.UnparsedCount++
+			if res.FirstUnparsed == "" {
+				res.FirstUnparsed = line
+			}
+		}
+		if rd.Unmapped != "" {
+			res.UnmappedCount++
+			if res.FirstUnmapped == "" {
+				res.UnmappedLevel, res.FirstUnmapped = rd.Unmapped, line
+			}
+		}
+		if !rd.Failing {
 			continue
 		}
+		c := rd.Entry
 		if i, allowed := index[strings.ToUpper(c.Level)+"\x00"+c.Message]; allowed {
 			seen[i]++
 			continue
@@ -97,6 +121,31 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 	if len(parts) > 0 {
 		res.Result, res.Message = Fail, strings.Join(parts, "; ")
 	}
+	var errs []string
+	cause := ""
+	switch {
+	case nonEmpty > 0 && res.LinesParsed == 0:
+		cause = CauseAppLogsUnparsed
+		errs = append(errs, fmt.Sprintf("none of the %d line(s) written during the scenario reads as %s with a %q field, so the log wasn't checked; the first is under first_unparsed. Check app_logs.format and app_logs.level_field", nonEmpty, r.logRules.Format, r.logRules.LevelField))
+	case res.UnparsedCount > 0 && !r.logLoose:
+		cause = CauseAppLogsUnparsed
+		errs = append(errs, fmt.Sprintf("%d of the %d line(s) written during the scenario don't read as %s with a %q field, so they weren't checked; the first is under first_unparsed. Fix the line's format, or set app_logs.unparsed: allow", res.UnparsedCount, nonEmpty, r.logRules.Format, r.logRules.LevelField))
+	default:
+		res.FirstUnparsed = ""
+	}
+	if res.UnmappedCount > 0 {
+		if cause == "" {
+			cause = CauseAppLogsUnmapped
+		}
+		errs = append(errs, fmt.Sprintf("%d line(s) have a numeric level that app_logs.level_numbers doesn't map (the first is %s), so they weren't judged; that line is under first_unmapped. Map every number the application writes", res.UnmappedCount, res.UnmappedLevel))
+	}
+	switch {
+	case cause == "":
+	case res.Result == Fail:
+		res.Message = strings.Join(append([]string{res.Message}, errs...), "; ")
+	default:
+		res.Result, res.Cause, res.Message = Error, cause, strings.Join(errs, "; ")
+	}
 	return res
 }
 
@@ -112,10 +161,10 @@ func applyLogs(al *AppLogResult, result *Result, reason, cause *string) {
 	}
 }
 
-func (o *Outcome) applyTableLogs(p, table string, rows []int, al *AppLogResult) {
+func (o *Outcome) applyTableLogs(p, key string, rows []int, al *AppLogResult) {
 	var t *TableResult
 	for i := range o.Tables {
-		if o.Tables[i].ID == table && o.Tables[i].Spec == p {
+		if o.Tables[i].key == key && o.Tables[i].Spec == p {
 			t = &o.Tables[i]
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -97,6 +98,10 @@ Exit codes: 0 passed, 1 failed, 2 error, 3 invalid, 4 integrity violation.`,
 		newIntegrityCmd(stdout, stderr),
 		newDiffCmd(stdout, stderr),
 		newRunCmd(stdout, stderr),
+		newApproveCmd(os.Stdin, stdout, stderr),
+		newLogsCmd(stdout, stderr),
+		newMutateCmd(stdout, stderr),
+		newMutantsCmd(stdout, stderr),
 		newVersionCmd(stdout),
 	)
 	return root

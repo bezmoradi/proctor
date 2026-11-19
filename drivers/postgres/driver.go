@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"proctor/protocol"
+	"proctor/protocol/jsonpath"
 	"proctor/protocol/schema"
 )
 
@@ -240,6 +241,7 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 			add("INT-12", "$.with.connection", "PostgreSQL connection %q is not declared in the driver's policy in proctor.yaml", name)
 		} else {
 			r.Problems = append(r.Problems, d.problems[name]...)
+			r.Targets = []string{name}
 		}
 	}
 	if q, ok := m["query"].(string); ok {
@@ -280,8 +282,8 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		add("EXE-02", "$.save", "a database check can save values only when it expects exactly one row (expect.equal[%q]: 1)", rowCountPath)
 	}
 	for _, name := range sortedNames(p.Save) {
-		if path := p.Save[name]; !strings.HasPrefix(path, firstRowPrefix) || len(path) == len(firstRowPrefix) {
-			add("EXE-02", "$.save", "save %s: %q must name a column of the only row, as %s<column>", name, path, firstRowPrefix)
+		if !firstRowColumn(p.Save[name]) {
+			add("EXE-02", "$.save", "save %s: %q must name a column of the only row, as %s<column> or %s['<column>']", name, p.Save[name], firstRowPrefix, strings.TrimSuffix(firstRowPrefix, "."))
 		}
 	}
 	return r, nil
@@ -291,6 +293,11 @@ const (
 	rowCountPath   = "$.row_count"
 	firstRowPrefix = "$.rows[0]."
 )
+
+func firstRowColumn(path string) bool {
+	segs, err := jsonpath.Parse(path)
+	return err == nil && len(segs) >= 3 && jsonpath.String(segs[:2])+"." == firstRowPrefix && !segs[2].IsIndex
+}
 
 func oneRow(expect any) bool {
 	m, _ := expect.(map[string]any)

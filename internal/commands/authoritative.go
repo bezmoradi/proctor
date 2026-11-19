@@ -28,9 +28,11 @@ import (
 type authOptions struct {
 	c                             common
 	binding, commit, base, prHead string
-	report                        string
+	report, received, repoDir     string
 	callTimeout, readyTimeout     time.Duration
 	progress                      func(runner.Progress)
+	kind, kindSource              string
+	kindGiven, kindSourceGiven    bool
 }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -42,6 +44,7 @@ type authReport struct {
 	Trust            authTrust               `json:"trust"`
 	Provenance       authProvenance          `json:"provenance"`
 	ProtectedChanges *protdiff.Result        `json:"protected_changes"`
+	ChangeKind       *protdiff.KindCheck     `json:"change_kind"`
 	Violations       []string                `json:"violations"`
 	Errors           []string                `json:"errors"`
 	Drivers          []runner.DriverInfo     `json:"drivers"`
@@ -50,6 +53,7 @@ type authReport struct {
 	Summary          *runner.Summary         `json:"summary,omitempty"`
 	Scenarios        []runner.ScenarioResult `json:"scenarios"`
 	Tables           []runner.TableResult    `json:"tables,omitempty"`
+	Received         string                  `json:"received,omitempty"`
 }
 
 type authTrust struct {
@@ -86,21 +90,24 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	if o.binding == "" {
 		fmt.Fprintln(stderr, "proctor run: --binding is required")
-		return exitInvalid
+		return reportRefusal(o.report, true, exitInvalid, "--binding is required", stderr)
 	}
 	repo, err := gitrepo.Open(o.c.repo)
 	if err != nil {
 		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
-		return exitInvalid
+		return reportRefusal(o.report, true, exitInvalid, err.Error(), stderr)
 	}
-	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{}}
-	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{}}
-	ar.Provenance = authProvenance{ProctorVersion: Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		CIRunID: os.Getenv("GITHUB_RUN_ID"), CIRunAttempt: os.Getenv("GITHUB_RUN_ATTEMPT"), Repository: os.Getenv("GITHUB_REPOSITORY")}
+	o.repoDir = repo.Dir()
+	ar := newAuthReport()
 	violate := func(rule, format string, args ...any) {
 		ar.Violations = append(ar.Violations, rule+": "+fmt.Sprintf(format, args...))
 	}
 	invalid := func(format string, args ...any) { ar.Errors = append(ar.Errors, fmt.Sprintf(format, args...)) }
+	if kc, err := protdiff.ParseKind(o.kind, o.kindGiven, o.kindSource, o.kindSourceGiven); err != nil {
+		invalid("CHG-01: %v", err)
+	} else {
+		ar.ChangeKind = kc
+	}
 
 	if inside, err := within(repo.Dir(), o.binding); err != nil {
 		invalid("binding: %v", err)
@@ -189,6 +196,7 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		} else {
 			ar.ProtectedChanges = ch
 			ar.Trust.ApprovalRequired = ch.Count() > 0
+			checkChangeKind(repo, ar, ch, o.c.config, violate)
 		}
 	}
 	if prHead != "" && tested != "" {
@@ -273,16 +281,18 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 
 	data, err := json.MarshalIndent(ar, "", "  ")
 	if err == nil {
-		err = os.WriteFile(o.report, append(data, '\n'), 0o644)
+		err = writePrivate(o.report, append(data, '\n'))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
 		return exitError
 	}
 	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
-		if f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
+		if f, err := openAppend(path); err == nil {
 			writeSummary(f, ar, o.c.config)
 			f.Close()
+		} else {
+			fmt.Fprintf(stderr, "proctor: not writing the job summary: %s\n", safe(err.Error()))
 		}
 	}
 	if o.c.json {
@@ -291,6 +301,35 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	writeAuthoritative(stdout, ar, rep, out)
 	return code
+}
+
+func checkChangeKind(repo *gitrepo.Repo, ar *authReport, ch *protdiff.Result, config string, violate func(rule, format string, args ...any)) {
+	k := ar.ChangeKind
+	if k == nil {
+		return
+	}
+	if err := k.Check(repo, ch, config); err != nil {
+		violate("INT-08", "comparing the protected changes with change kind %s: %v", k.Kind, err)
+		return
+	}
+	for _, m := range k.Mismatches {
+		violate("CHG-02", "change kind %s (%s): %s: %s", k.Kind, k.SourceText(), m.Place, m.Reason)
+	}
+}
+
+func changeKindText(k *protdiff.KindCheck) string {
+	if k == nil {
+		return "invalid (CHG-01)"
+	}
+	return changeKindLine(k)
+}
+
+func newAuthReport() *authReport {
+	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{}}
+	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{}}
+	ar.Provenance = authProvenance{ProctorVersion: Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		CIRunID: os.Getenv("GITHUB_RUN_ID"), CIRunAttempt: os.Getenv("GITHUB_RUN_ATTEMPT"), Repository: os.Getenv("GITHUB_REPOSITORY")}
+	return ar
 }
 
 func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
@@ -311,6 +350,12 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 	if se != nil {
 		return refused(se), nil
 	}
+	if ar.Provenance.SHA256 == nil {
+		ar.Provenance.SHA256 = map[string]string{}
+	}
+	for k, v := range rep.Hashes {
+		ar.Provenance.SHA256[k] = v
+	}
 	ar.Drivers = drivers
 	for _, f := range rep.Findings[mark:] {
 		msg := f.Rule + ": " + strings.TrimPrefix(f.Path+": ", ": ") + f.Message
@@ -327,12 +372,29 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 		return exitInvalid, nil
 	}
 	opt.Described = info
+	opt.RunID = runner.NewRunID()
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		return refused(asSetupError(err)), nil
 	}
 	defer rn.Close()
+	rd, err := prepareReceived(o.received, o.repoDir, rep, opt.RunID)
+	if err != nil {
+		return refused(&runner.SetupError{ExitCode: pathErrorCode(err), Msgs: []string{"received transcripts: " + err.Error()}}), nil
+	}
+	if rd != nil {
+		rn.SetReceived(rd.write)
+	}
 	out := rn.Run(ctx)
+	if rd != nil {
+		if err := rd.finish(out, rep, "authoritative", rep.Commit); err != nil {
+			ar.Errors = append(ar.Errors, "writing the received transcripts' manifest: "+err.Error())
+			if out.ExitCode == exitOK {
+				out.ExitCode = exitError
+			}
+		}
+		ar.Received = out.Received
+	}
 	ar.Violations = append(ar.Violations, out.Violations...)
 	ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
 	ar.Provenance.RunID = out.RunID
@@ -451,6 +513,7 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 		fmt.Fprintf(w, "Workflow:        unverified\n")
 	}
 	fmt.Fprintf(w, "Workflow changed: %v\n", ar.Trust.WorkflowChanged)
+	fmt.Fprintf(w, "Change kind:     %s\n", changeKindText(ar.ChangeKind))
 	writeDrivers(w, ar.Drivers)
 	if ar.ProtectedChanges != nil {
 		for _, f := range ar.ProtectedChanges.Files {
@@ -481,6 +544,23 @@ func errorLabel(code int) string {
 	return "INVALID  "
 }
 
+func writeKindSummary(w io.Writer, k *protdiff.KindCheck) {
+	switch {
+	case k == nil:
+		fmt.Fprintln(w, "Change kind: invalid (CHG-01).")
+	case k.Source == protdiff.KindFromLabel:
+		fmt.Fprintf(w, "Change kind: %s, from the pull request label %s.\n", code(k.Kind), code(k.Label))
+	case k.Source == protdiff.KindFromFlag:
+		fmt.Fprintf(w, "Change kind: %s, from %s.\n", code(k.Kind), code("--change-kind"))
+	default:
+		fmt.Fprintf(w, "Change kind: %s (not given).\n", code(k.Kind))
+	}
+	fmt.Fprintln(w)
+	if k != nil && len(k.Mismatches) > 0 {
+		fmt.Fprintf(w, "**Change kind %s doesn't match the protected changes** (CHG-02: %s); each mismatch is listed as an integrity violation below.\n\n", code(k.Kind), md(k.Rule))
+	}
+}
+
 func writeSummary(w io.Writer, ar *authReport, config string) {
 	fmt.Fprintf(w, "## Proctor: %s (exit %d)\n\n", strings.ToUpper(ar.Result), ar.ExitCode)
 	p := ar.Provenance
@@ -490,6 +570,7 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 	}
 	fmt.Fprintln(w, ".")
 	fmt.Fprintln(w)
+	writeKindSummary(w, ar.ChangeKind)
 	if len(ar.Drivers) > 0 {
 		fmt.Fprintln(w, "| Driver | Program | Version | Origin | Proofs |\n|---|---|---|---|---|")
 		for _, d := range ar.Drivers {
@@ -514,6 +595,9 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 		fmt.Fprintln(w)
 		for _, f := range ar.ProtectedChanges.Files {
 			fmt.Fprintf(w, "- %s %s\n", md(f.Change), code(f.Path))
+		}
+		for _, d := range ar.ProtectedChanges.Drivers {
+			fmt.Fprintf(w, "- %s %s: %s\n", md(d.Kind), code(d.Driver), md(d.Detail))
 		}
 		for _, wk := range ar.ProtectedChanges.Weakenings {
 			fmt.Fprintf(w, "- weakening in %s: %s\n", md(weakeningPlace(wk, config)), md(wk.Detail))

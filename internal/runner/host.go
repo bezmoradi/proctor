@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"proctor/internal/expr"
+	"proctor/internal/integrity"
 	"proctor/internal/model"
 	"proctor/protocol"
 	"proctor/protocol/schema"
@@ -38,6 +39,7 @@ type host struct {
 	client   *protocol.Client
 	hello    protocol.HelloResult
 	ops      map[string]protocol.Operation
+	entries  map[string]protocol.PolicyEntry
 	proofs   []Proof
 	stderr   string
 	dropped  int64
@@ -49,6 +51,7 @@ type session struct {
 	opt   Options
 	hosts map[string]*host
 	scrub *scrubber
+	files model.ProtectedFiles
 }
 
 func pins() (map[string]string, error) {
@@ -148,7 +151,7 @@ func checkValue(sch any, v any) []string {
 }
 
 func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt Options, s *scrubber) (*session, error) {
-	sess := &session{opt: opt, hosts: map[string]*host{}, scrub: s}
+	sess := &session{opt: opt, hosts: map[string]*host{}, scrub: s, files: cfg.Files()}
 	var probs problems
 	sums, err := pins()
 	if err != nil {
@@ -200,12 +203,24 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 	if err := probs.err(s); err != nil {
 		return nil, err
 	}
+	policies := map[string]any{}
+	for _, h := range sess.ordered() {
+		policy, err := cfg.PolicyOf(h.name)
+		if err != nil {
+			probs.add(ExitInvalid, "proctor.yaml: %v (INT-18)", err)
+			continue
+		}
+		policies[h.name] = policy
+	}
+	if err := probs.err(s); err != nil {
+		return nil, err
+	}
 	for _, h := range sess.ordered() {
 		sec := secrets[h.name]
 		if sec == nil {
 			sec = protocol.Secrets{}
 		}
-		sess.start(ctx, h, cfg.Drivers[h.name].Policy, conns[h.name], sec, &probs)
+		sess.start(ctx, h, policies[h.name], conns[h.name], sec, &probs)
 	}
 	if err := probs.err(s); err != nil {
 		sess.close()
@@ -271,7 +286,8 @@ func (sess *session) start(ctx context.Context, h *host, policy, conn any, secre
 		return
 	}
 	cctx, cancel = sess.callCtx(ctx)
-	err = c.Call(cctx, protocol.MethodConfigure, protocol.ConfigureParams{Policy: policy, Connection: conn, Secrets: secrets}, nil)
+	var configured protocol.ConfigureResult
+	err = c.Call(cctx, protocol.MethodConfigure, protocol.ConfigureParams{Policy: policy, Connection: conn, Secrets: secrets}, &configured)
 	cancel()
 	if err != nil {
 		code := ExitInvalid
@@ -279,7 +295,43 @@ func (sess *session) start(ctx context.Context, h *host, policy, conn any, secre
 			code = ExitError
 		}
 		probs.add(code, "driver %s: configure was refused: %v", h.name, err)
+		return
 	}
+	for _, m := range h.takeEntries(configured.Entries) {
+		probs.add(ExitError, "driver %s: configure: %s", h.name, m)
+	}
+}
+
+func (h *host) takeEntries(entries []protocol.PolicyEntry) []string {
+	if entries == nil {
+		return []string{"the answer has no entries list, so the policy entries no step uses can't be found; the driver is older than this proctor"}
+	}
+	var msgs []string
+	h.entries = map[string]protocol.PolicyEntry{}
+	for _, e := range entries {
+		switch {
+		case strings.TrimSpace(e.Key) == "" || strings.TrimSpace(e.Rule) == "" || strings.TrimSpace(e.Use) == "":
+			msgs = append(msgs, fmt.Sprintf("policy entry %q needs a key, a rule and a use", e.Key))
+		case h.entries[e.Key].Key != "":
+			msgs = append(msgs, fmt.Sprintf("policy entry %q is listed twice", e.Key))
+		default:
+			h.entries[e.Key] = e
+		}
+	}
+	return msgs
+}
+
+func (sess *session) entries() map[string][]model.PolicyEntry {
+	out := map[string][]model.PolicyEntry{}
+	for _, h := range sess.ordered() {
+		list := []model.PolicyEntry{}
+		for _, k := range sortedKeys(h.entries) {
+			e := h.entries[k]
+			list = append(list, model.PolicyEntry{Key: e.Key, Rule: e.Rule, Use: e.Use})
+		}
+		out[h.name] = list
+	}
+	return out
 }
 
 func stderrHint(c *protocol.Client) string {
@@ -331,6 +383,9 @@ func checkHello(h *host) []string {
 		default:
 			msgs = append(msgs, fmt.Sprintf("%s: unknown credential %q", where, op.Credential))
 		}
+		if op.Accumulates && (op.Kind != protocol.KindObserve || !op.UsesHandle) {
+			msgs = append(msgs, fmt.Sprintf("%s: accumulates is only for an operation of kind observe that uses a handle", where))
+		}
 		for what, sch := range map[string]any{"args_schema": op.ArgsSchema, "fact_schema": op.FactSchema} {
 			if sch == nil {
 				continue
@@ -339,22 +394,34 @@ func checkHello(h *host) []string {
 				msgs = append(msgs, where+": "+what+": "+e)
 			}
 		}
+		escape := map[string]string{}
 		for _, p := range sortedKeys(op.Escape) {
-			if _, err := expr.ParsePath(p); err != nil {
+			c, ok := expr.Canonical(p)
+			if !ok {
+				_, err := expr.ParsePath(p)
 				msgs = append(msgs, fmt.Sprintf("%s: escape: %v", where, err))
+				c = p
 			}
 			if op.Escape[p] != protocol.EscapePathSegment {
 				msgs = append(msgs, fmt.Sprintf("%s: escape %s: unknown escaping %q (this proctor knows %q)", where, p, op.Escape[p], protocol.EscapePathSegment))
 			}
-		}
-		for _, p := range op.Redact {
-			if _, err := expr.ParsePath(p); err != nil {
-				msgs = append(msgs, fmt.Sprintf("%s: redact: %v", where, err))
+			if _, dup := escape[c]; dup {
+				msgs = append(msgs, fmt.Sprintf("%s: escape names %s twice", where, c))
 			}
+			escape[c] = op.Escape[p]
 		}
-		for _, p := range op.Data {
-			if _, err := expr.ParsePath(p); err != nil {
-				msgs = append(msgs, fmt.Sprintf("%s: data: %v", where, err))
+		if op.Escape != nil {
+			op.Escape = escape
+		}
+		for what, list := range map[string][]string{"redact": op.Redact, "data": op.Data, "files": op.Files} {
+			for i, p := range list {
+				c, ok := expr.Canonical(p)
+				if !ok {
+					_, err := expr.ParsePath(p)
+					msgs = append(msgs, fmt.Sprintf("%s: %s: %v", where, what, err))
+					continue
+				}
+				list[i] = c
 			}
 		}
 		h.ops[op.Name] = op
@@ -394,22 +461,35 @@ func (sess *session) infos() []DriverInfo {
 	return out
 }
 
-func Describe(ctx context.Context, cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (map[model.StepRef]model.StepInfo, []DriverInfo, error) {
-	opt, err := opt.withDefaults()
+func Describe(ctx context.Context, cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (Description, []DriverInfo, error) {
+	opt, err := opt.withDefaults(cfg)
 	if err != nil {
-		return nil, nil, &SetupError{ExitCode: ExitError, Msgs: []string{err.Error()}}
+		return Description{}, nil, asSetup(err)
 	}
 	s := &scrubber{}
 	sess, err := openSession(ctx, cfg, b, opt, s)
 	if err != nil {
-		return nil, nil, err
+		return Description{}, nil, err
 	}
 	infos, err := sess.describe(ctx, specs)
 	sess.close()
 	if err != nil {
-		return nil, nil, err
+		return Description{}, nil, err
 	}
-	return infos, sess.infos(), nil
+	return Description{Steps: infos, Entries: sess.entries()}, sess.infos(), nil
+}
+
+func asSetup(err error) *SetupError {
+	var se *SetupError
+	if errors.As(err, &se) {
+		return se
+	}
+	return &SetupError{ExitCode: ExitError, Msgs: []string{err.Error()}}
+}
+
+type Description struct {
+	Steps   map[model.StepRef]model.StepInfo
+	Entries map[string][]model.PolicyEntry
 }
 
 func (sess *session) describe(ctx context.Context, specs []SpecFile) (map[model.StepRef]model.StepInfo, error) {
@@ -423,13 +503,13 @@ func (sess *session) describe(ctx context.Context, specs []SpecFile) (map[model.
 			for _, part := range []struct {
 				phase string
 				steps []model.Step
-			}{{"setup", sc.Setup}, {"steps", sc.Steps}} {
+			}{{"setup", sc.Setup}, {"steps", sc.Steps}, {"cleanup", sc.Cleanup}} {
 				phase := part.phase
 				for i, st := range part.steps {
 					if name, _, ok := model.SplitDo(st.Do); !ok || sess.hosts[name] == nil {
 						continue
 					}
-					info, err := sess.validateStep(ctx, st, phase == "setup")
+					info, err := sess.validateStep(ctx, st, phase != "steps")
 					if err != nil {
 						probs.add(ExitError, "%s: scenario %s %s[%d]: %v", f.Path, sc.ID, phase, i, err)
 						continue
@@ -474,21 +554,38 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	case st.Identity == "" && op.Credential == protocol.CredentialRequired:
 		problem("EXE-01", "identity", "operation %s needs a credential; name an identity", st.Do)
 	}
-	var argProblems []string
-	if op.ArgsSchema == nil {
-		if st.With != nil {
-			argProblems = []string{"$: operation " + st.Do + " takes no arguments; leave with out"}
+	switch {
+	case op.ArgsSchema == nil && st.With != nil:
+		problem("EXE-01", "with", "operation %s takes no arguments; leave with out", st.Do)
+	case op.ArgsSchema != nil:
+		for _, m := range schema.Check(op.ArgsSchema, argsToCheck(op.ArgsSchema, st.With), schema.AllowRefs) {
+			at, msg, _ := strings.Cut(m, ": ")
+			problem("EXE-01", "with"+strings.TrimPrefix(at, "$"), "%s", msg)
 		}
-	} else {
-		argProblems = schema.Check(op.ArgsSchema, st.With, schema.AllowRefs)
 	}
-	for _, m := range argProblems {
-		problem("EXE-01", "with", "with%s", strings.TrimPrefix(m, "$"))
+	for _, p := range integrity.FactPaths(st.Do, op.FactSchema, st.Expect, st.Save) {
+		problem(p.Rule, p.Path, "%s", p.Message)
+	}
+	if p, found := integrity.ArrivalProblem(st.Do, &st); op.Accumulates && found {
+		problem(p.Rule, p.Path, "%s", p.Message)
+	}
+	files, fileProblems := sess.readFiles(op, st.With)
+	for _, p := range fileProblems {
+		problem(p.Rule, p.Path, "%s", p.Message)
+	}
+	var sent map[string]protocol.FileInfo
+	if len(files) > 0 {
+		info.Files = map[string]model.FileRef{}
+		sent = map[string]protocol.FileInfo{}
+		for at, f := range files {
+			info.Files[at] = model.FileRef{Path: f.Path, Size: f.Size, SHA256: f.SHA256}
+			sent[at] = f.FileInfo
+		}
 	}
 	var res protocol.ValidateResult
 	cctx, cancel := sess.callCtx(ctx)
 	err := h.client.Call(cctx, protocol.MethodValidate, protocol.ValidateParams{Op: opName, Args: st.With, Identity: st.Identity,
-		Variant: st.Variant, Expect: st.Expect, Setup: setup, Save: st.Save}, &res)
+		Variant: st.Variant, Expect: st.Expect, Setup: setup, Save: st.Save, Files: sent}, &res)
 	cancel()
 	if err != nil {
 		return info, fmt.Errorf("driver %s: validate failed: %v", name, err)
@@ -510,6 +607,19 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	}
 	info.Destructive, info.FixedTarget = res.Destructive, res.FixedTarget
 	info.Data = append([]string(nil), op.Data...)
+	info.Targets = append([]string(nil), res.Targets...)
+	info.Shows = append([]string(nil), res.Shows...)
+	info.ExactTargets = append([]string(nil), res.ExactTargets...)
+	if err := h.checkUses(res); err != nil {
+		return info, fmt.Errorf("driver %s: validate: %v", name, err)
+	}
+	info.Uses = append([]string(nil), res.Uses...)
+	if len(res.ShowsEntries) > 0 {
+		info.ShowsEntries = map[string]string{}
+		for k, v := range res.ShowsEntries {
+			info.ShowsEntries[k] = v
+		}
+	}
 	if res.StateCheck != nil {
 		info.StateCheck = *res.StateCheck
 	}
@@ -522,6 +632,37 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	}
 	info.Refs = sortedKeys(seen)
 	return info, nil
+}
+
+func (h *host) checkUses(res protocol.ValidateResult) error {
+	for _, k := range res.Uses {
+		if _, ok := h.entries[k]; !ok {
+			return fmt.Errorf("the answer uses policy entry %q, which configure didn't list", k)
+		}
+	}
+	if len(res.ShowsEntries) != len(res.Shows) {
+		return fmt.Errorf("the answer shows %d paths but names the policy entries of %d", len(res.Shows), len(res.ShowsEntries))
+	}
+	for _, p := range res.Shows {
+		k, ok := res.ShowsEntries[p]
+		if !ok {
+			return fmt.Errorf("the answer shows %s but names no policy entry for it", p)
+		}
+		if _, listed := h.entries[k]; !listed {
+			return fmt.Errorf("the answer shows %s through policy entry %q, which configure didn't list", p, k)
+		}
+	}
+	return nil
+}
+
+func argsToCheck(argsSchema, with any) any {
+	if with != nil || len(schema.Check(argsSchema, nil)) == 0 {
+		return with
+	}
+	if sh, errs := schema.ShapeOf(argsSchema); len(errs) == 0 && sh.Allows("object") {
+		return map[string]any{}
+	}
+	return with
 }
 
 func refsIn(v any) []string {
@@ -565,4 +706,63 @@ func asProtocolError(err error) *protocol.Error {
 
 func brokenClient(err error) bool {
 	return errors.Is(err, protocol.ErrDriverFailed) || errors.Is(err, protocol.ErrTimeout)
+}
+
+func (sess *session) readFiles(op protocol.Operation, with any) (map[string]protocol.File, []model.Problem) {
+	var out map[string]protocol.File
+	var probs []model.Problem
+	bad := func(at, format string, args ...any) {
+		probs = append(probs, model.Problem{Rule: fileRule, Path: "with" + strings.TrimPrefix(at, "$"), Message: fmt.Sprintf(format, args...)})
+	}
+	for _, at := range op.Files {
+		p, err := expr.ParsePath(at)
+		if err != nil {
+			continue
+		}
+		raw, ok := p.Select(with)
+		if !ok {
+			continue
+		}
+		rel, isText := raw.(string)
+		switch {
+		case !isText:
+			bad(at, "must be the path of a file inside the protected root, as text, not %s", describeValue(raw))
+			continue
+		case strings.Contains(rel, "${"):
+			bad(at, "%q refers to a value; name the file as written, since Proctor reads and hashes it before the run", rel)
+			continue
+		case sess.files == nil:
+			bad(at, "%q can't be read: this command has no protected files to read it from", rel)
+			continue
+		}
+		full, data, err := sess.files.ReadProtected(rel)
+		if err != nil {
+			bad(at, "%v", err)
+			continue
+		}
+		if out == nil {
+			out = map[string]protocol.File{}
+		}
+		sum := sha256.Sum256(data)
+		out[at] = protocol.File{FileInfo: protocol.FileInfo{Path: full, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}, Data: data}
+	}
+	return out, probs
+}
+
+const fileRule = "INT-13"
+
+func describeValue(v any) string {
+	switch v.(type) {
+	case nil:
+		return "nothing"
+	case map[string]any:
+		return "a mapping"
+	case []any:
+		return "a list"
+	case bool:
+		return "true or false"
+	case string:
+		return "text"
+	}
+	return "a number"
 }

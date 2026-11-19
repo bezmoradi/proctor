@@ -178,6 +178,24 @@ func bodyText(body any) (string, error) {
 	return strings.TrimSuffix(buf.String(), "\n"), nil
 }
 
+type holder struct {
+	handles map[string]string
+	order   []string
+	missing int
+	longest int32
+}
+
+func (h *holder) keep(id, handle string) {
+	if handle == "" {
+		h.missing++
+		return
+	}
+	if _, ok := h.handles[id]; !ok {
+		h.order = append(h.order, id)
+	}
+	h.handles[id] = handle
+}
+
 func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error) {
 	var in peekInput
 	if err := protocol.Decode(raw, &in); err != nil {
@@ -194,9 +212,40 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 	if err != nil {
 		return protocol.CallResult{}, err
 	}
+	if !q.hold {
+		return d.peekQueue(ctx, q, limit, nil)
+	}
+	h := &holder{handles: map[string]string{}}
+	res, perr := d.peekQueue(ctx, q, limit, h)
+	rerr := d.release(ctx, q, h)
+	switch {
+	case rerr != nil && perr != nil:
+		var e *protocol.Error
+		before := perr.Error()
+		if errors.As(perr, &e) {
+			before = e.Message
+		}
+		return protocol.CallResult{}, protocol.Errorf(rerr.Data.Cause, "%s; the peek had already failed: %s", rerr.Message, before)
+	case rerr != nil:
+		return protocol.CallResult{}, rerr
+	case perr != nil:
+		return protocol.CallResult{}, perr
+	}
+	return res, nil
+}
+
+func (d *Driver) peekQueue(ctx context.Context, q *queue, limit int, h *holder) (protocol.CallResult, error) {
 	want, err := d.onQueue(ctx, q)
 	if err != nil {
 		return protocol.CallResult{}, err
+	}
+	dl, _ := ctx.Deadline()
+	stop := dl.Add(-receiveMargin)
+	if h != nil {
+		stop = stop.Add(-releaseMargin)
+		if latest := time.Now().Add(maxHold*time.Second - releaseMargin); latest.Before(stop) {
+			stop = latest
+		}
 	}
 	seen := map[string]bool{}
 	messages := make([]any, 0)
@@ -205,25 +254,37 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 		return quiet >= quietReceives && (int64(len(messages)) >= want || quiet >= quietBehind)
 	}
 	for !settled() && receives < maxReceives && len(messages) < limit {
-		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < receiveMargin {
+		if !dl.IsZero() && time.Until(stop) <= 0 {
 			break
 		}
-		out, err := d.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+		input := &awssqs.ReceiveMessageInput{
 			QueueUrl:              aws.String(q.url),
 			MaxNumberOfMessages:   int32(min(receiveBatch, limit-len(messages))),
 			VisibilityTimeout:     0,
 			WaitTimeSeconds:       0,
 			MessageAttributeNames: []string{"All"},
-		}, forceFields(map[string]int{"VisibilityTimeout": 0, "WaitTimeSeconds": 0}))
+		}
+		force := map[string]int{"VisibilityTimeout": 0, "WaitTimeSeconds": 0}
+		if h != nil {
+			input.VisibilityTimeout = holdSeconds(time.Until(stop) + releaseMargin)
+			h.longest = max(h.longest, input.VisibilityTimeout)
+			force = map[string]int{"WaitTimeSeconds": 0}
+		}
+		out, err := d.client.ReceiveMessage(ctx, input, forceFields(force))
 		if err != nil {
 			return protocol.CallResult{}, d.classify(ctx, err, "peek at queue "+q.label())
 		}
 		receives++
 		added := 0
+		var bad error
 		for _, msg := range out.Messages {
 			id := aws.ToString(msg.MessageId)
+			if h != nil {
+				h.keep(id, aws.ToString(msg.ReceiptHandle))
+			}
 			if id == "" {
-				return protocol.CallResult{}, protocol.Errorf(protocol.CauseUnreadableResponse, "peek at queue %s: ReceiveMessage returned a message with no message id", q.label())
+				bad = protocol.Errorf(protocol.CauseUnreadableResponse, "peek at queue %s: ReceiveMessage returned a message with no message id", q.label())
+				continue
 			}
 			if seen[id] || len(messages) >= limit {
 				continue
@@ -240,6 +301,9 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 				m["body"] = v
 			}
 			messages = append(messages, m)
+		}
+		if bad != nil {
+			return protocol.CallResult{}, bad
 		}
 		if added == 0 {
 			quiet++
@@ -266,7 +330,14 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 	if len(messages) == 1 {
 		noun = "message"
 	}
-	summary := fmt.Sprintf("peek at %s -> %d %s in %d receives (left on the queue)", q.label(), len(messages), noun, receives)
+	kept := "left on the queue"
+	switch {
+	case h != nil && h.longest == 0:
+		kept = "peek_hold held nothing"
+	case h != nil:
+		kept = fmt.Sprintf("each held at most %d s by peek_hold, then set visible again", h.longest)
+	}
+	summary := fmt.Sprintf("peek at %s -> %d %s in %d receives (%s)", q.label(), len(messages), noun, receives, kept)
 	if why != "" {
 		summary += ", truncated: " + why
 	}
@@ -274,6 +345,78 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 		Fact:     map[string]any{"count": len(messages), "messages": messages, "truncated": why != ""},
 		Evidence: protocol.Evidence{Summary: summary},
 	}, nil
+}
+
+func holdSeconds(d time.Duration) int32 {
+	s := int32((d + time.Second - 1) / time.Second)
+	return min(max(s, 1), maxHold)
+}
+
+func (d *Driver) release(ctx context.Context, q *queue, h *holder) *protocol.Error {
+	if len(h.order) == 0 && h.missing == 0 {
+		return nil
+	}
+	dl, ok := ctx.Deadline()
+	if !ok {
+		dl = time.Now().Add(callTimeout)
+	}
+	rctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), dl.Add(releaseGrace))
+	defer cancel()
+	failed, first, cause := 0, "", ""
+	for start := 0; start < len(h.order); start += releaseBatch {
+		ids := h.order[start:min(start+releaseBatch, len(h.order))]
+		entries := make([]types.ChangeMessageVisibilityBatchRequestEntry, 0, len(ids))
+		for i, id := range ids {
+			entries = append(entries, types.ChangeMessageVisibilityBatchRequestEntry{
+				Id:                aws.String(strconv.Itoa(i)),
+				ReceiptHandle:     aws.String(h.handles[id]),
+				VisibilityTimeout: 0,
+			})
+		}
+		out, err := d.client.ChangeMessageVisibilityBatch(rctx, &awssqs.ChangeMessageVisibilityBatchInput{QueueUrl: aws.String(q.url), Entries: entries})
+		if err != nil {
+			failed += len(entries)
+			if cause == "" {
+				e := d.classify(rctx, err, "ChangeMessageVisibilityBatch")
+				cause, first = e.Data.Cause, e.Message
+			}
+			continue
+		}
+		done := map[string]bool{}
+		for _, r := range out.Successful {
+			if n, err := strconv.Atoi(aws.ToString(r.Id)); err == nil && n >= 0 && n < len(entries) {
+				done[strconv.Itoa(n)] = true
+			}
+		}
+		if missed := len(entries) - len(done); missed > 0 {
+			failed += missed
+			if first == "" {
+				first = "ChangeMessageVisibilityBatch didn't confirm every entry"
+				if len(out.Failed) > 0 {
+					first = cut(oneLine(d.scrub(aws.ToString(out.Failed[0].Code))), 200)
+				}
+			}
+		}
+	}
+	switch {
+	case failed > 0:
+		if cause == "" {
+			cause = protocol.CauseQueryError
+		}
+		return protocol.Errorf(cause, "peek at queue %s: %d of %d held messages weren't set visible again (%s); they stay hidden for up to %d s", q.label(), failed, len(h.order), first, h.longest)
+	case h.missing > 0:
+		return protocol.Errorf(protocol.CauseUnreadableResponse, "peek at queue %s: ReceiveMessage returned %d messages with no receipt handle, so they stay hidden for up to %d s", q.label(), h.missing, h.longest)
+	}
+	return nil
+}
+
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func (d *Driver) onQueue(ctx context.Context, q *queue) (int64, error) {

@@ -151,6 +151,19 @@ type Operation struct {
 	Escape      map[string]string `json:"escape,omitempty"`
 	Redact      []string          `json:"redact,omitempty"`
 	Data        []string          `json:"data,omitempty"`
+	Files       []string          `json:"files,omitempty"`
+	Accumulates bool              `json:"accumulates,omitempty"`
+}
+
+type FileInfo struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+type File struct {
+	FileInfo
+	Data []byte `json:"data"`
 }
 
 type Secrets map[string]string
@@ -169,23 +182,39 @@ type ConfigureParams struct {
 	Secrets    Secrets `json:"secrets"`
 }
 
+type ConfigureResult struct {
+	Entries []PolicyEntry `json:"entries"`
+}
+
+type PolicyEntry struct {
+	Key  string `json:"key"`
+	Rule string `json:"rule"`
+	Use  string `json:"use"`
+}
+
 type ValidateParams struct {
-	Op       string            `json:"op"`
-	Args     any               `json:"args"`
-	Identity string            `json:"identity"`
-	Variant  string            `json:"variant"`
-	Expect   any               `json:"expect"`
-	Setup    bool              `json:"setup"`
-	Save     map[string]string `json:"save,omitempty"`
+	Op       string              `json:"op"`
+	Args     any                 `json:"args"`
+	Identity string              `json:"identity"`
+	Variant  string              `json:"variant"`
+	Expect   any                 `json:"expect"`
+	Setup    bool                `json:"setup"`
+	Save     map[string]string   `json:"save,omitempty"`
+	Files    map[string]FileInfo `json:"files,omitempty"`
 }
 
 type ValidateResult struct {
-	Kind        string    `json:"kind"`
-	Destructive bool      `json:"destructive"`
-	FixedTarget bool      `json:"fixed_target"`
-	Problems    []Problem `json:"problems"`
-	Refs        []string  `json:"refs"`
-	StateCheck  *bool     `json:"state_check,omitempty"`
+	Kind         string            `json:"kind"`
+	Destructive  bool              `json:"destructive"`
+	FixedTarget  bool              `json:"fixed_target"`
+	Problems     []Problem         `json:"problems"`
+	Refs         []string          `json:"refs"`
+	StateCheck   *bool             `json:"state_check,omitempty"`
+	Targets      []string          `json:"targets,omitempty"`
+	Shows        []string          `json:"shows,omitempty"`
+	ExactTargets []string          `json:"exact_targets,omitempty"`
+	Uses         []string          `json:"uses,omitempty"`
+	ShowsEntries map[string]string `json:"shows_entries,omitempty"`
 }
 
 type Problem struct {
@@ -226,11 +255,12 @@ func (c Credential) GoString() string {
 }
 
 type CallParams struct {
-	Op         string      `json:"op"`
-	Args       any         `json:"args"`
-	Credential *Credential `json:"credential"`
-	Handle     string      `json:"handle,omitempty"`
-	DeadlineMS int64       `json:"deadline_ms"`
+	Op         string          `json:"op"`
+	Args       any             `json:"args"`
+	Credential *Credential     `json:"credential"`
+	Handle     string          `json:"handle,omitempty"`
+	DeadlineMS int64           `json:"deadline_ms"`
+	Files      map[string]File `json:"files,omitempty"`
 }
 
 type CallResult struct {

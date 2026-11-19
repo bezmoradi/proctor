@@ -18,20 +18,32 @@ type Table struct {
 	Variant      string            `yaml:"variant"`
 	With         yaml.Node         `yaml:"with,omitempty"`
 	Expect       yaml.Node         `yaml:"expect"`
+	Eventually   *Within           `yaml:"eventually,omitempty"`
+	Consistently *Window           `yaml:"consistently,omitempty"`
+	Never        *Window           `yaml:"never,omitempty"`
+	Timeout      string            `yaml:"timeout,omitempty"`
 	Columns      []string          `yaml:"columns"`
 	Rows         []yaml.Node       `yaml:"rows"`
 	NoStateCheck string            `yaml:"no_state_check"`
-	Waive        map[string]string `yaml:"waive"`
+	Waive        map[string]Waiver `yaml:"waive"`
+	Cleanup      []Step            `yaml:"cleanup,omitempty"`
 	ExpectLogs   []LogExpectation  `yaml:"expect_logs,omitempty"`
+	Covers       yaml.Node         `yaml:"covers,omitempty"`
+	Transcript   yaml.Node         `yaml:"transcript,omitempty"`
+	ApprovedLog  yaml.Node         `yaml:"approved_log,omitempty"`
 }
 
 type TableCase struct {
 	Table     string
+	Key       string
 	Group     string
+	GroupKey  string
+	RunScope  string
 	SetupFrom string
 	Columns   []string
 	Cells     []string
 	First     bool
+	FirstRow  bool
 	Canon     []byte
 }
 
@@ -46,22 +58,27 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 	add := func(rule, format string, args ...any) {
 		probs = append(probs, Problem{Rule: rule, Message: fmt.Sprintf(format, args...)})
 	}
-	group := map[string]string{}
-	setup := map[string][]Step{}
+	type setupGroup struct {
+		label, key, scope string
+		steps             []Step
+	}
+	group := map[string]setupGroup{}
 	firstSeen := map[string]bool{}
 	for ti := range s.Tables {
 		t := &s.Tables[ti]
-		where := fmt.Sprintf("tables[%d]", ti)
+		expanded := false
+		key := fmt.Sprintf("tables[%d]", ti)
+		where, label, scope := key, key, fmt.Sprintf("tables-%d", ti)
 		if t.ID != "" {
-			where = "table " + t.ID
+			where, label, scope = "table "+t.ID, t.ID, t.ID
 		}
-		g, st := t.ID, t.Setup
+		g := setupGroup{label: label, key: key, scope: scope, steps: t.Setup}
 		if t.SetupFrom != "" {
 			if len(t.Setup) > 0 {
 				add("TBL-04", "%s: has both setup and setup_from; use one", where)
 			}
 			if og, ok := group[t.SetupFrom]; ok {
-				g, st = og, setup[t.SetupFrom]
+				g = og
 			} else {
 				add("TBL-04", "%s: setup_from %q isn't a table defined earlier in this specification", where, t.SetupFrom)
 			}
@@ -70,8 +87,9 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 			if _, dup := group[t.ID]; dup {
 				add("INT-02", "%s: table id %q is used twice in this specification", where, t.ID)
 			}
-			group[t.ID], setup[t.ID] = g, st
+			group[t.ID] = g
 		}
+		st := g.steps
 		if strings.TrimSpace(t.Name) == "" {
 			add("EXE-01", "%s: name is required", where)
 		}
@@ -179,7 +197,8 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 			if !ok {
 				continue
 			}
-			step := Step{ID: "case", Do: t.Do, NoStateCheck: t.NoStateCheck, Waive: t.Waive, Expect: &Expect{}}
+			step := Step{ID: "case", Do: t.Do, NoStateCheck: t.NoStateCheck, Waive: t.Waive, Expect: &Expect{},
+				Eventually: t.Eventually, Consistently: t.Consistently, Never: t.Never, Timeout: t.Timeout}
 			var err error
 			if step.Identity, err = substituteText(t.Identity, cells); err != nil {
 				add("TBL-05", "case %s: identity: %v", caseID, err)
@@ -219,18 +238,29 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 				continue
 			}
 			s.Scenarios = append(s.Scenarios, Scenario{
-				ID:         caseID,
-				Name:       t.Name,
-				Setup:      st,
-				Steps:      []Step{step},
-				ExpectLogs: t.ExpectLogs,
-				Case: &TableCase{Table: t.ID, Group: g, SetupFrom: t.SetupFrom, Columns: t.Columns, Cells: display,
-					First: !firstSeen[g], Canon: canon},
+				ID:          caseID,
+				Name:        t.Name,
+				Setup:       st,
+				Steps:       []Step{step},
+				Cleanup:     t.Cleanup,
+				ExpectLogs:  t.ExpectLogs,
+				Transcript:  t.Transcript,
+				ApprovedLog: t.ApprovedLog,
+				Case: &TableCase{Table: t.ID, Key: key, Group: g.label, GroupKey: g.key, RunScope: g.scope, SetupFrom: t.SetupFrom,
+					Columns: t.Columns, Cells: display, First: !firstSeen[g.key], FirstRow: !expanded, Canon: canon},
 			})
-			firstSeen[g] = true
+			firstSeen[g.key] = true
+			expanded = true
 		}
 	}
 	return probs
+}
+
+func (c *TableCase) Label() string {
+	if c.Table != "" {
+		return c.Table
+	}
+	return c.Key
 }
 
 func walkScalars(n *yaml.Node, f func(*yaml.Node, bool)) {
@@ -322,6 +352,7 @@ func flow(n *yaml.Node) *yaml.Node {
 }
 
 func cleanTable(t Table) Table {
+	t.Covers = yaml.Node{}
 	if t.With.Kind != 0 {
 		t.With = *clean(&t.With)
 	}

@@ -1,0 +1,234 @@
+:root {
+  color-scheme: light;
+  --text: #1b1f24;
+  --muted: #57606a;
+  --line: #d0d7de;
+  --bg: #ffffff;
+  --killed: #1a7f37;
+  --killed-bg: #dafbe1;
+  --survived: #a40e26;
+  --survived-bg: #ffebe9;
+  --elsewhere: #8a4600;
+  --elsewhere-bg: #fff1e5;
+  --error: #6639ba;
+  --error-bg: #f5f0ff;
+  --notrun: #57606a;
+  --notrun-bg: #eaeef2;
+  --unrun-bg: #f0f0f0;
+  --unrun-text: #6e7781;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 90rem;
+  padding: 1rem 1.5rem 3rem;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+h1 {
+  font-size: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin-top: 2rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+a {
+  color: #0550ae;
+}
+
+a:focus-visible {
+  outline: 2px solid #0550ae;
+  outline-offset: 2px;
+}
+
+.run, .note, .where {
+  color: var(--muted);
+}
+
+table {
+  border-collapse: collapse;
+}
+
+caption {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+
+th, td {
+  border: 1px solid var(--line);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.counts td, .files td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.files th[scope="row"] {
+  font-weight: normal;
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+.facts dt {
+  font-weight: 600;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.verdict {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  padding: 0 0.35rem;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.v-killed .verdict, .verdict.v-killed { color: var(--killed); background: var(--killed-bg); }
+.v-survived .verdict, .verdict.v-survived { color: var(--survived); background: var(--survived-bg); }
+.v-killed_elsewhere .verdict, .verdict.v-killed_elsewhere { color: var(--elsewhere); background: var(--elsewhere-bg); }
+.v-error .verdict, .verdict.v-error { color: var(--error); background: var(--error-bg); }
+.v-not_run .verdict, .verdict.v-not_run { color: var(--notrun); background: var(--notrun-bg); }
+
+.source {
+  width: 100%;
+  table-layout: auto;
+}
+
+.source td {
+  border-width: 0 1px 0 0;
+  padding: 0 0.5rem;
+}
+
+.source .n {
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.source .cov, .source .vs {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.source .code {
+  width: 100%;
+}
+
+.source .code code {
+  white-space: pre;
+  tab-size: 4;
+}
+
+.source tr.unrun {
+  background: var(--unrun-bg);
+  color: var(--unrun-text);
+}
+
+.source tr.mutated.v-killed { background: var(--killed-bg); }
+.source tr.mutated.v-survived { background: var(--survived-bg); }
+.source tr.mutated.v-killed_elsewhere { background: var(--elsewhere-bg); }
+.source tr.mutated.v-error { background: var(--error-bg); }
+.source tr.mutated.v-not_run { background: var(--notrun-bg); }
+
+.source tr.detail td {
+  padding: 0.5rem 0.5rem 0.75rem 3rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.mutant {
+  border-left: 4px solid var(--line);
+  padding: 0.25rem 0.75rem;
+  margin: 0.5rem 0;
+  background: var(--bg);
+}
+
+.mutant.v-killed { border-left-color: var(--killed); }
+.mutant.v-survived { border-left-color: var(--survived); }
+.mutant.v-killed_elsewhere { border-left-color: var(--elsewhere); }
+.mutant.v-error { border-left-color: var(--error); }
+.mutant.v-not_run { border-left-color: var(--notrun); }
+
+.mutant dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 1rem;
+  margin: 0.25rem 0;
+}
+
+.mutant dt {
+  color: var(--muted);
+}
+
+.mutant dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.diff-at {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.diff pre {
+  margin: 0.25rem 0;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  tab-size: 4;
+}
+
+.diff del {
+  display: block;
+  text-decoration: none;
+  background: var(--survived-bg);
+}
+
+.diff ins {
+  display: block;
+  text-decoration: none;
+  background: var(--killed-bg);
+}
+
+.sign {
+  user-select: none;
+}
+
+.survivors {
+  padding-left: 1.25rem;
+}
+
+@media (forced-colors: active) {
+  .verdict {
+    border-color: CanvasText;
+  }
+}

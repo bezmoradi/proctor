@@ -48,8 +48,14 @@ type Report struct {
 	Hashes        map[string]string `json:"sha256"`
 	Findings      []Finding         `json:"findings"`
 
-	Config   *model.Config   `json:"-"`
-	Manifest *model.Manifest `json:"-"`
+	Config      *model.Config   `json:"-"`
+	Manifest    *model.Manifest `json:"-"`
+	Mutants     []model.Mutant  `json:"-"`
+	MutantsPath string          `json:"mutants,omitempty"`
+
+	DimensionsPath string `json:"dimensions,omitempty"`
+
+	SpecIDs map[string]string `json:"-"`
 
 	listed map[string]bool
 	limits limits

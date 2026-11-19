@@ -30,7 +30,11 @@ func (p *progressLog) update(ev runner.Progress) {
 	defer p.mu.Unlock()
 	p.halt()
 	if ev.Done {
-		fmt.Fprintf(p.w, "[%d/%d] %-8s %-10s %.1fs\n", ev.Index, ev.Total, ev.Result, safe(ev.ID), ev.Elapsed.Seconds())
+		cleanup := ""
+		if ev.Cleanup != "" {
+			cleanup = "  cleanup " + string(ev.Cleanup)
+		}
+		fmt.Fprintf(p.w, "[%d/%d] %-8s %-10s %.1fs%s\n", ev.Index, ev.Total, ev.Result, safe(progressName(ev)), ev.Elapsed.Seconds(), cleanup)
 		return
 	}
 	stop := make(chan struct{})
@@ -52,10 +56,17 @@ func (p *progressLog) watch(ev runner.Progress, began time.Time, stop chan struc
 		case <-stop:
 		default:
 			secs := int(time.Since(began).Round(time.Second) / time.Second)
-			fmt.Fprintf(p.w, "[%d/%d] %-8s %-10s %ds\n", ev.Index, ev.Total, "running", safe(ev.ID), secs)
+			fmt.Fprintf(p.w, "[%d/%d] %-8s %-10s %ds\n", ev.Index, ev.Total, "running", safe(progressName(ev)), secs)
 		}
 		p.mu.Unlock()
 	}
+}
+
+func progressName(ev runner.Progress) string {
+	if ev.Table == "" {
+		return ev.ID
+	}
+	return ev.Table + "/" + ev.ID
 }
 
 func (p *progressLog) halt() {

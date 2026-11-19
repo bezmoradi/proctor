@@ -79,6 +79,7 @@ type sampleResult struct {
 	ev      protocol.Evidence
 	asserts []Assertion
 	pass    bool
+	vacuous bool
 }
 
 func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars, hs *handleSet) StepResult {
@@ -114,6 +115,11 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	if err != nil {
 		return errorf(CauseInvalidRequest, "with: %v", err)
 	}
+	r.keepWith(&sr, args)
+	files, err := r.files(op, st.With)
+	if err != nil {
+		return errorf(CauseInvalidRequest, "%v", err)
+	}
 	var cred *protocol.Credential
 	if st.Identity != "" && op.Credential != protocol.CredentialNone {
 		if c, ok := r.creds[credKey(st.Identity, st.Variant)]; ok {
@@ -130,6 +136,10 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	if err != nil {
 		return errorf(CauseInvalidRequest, "%v", err)
 	}
+	callTimeout, err := r.callTimeoutOf(st)
+	if err != nil {
+		return errorf(CauseInvalidRequest, "%v", err)
+	}
 	if t.mode == modeNever {
 		for _, c := range checks {
 			if c.perr != nil {
@@ -141,7 +151,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	var last sampleResult
 	n := 0
 	for {
-		s, perr := r.sample(ctx, h, op, args, cred, handle, checks)
+		s, perr := r.sample(ctx, h, op, args, files, cred, handle, checks, callTimeout)
 		if s.handle != "" {
 			if kerr := hs.keep(st, h, op, s.handle); kerr != nil && perr == nil {
 				perr = kerr
@@ -165,7 +175,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		last = s
 		r.record(&sr, s.ev)
 		elapsed := time.Since(start)
-		if t.done(s.pass, elapsed) {
+		if t.done(s.pass, elapsed) || (s.vacuous && t.mode == modeNever) {
 			break
 		}
 		wait := t.every
@@ -184,11 +194,13 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		}
 	}
 	elapsed := time.Since(start).Round(time.Millisecond)
+	r.keepFact(&sr, last.fact, op.Redact, t)
 	sr.Result = Pass
 	if t.mode == modeNever {
 		for i := range last.asserts {
 			a := &last.asserts[i]
 			switch {
+			case a.vacuous:
 			case last.pass:
 				a.Result = Fail
 				a.Message = "held, but never requires that the expectations don't all hold"
@@ -199,7 +211,11 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 				a.Message = "held, but not together with every other expectation"
 			}
 		}
-		if last.pass {
+		switch {
+		case last.vacuous:
+			sr.Result = Fail
+			sr.Message = fmt.Sprintf("at sample %d a claim can't fail, its text was cut or its list left frames out, so never can't tell whether the expectations held", n)
+		case last.pass:
 			sr.Result = Fail
 			sr.Message = fmt.Sprintf("the expectations all held at sample %d, after %s; never requires that they don't for %s", n, elapsed, t.window)
 		}
@@ -223,10 +239,17 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 			return errorf(CauseInvalidRequest, "%v", err)
 		}
 		a := Assertion{Kind: "save", Target: name + " = " + path.String(), Result: Pass}
-		if got, ok := path.Select(last.fact); !ok {
+		got, ok := path.Select(last.fact)
+		kept, isCut := truncatedText(check{kind: "equal", target: path.String(), path: path}, last.fact, got)
+		switch {
+		case !ok:
 			a.Result, a.Message = Fail, "nothing to save: not present in the fact"
 			sr.Result = Fail
-		} else {
+		case isCut:
+			a.Present, a.CutAt = true, kept
+			a.Result, a.Message = Fail, fmt.Sprintf("can't save %s: it was cut at %d bytes (body_truncated: true), so the saved value wouldn't be the whole text", path.String(), kept)
+			sr.Result = Fail
+		default:
 			a.Present = true
 			r.scrubRedacted(path.String(), got, op.Redact)
 			vars[name] = got
@@ -249,11 +272,47 @@ func (r *Runner) record(sr *StepResult, ev protocol.Evidence) {
 	sr.Evidence = &Evidence{RequestExcerpt: ev.RequestExcerpt, ResponseExcerpt: ev.ResponseExcerpt, DriverDurationMS: ev.DurationMS}
 }
 
-func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, cred *protocol.Credential, handle string, checks []check) (sampleResult, *protocol.Error) {
-	cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
+func (r *Runner) callTimeoutOf(st model.Step) (time.Duration, error) {
+	if st.Timeout == "" {
+		return r.opt.CallTimeout, nil
+	}
+	d, err := time.ParseDuration(st.Timeout)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("timeout %q is not a positive duration", st.Timeout)
+	}
+	limit, err := r.cfg.TimeLimits.MaxCallLimit()
+	if err != nil {
+		return 0, err
+	}
+	if d > limit {
+		return 0, fmt.Errorf("timeout %s is longer than time_limits.max_call (%s)", d, limit)
+	}
+	return d, nil
+}
+
+func (r *Runner) files(op protocol.Operation, with any) (map[string]protocol.File, error) {
+	files, probs := r.sess.readFiles(op, with)
+	if len(probs) > 0 {
+		return nil, fmt.Errorf("%s: %s", probs[0].Path, probs[0].Message)
+	}
+	for _, at := range sortedKeys(files) {
+		f := files[at]
+		want, ok := r.checked[f.Path]
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("%s: %s wasn't read when the specifications were validated", "with"+strings.TrimPrefix(at, "$"), f.Path)
+		case want != f.SHA256:
+			return nil, fmt.Errorf("%s: %s changed after the specifications were validated (sha256 %s, now %s); nothing was sent", "with"+strings.TrimPrefix(at, "$"), f.Path, want, f.SHA256)
+		}
+	}
+	return files, nil
+}
+
+func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, files map[string]protocol.File, cred *protocol.Credential, handle string, checks []check, callTimeout time.Duration) (sampleResult, *protocol.Error) {
+	cctx, cancel := context.WithTimeout(ctx, callTimeout+callMargin)
 	defer cancel()
 	var res protocol.CallResult
-	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, DeadlineMS: r.opt.CallTimeout.Milliseconds()}
+	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, DeadlineMS: callTimeout.Milliseconds(), Files: files}
 	err := h.client.Call(cctx, protocol.MethodCall, p, &res)
 	if err != nil {
 		if brokenClient(err) {
@@ -269,11 +328,17 @@ func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, arg
 			return sampleResult{handle: res.Handle}, protocol.Errorf(protocol.CauseDriverFailed, "the fact doesn't match the fact_schema of %s: %s", op.Name, strings.Join(msgs, "; "))
 		}
 	}
+	if op.Accumulates {
+		r.scrubRedacted("$", res.Fact, op.Redact)
+	}
 	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true}
 	for _, c := range checks {
 		a := r.judge(c, res.Fact, op.Redact)
 		if a.Result != Pass {
 			s.pass = false
+		}
+		if a.vacuous {
+			s.vacuous = true
 		}
 		s.asserts = append(s.asserts, a)
 	}
@@ -305,7 +370,7 @@ func escapedValue(path string, t any, vars expr.Vars, escape map[string]string) 
 			if err != nil {
 				return nil, err
 			}
-			ne, err := escapedValue(path+"."+k, e, vars, escape)
+			ne, err := escapedValue(expr.Child(path, k), e, vars, escape)
 			if err != nil {
 				return nil, err
 			}

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -24,12 +26,95 @@ type Config struct {
 	Secrets         []string                `yaml:"secrets"`
 	Report          *ReportPolicy           `yaml:"report"`
 	AppLogs         *AppLogs                `yaml:"app_logs"`
+	Mutation        *Mutation               `yaml:"mutation"`
+	Dimensions      string                  `yaml:"dimensions"`
+	Transcripts     *Transcripts            `yaml:"transcripts"`
+	Relations       []Relation              `yaml:"relations"`
+
+	files ProtectedFiles
+}
+
+type Relation struct {
+	Act   RelationEnd   `yaml:"act"`
+	Shows []RelationEnd `yaml:"shows"`
+}
+
+type RelationEnd struct {
+	Driver string `yaml:"driver"`
+	Target string `yaml:"target"`
+}
+
+func (e RelationEnd) String() string {
+	return fmt.Sprintf("{ driver: %s, target: %q }", e.Driver, e.Target)
+}
+
+func (r Relation) Entry(show RelationEnd) string {
+	return fmt.Sprintf("{ act: %s, shows: [%s] }", r.Act, show)
+}
+
+const MaxRequestFile = 8 << 20
+
+type ProtectedFiles interface {
+	ReadProtected(rel string) (path string, data []byte, err error)
+}
+
+func (c *Config) SetFiles(f ProtectedFiles) { c.files = f }
+
+func (c *Config) Files() ProtectedFiles { return c.files }
+
+type FileRef struct {
+	Path   string
+	Size   int64
+	SHA256 string
 }
 
 type AppLogs struct {
-	Levels       []string `yaml:"levels"`
-	LevelField   string   `yaml:"level_field"`
-	MessageField string   `yaml:"message_field"`
+	Format       string            `yaml:"format"`
+	Levels       []string          `yaml:"levels"`
+	LevelField   string            `yaml:"level_field"`
+	MessageField string            `yaml:"message_field"`
+	LevelNumbers map[string]string `yaml:"level_numbers"`
+	Unparsed     string            `yaml:"unparsed"`
+	Approved     *ApprovedLogs     `yaml:"approved"`
+}
+
+const (
+	AppLogFormatJSON     = "json"
+	AppLogFormatLogfmt   = "logfmt"
+	AppLogUnparsedStrict = "strict"
+	AppLogUnparsedAllow  = "allow"
+)
+
+func (a *AppLogs) UnparsedAllowed() bool {
+	return a != nil && a.Unparsed == AppLogUnparsedAllow
+}
+
+func (a *AppLogs) FormatName() string {
+	if a == nil || a.Format == "" {
+		return AppLogFormatJSON
+	}
+	return a.Format
+}
+
+func (a *AppLogs) NumberLevels() map[int64]string {
+	if a == nil || len(a.LevelNumbers) == 0 {
+		return nil
+	}
+	out := make(map[int64]string, len(a.LevelNumbers))
+	for k, v := range a.LevelNumbers {
+		if n, ok := LevelNumber(k); ok {
+			out[n] = strings.ToUpper(v)
+		}
+	}
+	return out
+}
+
+func LevelNumber(s string) (int64, bool) {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || strconv.FormatInt(n, 10) != s {
+		return 0, false
+	}
+	return n, true
 }
 
 var DefaultAppLogLevels = []string{"ERROR", "FATAL", "PANIC"}
@@ -64,8 +149,40 @@ func (a *AppLogs) MessageKey() string {
 }
 
 type DriverConfig struct {
-	Official string `yaml:"official"`
-	Policy   any    `yaml:"policy"`
+	Official   string `yaml:"official"`
+	Policy     any    `yaml:"policy"`
+	PolicyFrom string `yaml:"policy_from"`
+}
+
+func (c *Config) PolicyOf(name string) (any, error) {
+	d, ok := c.Drivers[name]
+	if !ok {
+		return nil, fmt.Errorf("driver %q isn't declared", name)
+	}
+	if d.PolicyFrom == "" {
+		return d.Policy, nil
+	}
+	src, ok := c.Drivers[d.PolicyFrom]
+	switch {
+	case d.PolicyFrom == name:
+		return nil, fmt.Errorf("driver %q: policy_from names the driver itself", name)
+	case !ok:
+		return nil, fmt.Errorf("driver %q: policy_from names %q, which isn't a driver in proctor.yaml", name, d.PolicyFrom)
+	case src.Official != d.Official:
+		return nil, fmt.Errorf("driver %q: policy_from names %q, whose official driver is %q, not %q; only drivers of the same official program can share a policy", name, d.PolicyFrom, src.Official, d.Official)
+	case src.PolicyFrom != "":
+		return nil, fmt.Errorf("driver %q: policy_from names %q, which takes its own policy from %q; name the driver that holds the policy", name, d.PolicyFrom, src.PolicyFrom)
+	case d.Policy != nil:
+		return nil, fmt.Errorf("driver %q has both policy and policy_from; leave policy out, since it comes from %q", name, d.PolicyFrom)
+	}
+	return src.Policy, nil
+}
+
+func (c *Config) PolicyGroup(name string) string {
+	if d, ok := c.Drivers[name]; ok && d.PolicyFrom != "" {
+		return d.PolicyFrom
+	}
+	return name
 }
 
 type IdentityType struct {
@@ -78,6 +195,20 @@ type TimeLimits struct {
 	MinInterval string `yaml:"min_interval"`
 	MaxSamples  int    `yaml:"max_samples"`
 	MaxWindow   string `yaml:"max_window"`
+	MaxCall     string `yaml:"max_call"`
+}
+
+const DefaultMaxCall = 60 * time.Second
+
+func (t *TimeLimits) MaxCallLimit() (time.Duration, error) {
+	if t == nil || t.MaxCall == "" {
+		return DefaultMaxCall, nil
+	}
+	d, err := time.ParseDuration(t.MaxCall)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("time_limits.max_call %q is not a positive duration", t.MaxCall)
+	}
+	return d, nil
 }
 
 type Redaction struct {
@@ -107,13 +238,18 @@ type Spec struct {
 }
 
 type Scenario struct {
-	ID         string           `yaml:"id"`
-	Name       string           `yaml:"name"`
-	Setup      []Step           `yaml:"setup"`
-	Steps      []Step           `yaml:"steps"`
-	ExpectLogs []LogExpectation `yaml:"expect_logs"`
+	ID          string           `yaml:"id"`
+	Name        string           `yaml:"name"`
+	Setup       []Step           `yaml:"setup"`
+	Steps       []Step           `yaml:"steps"`
+	Cleanup     []Step           `yaml:"cleanup"`
+	ExpectLogs  []LogExpectation `yaml:"expect_logs"`
+	Transcript  yaml.Node        `yaml:"transcript,omitempty"`
+	ApprovedLog yaml.Node        `yaml:"approved_log,omitempty"`
 
-	Case *TableCase `yaml:"-"`
+	Case        *TableCase `yaml:"-"`
+	Approval    *Approval  `yaml:"-"`
+	LogApproval *Approval  `yaml:"-"`
 }
 
 type LogExpectation struct {
@@ -138,9 +274,10 @@ type Step struct {
 	Eventually   *Within           `yaml:"eventually"`
 	Consistently *Window           `yaml:"consistently"`
 	Never        *Window           `yaml:"never"`
+	Timeout      string            `yaml:"timeout,omitempty"`
 	Save         map[string]string `yaml:"save"`
 	NoStateCheck string            `yaml:"no_state_check"`
-	Waive        map[string]string `yaml:"waive"`
+	Waive        map[string]Waiver `yaml:"waive"`
 }
 
 type Within struct {
@@ -164,6 +301,49 @@ type Expect struct {
 	None      map[string]Claims[map[string]any] `yaml:"none" json:"none,omitempty"`
 	Contains  map[string]any                    `yaml:"contains" json:"contains,omitempty"`
 	Counts    map[string]Claims[CountMatch]     `yaml:"count" json:"count,omitempty"`
+	Matches   map[string]any                    `yaml:"matches" json:"matches,omitempty"`
+	Excludes  map[string]any                    `yaml:"excludes" json:"excludes,omitempty"`
+	Differs   map[string]any                    `yaml:"differs" json:"differs,omitempty"`
+}
+
+const MaxPatternBytes = 1 << 10
+
+func MatchPattern(pattern string) (*regexp.Regexp, error) {
+	switch {
+	case len(pattern) > MaxPatternBytes:
+		return nil, fmt.Errorf("the pattern is %d bytes, longer than %d", len(pattern), MaxPatternBytes)
+	case strings.Contains(pattern, "${"):
+		return nil, fmt.Errorf("pattern %q holds ${...}, which matches doesn't expand; write the pattern itself", pattern)
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, fmt.Errorf("pattern %q isn't a valid RE2 regular expression: %v", pattern, err)
+	}
+	re, err := regexp.Compile(`\A(?:` + pattern + `)\z`)
+	if err != nil {
+		return nil, fmt.Errorf("pattern %q: %v", pattern, err)
+	}
+	if re.MatchString("") {
+		return nil, fmt.Errorf("pattern %q matches empty text, so it would pass an empty value; require at least one character (for example + instead of *)", pattern)
+	}
+	return re, nil
+}
+
+func ExcludedTexts(v any) ([]string, bool, bool) {
+	switch x := v.(type) {
+	case string:
+		return []string{x}, false, true
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, e := range x {
+			s, isText := e.(string)
+			if !isText {
+				return nil, true, false
+			}
+			out = append(out, s)
+		}
+		return out, true, true
+	}
+	return nil, false, false
 }
 
 type CountMatch struct {
@@ -264,7 +444,14 @@ func (e *Expect) Count() int {
 	if e == nil {
 		return 0
 	}
-	n := len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Contains)
+	n := len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Contains) + len(e.Matches) + len(e.Differs)
+	for _, v := range e.Excludes {
+		if texts, _, ok := ExcludedTexts(v); ok {
+			n += len(texts)
+		} else {
+			n++
+		}
+	}
 	for _, c := range e.Any {
 		n += len(c.All())
 	}
@@ -287,9 +474,18 @@ type StepInfo struct {
 	Destructive, FixedTarget bool
 	StateCheck               bool
 	OpensHandle, UsesHandle  bool
+	Targets, Shows           []string
+	ExactTargets             []string
 	Refs                     []string
 	Data                     []string
 	Problems                 []Problem
+	Uses                     []string
+	ShowsEntries             map[string]string
+	Files                    map[string]FileRef
+}
+
+type PolicyEntry struct {
+	Key, Rule, Use string
 }
 
 type Problem struct {

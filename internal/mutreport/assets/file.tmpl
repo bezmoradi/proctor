@@ -1,0 +1,37 @@
+{{template "head" .}}<header>
+<p><a href="index.html">All files</a></p>
+<h1><code>{{.Path}}</code></h1>
+{{template "run" .Run}}<p class="counts-line">{{range $i, $c := .Columns}}{{template "verdict" $c}} {{index $.Counts $i}} {{end}}</p>
+{{if .Changed}}<p class="note">This file changed since the run: its sha256 differs from the one the run recorded. Each mutant's find is still where the run applied it, so its lines are right, but other lines may differ from what the mutants ran against.</p>
+{{end}}{{if .HasCoverage}}{{if .Profiled}}<p class="note">Lines marked never ran are in code the coverage profile records with a count of 0.</p>
+{{else}}<p class="note">This file isn't in the coverage profile, so its lines carry no coverage.</p>
+{{end}}{{end}}</header>
+<main>
+{{if .Unplaced}}<section aria-labelledby="unplaced">
+<h2 id="unplaced">Mutants not on a line</h2>
+{{range .Unplaced}}{{template "mutant" .}}{{end}}</section>
+{{end}}<table class="source">
+<caption>Source of <code>{{.Path}}</code></caption>
+<thead><tr><th scope="col">Line</th>{{if .Profiled}}<th scope="col">Coverage</th>{{end}}<th scope="col">Mutants</th><th scope="col">Code</th></tr></thead>
+<tbody>
+{{range .Lines}}<tr{{if .Class}} class="{{.Class}}"{{end}} id="L{{.N}}"><td class="n">{{.N}}</td>{{if $.Profiled}}<td class="cov">{{.Coverage}}</td>{{end}}<td class="vs">{{range .Verdicts}}{{template "verdict" .}} {{end}}</td><td class="code"><code>{{.Text}}</code></td></tr>
+{{if .Mutants}}<tr class="detail"><td colspan="{{if $.Profiled}}4{{else}}3{{end}}">{{range .Mutants}}{{template "mutant" .}}{{end}}</td></tr>
+{{end}}{{end}}</tbody>
+</table>
+</main>
+{{template "foot"}}
+{{define "mutant"}}<article class="mutant v-{{.Verdict}}" id="{{.Anchor}}">
+<h3>{{template "verdict" .}} {{.ID}}: {{.Title}}</h3>
+<dl>
+{{if .Operator}}<dt>Operator</dt><dd>{{.Operator}}</dd>
+{{end}}<dt>Verdict</dt><dd>{{.Label}}{{if .Message}}: {{.Message}}{{end}}</dd>
+<dt>Caught by</dt><dd>{{if .Failed}}{{range $i, $s := .Failed}}{{if $i}}, {{end}}<code>{{$s}}</code>{{end}}{{else}}no scenario failed{{end}}</dd>
+{{if .KilledBy}}<dt>Meant to be caught by</dt><dd>{{range $i, $s := .KilledBy}}{{if $i}}, {{end}}<code>{{$s}}</code>{{end}}</dd>
+{{end}}{{if .Errors}}<dt>Scenarios in error</dt><dd>{{range $i, $s := .Errors}}{{if $i}}, {{end}}<code>{{$s}}</code>{{end}}</dd>
+{{end}}<dt>Took</dt><dd>{{.Duration}}</dd>
+{{if .Reason}}<dt>Not placed</dt><dd>{{.Reason}}</dd>
+{{end}}</dl>
+{{range .Hunks}}<div class="diff" role="group" aria-label="Change at line {{.Line}}"><p class="diff-at">Line {{.Line}}</p>
+<pre>{{range .Before}}<del><span class="sign">- </span>{{.}}</del>{{end}}{{range .After}}<ins><span class="sign">+ </span>{{.}}</ins>{{else}}<ins><span class="sign">+ </span>(the lines are removed)</ins>{{end}}</pre></div>
+{{end}}</article>
+{{end}}

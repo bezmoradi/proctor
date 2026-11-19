@@ -36,6 +36,8 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 			add("DDB-01", "$.with.table", "table must name a table alias from the driver's policy literally, not through ${...}")
 		} else if _, declared := d.tables[t]; !declared {
 			add("DDB-01", "$.with.table", "table %q is not an alias in the dynamodb driver's policy in proctor.yaml (aliases: %s)", t, strings.Join(d.aliases, ", "))
+		} else {
+			r.Targets = []string{t}
 		}
 	default:
 		add("DDB-01", "$.with.table", "table must name a table alias from the driver's policy")

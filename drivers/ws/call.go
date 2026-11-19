@@ -82,11 +82,12 @@ func (d *Driver) connect(ctx context.Context, p protocol.CallParams) (protocol.C
 		}
 		var body []byte
 		if resp.Body != nil {
-			body, _ = io.ReadAll(io.LimitReader(resp.Body, bodyTextBytes))
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, bodyTextBytes+1))
 		}
 		f := hs.fact(false, resp, "")
 		if len(body) > 0 {
 			f["body_text"] = hs.scrub(cut(string(body), bodyTextBytes))
+			f["body_truncated"] = len(body) > bodyTextBytes
 		}
 		return protocol.CallResult{
 			Fact: f,

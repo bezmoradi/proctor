@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,12 +32,13 @@ type limits struct {
 	minInterval time.Duration
 	maxSamples  int
 	maxWindow   time.Duration
+	maxCall     time.Duration
 }
 
-var defaultLimits = limits{minInterval: 100 * time.Millisecond, maxSamples: 1000, maxWindow: 10 * time.Minute}
+var defaultLimits = limits{minInterval: 100 * time.Millisecond, maxSamples: 1000, maxWindow: 10 * time.Minute, maxCall: model.DefaultMaxCall}
 
-func Load(src Source, configPath string) *Report {
-	r := &Report{ConfigPath: configPath, Hashes: map[string]string{}, listed: map[string]bool{}, limits: defaultLimits}
+func LoadConfig(src Source, configPath string) *Report {
+	r := &Report{ConfigPath: configPath, Hashes: map[string]string{}, listed: map[string]bool{}, limits: defaultLimits, SpecIDs: map[string]string{}}
 	if err := checkRelPath(configPath); err != nil {
 		r.add(Invalid, "MODE-01", configPath, "configuration path: %v", err)
 		return r
@@ -52,10 +55,21 @@ func Load(src Source, configPath string) *Report {
 		return r
 	}
 	r.Config = &cfg
+	cfg.SetFiles(protectedFiles{src: src, root: root})
 	if data, ok, err := src.ReadFile(configPath); err == nil && ok {
 		r.checkNullAppLogs(data)
 	}
 	r.validateConfig(&cfg)
+	return r
+}
+
+func Load(src Source, configPath string) *Report {
+	r := LoadConfig(src, configPath)
+	if r.Config == nil {
+		return r
+	}
+	cfg := r.Config
+	root := r.ProtectedRoot
 	if cfg.Manifest == "" {
 		return r
 	}
@@ -96,6 +110,7 @@ func Load(src Source, configPath string) *Report {
 			continue
 		}
 		r.listed[full] = true
+		r.SpecIDs[full] = e.ID
 		data, ok, err := src.ReadFile(full)
 		if err != nil {
 			r.add(Violation, "INT-07", full, "cannot read: %v", err)
@@ -114,10 +129,16 @@ func Load(src Source, configPath string) *Report {
 		for _, pr := range spec.ExpandTables(strictyaml.Decode) {
 			r.add(Invalid, pr.Rule, full, "%s", pr.Message)
 		}
+		for _, pr := range spec.CanonicalPaths() {
+			r.add(Invalid, pr.Rule, full, "%s", pr.Message)
+		}
 		sf := SpecFile{Path: full, Spec: &spec}
 		r.Specs = append(r.Specs, sf)
-		r.validateSpec(sf, &cfg, seenScenario)
+		r.validateSpec(sf, cfg, seenScenario)
 	}
+	r.loadMutation(src, cfg)
+	r.loadCoverage(src, cfg)
+	r.loadApproved(src, cfg)
 	return r
 }
 
@@ -163,6 +184,9 @@ func (r *Report) validateConfig(c *model.Config) {
 			r.add(Invalid, "INT-12", p, "driver %q isn't available: the logs driver (Phase 5) is parked; to fail scenarios on errors in the application's log, use app_logs in proctor.yaml (EXE-10) instead", name)
 		case parkedDrivers[name] || parkedDrivers[d.Official]:
 			r.add(Invalid, "INT-12", p, "driver %q isn't available: Temporal and log evidence (Phase 5) is parked", name)
+		}
+		if _, err := c.PolicyOf(name); err != nil {
+			r.add(Invalid, "INT-18", p, "%v", err)
 		}
 	}
 	for _, name := range sortedKeys(c.Identities) {
@@ -212,6 +236,9 @@ func (r *Report) validateConfig(c *model.Config) {
 	}
 	r.validateTimeLimits(c)
 	r.validateAppLogs(c)
+	r.validateApprovedLogs(c)
+	r.validateTranscripts(c)
+	r.validateRelations(c)
 }
 
 func (r *Report) validateAppLogs(c *model.Config) {
@@ -242,6 +269,31 @@ func (r *Report) validateAppLogs(c *model.Config) {
 	if a.LevelKey() == a.MessageKey() {
 		r.add(Invalid, "EXE-10", p, "app_logs.level_field and app_logs.message_field both name %q", a.LevelKey())
 	}
+	switch a.Format {
+	case "", model.AppLogFormatJSON, model.AppLogFormatLogfmt:
+	default:
+		r.add(Invalid, "EXE-10", p, "app_logs.format %q isn't json or logfmt", a.Format)
+	}
+	switch a.Unparsed {
+	case "", model.AppLogUnparsedStrict, model.AppLogUnparsedAllow:
+	default:
+		r.add(Invalid, "EXE-10", p, "app_logs.unparsed %q isn't strict or allow", a.Unparsed)
+	}
+	if a.LevelNumbers != nil && len(a.LevelNumbers) == 0 {
+		r.add(Invalid, "EXE-10", p, "app_logs.level_numbers lists no numbers; leave it out if the log's levels are names")
+	}
+	for _, k := range slices.Sorted(maps.Keys(a.LevelNumbers)) {
+		v := a.LevelNumbers[k]
+		if _, ok := model.LevelNumber(k); !ok {
+			r.add(Invalid, "EXE-10", p, "app_logs.level_numbers key %q isn't a whole number in decimal, such as 50 or -4, without a plus sign or leading zeros", k)
+		}
+		switch {
+		case strings.TrimSpace(v) == "":
+			r.add(Invalid, "EXE-10", p, "app_logs.level_numbers %s maps to no level; give the level's name, such as ERROR", k)
+		case strings.TrimSpace(v) != v:
+			r.add(Invalid, "EXE-10", p, "app_logs.level_numbers %s: %q has leading or trailing spaces", k, v)
+		}
+	}
 }
 
 func (r *Report) checkNullAppLogs(data []byte) {
@@ -253,6 +305,22 @@ func (r *Report) checkNullAppLogs(data []byte) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == "app_logs" && m.Content[i+1].ShortTag() == "!!null" {
 			r.add(Invalid, "EXE-10", r.ConfigPath, "line %d: app_logs has no value; write app_logs: {} to check the application's log with the default settings, or remove the key", m.Content[i].Line)
+		}
+		if v := m.Content[i+1]; m.Content[i].Value == "app_logs" && v.Kind == yaml.MappingNode {
+			for j := 0; j+1 < len(v.Content); j += 2 {
+				if v.Content[j].Value == "approved" && v.Content[j+1].ShortTag() == "!!null" {
+					r.add(Invalid, "ALG-02", r.ConfigPath, "line %d: app_logs.approved has no value; give its fields, or remove the key", v.Content[j].Line)
+				}
+			}
+		}
+		if v := m.Content[i+1]; m.Content[i].Value == "dimensions" && (v.ShortTag() == "!!null" || (v.Kind == yaml.ScalarNode && v.Value == "")) {
+			r.add(Invalid, model.CoverageRule, r.ConfigPath, "line %d: dimensions has no value; name the dimensions file, such as dimensions: dimensions.yaml, or remove the key", m.Content[i].Line)
+		}
+		if m.Content[i].Value == "transcripts" && m.Content[i+1].ShortTag() == "!!null" {
+			r.add(Invalid, "TRN-03", r.ConfigPath, "line %d: transcripts has no value; give max_bytes or scrub, or remove the key for the defaults", m.Content[i].Line)
+		}
+		if m.Content[i].Value == "mutation" && m.Content[i+1].ShortTag() == "!!null" {
+			r.add(Invalid, "MUT-01", r.ConfigPath, "line %d: mutation has no value; give mutants, up, down and binding, or remove the key", m.Content[i].Line)
 		}
 	}
 }
@@ -285,6 +353,13 @@ func (r *Report) validateTimeLimits(c *model.Config) {
 	}
 	if r.limits.minInterval > r.limits.maxWindow {
 		r.add(Invalid, "TIME-07", p, "time_limits.min_interval (%s) is longer than time_limits.max_window (%s)", r.limits.minInterval, r.limits.maxWindow)
+	}
+	if tl.MaxCall != "" {
+		if d, err := parseDuration(tl.MaxCall); err != nil {
+			r.add(Invalid, "TIME-13", p, "time_limits.max_call: %v", err)
+		} else {
+			r.limits.maxCall = d
+		}
 	}
 }
 

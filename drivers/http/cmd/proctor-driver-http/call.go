@@ -25,37 +25,50 @@ const (
 )
 
 type requestArgs struct {
-	Method   string         `json:"method"`
-	Path     string         `json:"path"`
-	Query    map[string]any `json:"query"`
-	Headers  map[string]any `json:"headers"`
-	Body     any            `json:"body"`
-	BodyText any            `json:"body_text"`
+	Method     string         `json:"method"`
+	Path       string         `json:"path"`
+	Query      map[string]any `json:"query"`
+	Headers    map[string]any `json:"headers"`
+	Body       any            `json:"body"`
+	BodyText   any            `json:"body_text"`
+	BodyBase64 any            `json:"body_base64"`
+	BodyFill   any            `json:"body_fill"`
+	BodyFile   any            `json:"body_file"`
 }
 
 type outgoing struct {
 	req    *http.Request
 	target string
 	body   []byte
+	raw    *rawBody
 }
 
 func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.CallResult, error) {
 	if d.client == nil {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseNotConfigured, "the http driver has no connection")
 	}
-	if p.Op != opRequest {
-		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "the http driver has no operation %q", p.Op)
-	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
+	switch p.Op {
+	case opRequest:
+	case opOpen:
+		return d.open(ctx, p)
+	case opFrames:
+		return d.frames(p)
+	default:
+		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "the http driver has no operation %q", p.Op)
+	}
+	if p.Handle != "" {
+		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%s runs on no handle", opRequest)
+	}
 	var a requestArgs
 	if err := protocol.Decode(p.Args, &a); err != nil {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "request: %v", err)
 	}
-	out, err := d.build(ctx, a, p.Credential)
+	out, err := d.build(ctx, a, p.Credential, p.Files)
 	if err != nil {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%v", err)
 	}
@@ -84,7 +97,7 @@ func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.Call
 	}, nil
 }
 
-func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Credential) (outgoing, error) {
+func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Credential, files map[string]protocol.File) (outgoing, error) {
 	var out outgoing
 	if !knownMethod(a.Method) {
 		return out, fmt.Errorf("unsupported method %q", a.Method)
@@ -107,11 +120,28 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 		u += "?" + q.Encode()
 	}
 	var rd io.Reader
-	if a.Body != nil && a.BodyText != nil {
-		return out, errors.New("body and body_text can't both be set")
+	forms := 0
+	for _, f := range []any{a.Body, a.BodyText, a.BodyBase64, a.BodyFill, a.BodyFile} {
+		if f != nil {
+			forms++
+		}
 	}
-	if (a.Body != nil || a.BodyText != nil) && a.Method == http.MethodHead {
+	if forms > 1 {
+		return out, errors.New("a request has one body, but more than one of body, body_text, body_base64, body_fill and body_file is set")
+	}
+	if forms > 0 && a.Method == http.MethodHead {
 		return out, errors.New("a HEAD request can't send a body")
+	}
+	raw, err := buildRawBody(a, files)
+	if err != nil {
+		return out, err
+	}
+	if raw != nil {
+		if limit := d.policy.bodyLimit(); raw.size > limit {
+			return out, fmt.Errorf("the body holds %d bytes, more than the policy's %s (%d)", raw.size, maxBodyKey, limit)
+		}
+		out.raw = raw
+		rd = raw.reader
 	}
 	if a.Body != nil {
 		b, err := json.Marshal(a.Body)
@@ -129,9 +159,19 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 		out.body = []byte(t)
 		rd = bytes.NewReader(out.body)
 	}
+	if limit := d.policy.bodyLimit(); int64(len(out.body)) > limit {
+		return out, fmt.Errorf("the body holds %d bytes, more than the policy's %s (%d)", len(out.body), maxBodyKey, limit)
+	}
 	req, err := http.NewRequestWithContext(ctx, a.Method, u, rd)
 	if err != nil {
 		return out, err
+	}
+	if raw != nil {
+		req.ContentLength = raw.size
+		if raw.fill != nil {
+			f := *raw.fill
+			req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(f.reader()), nil }
+		}
 	}
 	if req.URL.Scheme != d.base.Scheme || req.URL.Host != d.base.Host || !strings.HasPrefix(req.URL.EscapedPath(), d.basePath()+"/") {
 		return out, fmt.Errorf("request URL %s leaves the target (HTTP-05)", u)
@@ -245,6 +285,7 @@ func fact(resp *http.Response, body []byte) map[string]any {
 		return f
 	}
 	f["body_text"] = cut(body, bodyTextBytes)
+	f["body_truncated"] = len(body) > bodyTextBytes
 	if syntaxOK || claimsJSON(resp.Header.Get("Content-Type")) {
 		f["body_invalid"] = reason
 	}
@@ -281,7 +322,11 @@ func requestExcerpt(out outgoing) string {
 			fmt.Fprintf(&sb, "%s: %s\n", name, val)
 		}
 	}
-	if len(out.body) > 0 {
+	switch {
+	case out.raw != nil:
+		sb.WriteString("\n")
+		sb.WriteString(out.raw.describe())
+	case len(out.body) > 0:
 		sb.WriteString("\n")
 		sb.WriteString(excerpt(out.body))
 	}

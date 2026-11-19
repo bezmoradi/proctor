@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -116,17 +118,33 @@ func (f File) Since(m Mark) (Window, error) {
 }
 
 type Rules struct {
+	Format       string
 	Levels       []string
 	LevelField   string
 	MessageField string
+	Numbers      map[int64]string
 }
 
 type Entry struct {
 	Level   string
+	Number  string
 	Message string
 	Time    string
 	Line    string
+
+	object map[string]any
+	pairs  map[string]logfmtValue
 }
+
+type Reading struct {
+	Entry    Entry
+	Parsed   bool
+	Failing  bool
+	Runtime  bool
+	Unmapped string
+}
+
+const formatLogfmt = "logfmt"
 
 var runtimePrefixes = []struct{ prefix, level string }{
 	{"panic:", "PANIC"},
@@ -143,28 +161,66 @@ func (r Rules) failing(level string) bool {
 	return false
 }
 
-func (r Rules) Candidate(line string) (Entry, bool) {
-	if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "{") {
-		dec := json.NewDecoder(strings.NewReader(trimmed))
-		dec.UseNumber()
-		var obj map[string]any
-		if err := dec.Decode(&obj); err == nil && !dec.More() {
-			level, ok := obj[r.LevelField].(string)
-			if !ok || !r.failing(level) {
-				return Entry{}, false
+func (r Rules) Read(line string) Reading {
+	var e Entry
+	var ok bool
+	if r.Format == formatLogfmt {
+		e, ok = r.logfmtEntry(line)
+	} else {
+		e, ok = r.jsonEntry(line)
+	}
+	if ok {
+		e.Line = line
+		if e.Number != "" {
+			name, mapped := r.mapNumber(e.Number)
+			if !mapped {
+				return Reading{Entry: e, Parsed: true, Unmapped: e.Number}
 			}
-			return Entry{Level: level, Message: text(obj[r.MessageField]), Time: text(obj["time"]), Line: line}, true
+			e.Level = name
 		}
+		return Reading{Entry: e, Parsed: true, Failing: r.failing(e.Level)}
 	}
 	for _, p := range runtimePrefixes {
 		if strings.HasPrefix(line, p.prefix) {
-			if !r.failing(p.level) {
-				return Entry{}, false
-			}
-			return Entry{Level: p.level, Message: strings.TrimSpace(strings.TrimPrefix(line, p.prefix)), Line: line}, true
+			e := Entry{Level: p.level, Message: strings.TrimSpace(strings.TrimPrefix(line, p.prefix)), Line: line}
+			return Reading{Entry: e, Parsed: true, Failing: r.failing(p.level), Runtime: true}
 		}
 	}
-	return Entry{}, false
+	return Reading{}
+}
+
+func (r Rules) jsonEntry(line string) (Entry, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{") {
+		return Entry{}, false
+	}
+	dec := json.NewDecoder(strings.NewReader(trimmed))
+	dec.UseNumber()
+	var obj map[string]any
+	if err := dec.Decode(&obj); err != nil || dec.More() {
+		return Entry{}, false
+	}
+	e := Entry{Message: text(obj[r.MessageField]), Time: text(obj["time"]), object: obj}
+	switch v := obj[r.LevelField].(type) {
+	case string:
+		e.Level = v
+	case json.Number:
+		e.Number = v.String()
+	default:
+		return Entry{}, false
+	}
+	return e, true
+}
+
+var numberText = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+func (r Rules) mapNumber(s string) (string, bool) {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return "", false
+	}
+	name, ok := r.Numbers[n]
+	return name, ok
 }
 
 func text(v any) string {

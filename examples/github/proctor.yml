@@ -3,6 +3,7 @@ name: proctor
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions: {}
 
@@ -11,7 +12,39 @@ env:
   PROCTOR_SHA256: <sha256 of that binary>
 
 jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      kind: ${{ steps.kind.outputs.kind }}
+    steps:
+      - name: Map the proctor label to a change kind
+        id: kind
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          kind=$(printf '%s' "$LABELS" | jq -r '
+            [(. // [])[] | select(type == "string" and (ascii_downcase | startswith("proctor:")))]
+            | if length > 1 then "several"
+              elif length == 0 then "none"
+              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0]] // "unknown"
+              end')
+          case "$kind" in
+            none) kind="" ;;
+            refactor | docs | fix | feature) ;;
+            several)
+              echo "::error::The pull request has more than one proctor: label; keep one of proctor:refactor, proctor:docs, proctor:fix and proctor:feature."
+              exit 1
+              ;;
+            *)
+              echo "::error::The pull request has a proctor: label that names no change kind; use proctor:refactor, proctor:docs, proctor:fix or proctor:feature."
+              exit 1
+              ;;
+          esac
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: kind
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -35,7 +68,7 @@ jobs:
           if-no-files-found: error
 
   verify:
-    needs: build
+    needs: [kind, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -65,13 +98,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           BUILT: ${{ needs.build.outputs.digest }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          CHANGE_KIND: ${{ needs.kind.outputs.kind }}
         run: |
           printf 'environment: github-actions\ntarget: { base_url: "http://127.0.0.1:18080", user_agent: proctor-ci/0 }\nimage: { built_digest: "%s", running_digest: "%s" }\n' "$BUILT" "$RUNNING" > "$RUNNER_TEMP/binding.yaml"
           echo "$PROCTOR_SHA256  $RUNNER_TEMP/proctor" | sha256sum -c -
           chmod 0555 "$RUNNER_TEMP/proctor"
           echo "executing proctor with sha256 $(sha256sum "$RUNNER_TEMP/proctor" | cut -d' ' -f1)"
+          set --
+          if [ -n "$CHANGE_KIND" ]; then
+            set -- --change-kind "$CHANGE_KIND" --change-kind-source label
+          fi
           "$RUNNER_TEMP/proctor" run --authoritative --config proctor/proctor.yaml \
-            --binding "$RUNNER_TEMP/binding.yaml" --pr-head "$PR_HEAD" --report "$RUNNER_TEMP/report.json"
+            --binding "$RUNNER_TEMP/binding.yaml" --pr-head "$PR_HEAD" --report "$RUNNER_TEMP/report.json" "$@"
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -81,16 +119,18 @@ jobs:
           if-no-files-found: error
 
   verdict:
-    needs: [build, verify]
+    needs: [kind, build, verify]
     if: always()
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Every prerequisite succeeded
         env:
+          KIND: ${{ needs.kind.result }}
           BUILD: ${{ needs.build.result }}
           VERIFY: ${{ needs.verify.result }}
         run: |
-          echo "build: $BUILD, verify: $VERIFY"
+          echo "kind: $KIND, build: $BUILD, verify: $VERIFY"
+          test "$KIND" = success
           test "$BUILD" = success
           test "$VERIFY" = success

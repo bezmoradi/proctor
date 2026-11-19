@@ -24,6 +24,7 @@ import (
 type runOptions struct {
 	common
 	binding, commit, base, prHead, report string
+	received, kind, kindSource            string
 	authoritative, noProgress             bool
 	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
@@ -45,7 +46,7 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	addCommon(cmd, &o.common)
 	f := cmd.Flags()
 	f.StringVarP(&o.binding, "binding", "b", "", "environment binding file (required)")
-	f.DurationVar(&o.callTimeout, "call-timeout", 10*time.Second, "time limit for each driver call")
+	f.DurationVar(&o.callTimeout, "call-timeout", 10*time.Second, "time limit for each driver call of a step without its own timeout; at most time_limits.max_call, and when not given, 10s or max_call if that is shorter")
 	f.DurationVar(&o.readyTimeout, "ready-timeout", 30*time.Second, "how long to wait for every driver to report its target ready")
 	f.BoolVar(&o.authoritative, "authoritative", false, "check a commit for the trusted CI job")
 	f.StringVar(&o.commit, "commit", "HEAD", "with --authoritative: the tested commit")
@@ -53,35 +54,41 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	f.StringVar(&o.prHead, "pr-head", "", "with --authoritative: the pull request head, when the tested commit is GitHub's test merge")
 	f.StringVar(&o.report, "report", "", "where to write the JSON report: required with --authoritative; in local mode it gets the document --json prints, with mode 0600")
 	f.BoolVar(&o.noProgress, "no-progress", false, "don't write a line to stderr as each scenario finishes")
+	addChangeKind(cmd, &o.kind, &o.kindSource)
+	f.StringVar(&o.received, "received", "", "folder, outside the repository and new or empty, for the received transcripts and logs of scenarios with transcript: true or approved_log: true (default: a new folder under $TMPDIR/proctor-received/<project>/)")
 	return cmd
 }
 
 func run(o runOptions, stdout, stderr io.Writer) int {
 	c, bindingPath := o.common, o.binding
+	refuse := func(prefix, msg string) int {
+		fmt.Fprintln(stderr, prefix+safe(msg))
+		return reportRefusal(o.report, o.authoritative, exitInvalid, msg, stderr)
+	}
 	if o.callTimeout <= 0 || o.readyTimeout <= 0 {
-		fmt.Fprintln(stderr, "proctor run: --call-timeout and --ready-timeout must be positive")
-		return exitInvalid
+		return refuse("proctor run: ", "--call-timeout and --ready-timeout must be positive")
+	}
+	if !o.set("call-timeout") {
+		o.callTimeout = 0
 	}
 	progress, endProgress := newProgress(stderr, o.noProgress)
 	defer endProgress()
 	if o.authoritative {
 		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
-			callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress}, stdout, stderr)
+			received: o.received, callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress,
+			kind: o.kind, kindSource: o.kindSource, kindGiven: o.set("change-kind"), kindSourceGiven: o.set("change-kind-source")}, stdout, stderr)
 	}
-	for _, name := range []string{"commit", "base", "pr-head"} {
+	for _, name := range []string{"commit", "base", "pr-head", "change-kind", "change-kind-source"} {
 		if o.set(name) {
-			fmt.Fprintf(stderr, "proctor run: --%s is only for --authoritative\n", name)
-			return exitInvalid
+			return refuse("proctor run: ", "--"+name+" is only for --authoritative")
 		}
 	}
 	if bindingPath == "" {
-		fmt.Fprintln(stderr, "proctor run: --binding is required in local mode")
-		return exitInvalid
+		return refuse("proctor run: ", "--binding is required in local mode")
 	}
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
-		return exitInvalid
+		return refuse("proctor: ", err.Error())
 	}
 	emit := func(render func(w io.Writer, asJSON bool) int) int {
 		return emitLocal(o.report, c.json, stdout, stderr, render)
@@ -109,13 +116,30 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 		})
 	}
 	opt.Described = info
+	opt.RunID = runner.NewRunID()
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		se := asSetupError(err)
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
 	}
 	defer rn.Close()
+	rd, err := prepareReceived(o.received, repo.Dir(), rep, opt.RunID)
+	if err != nil {
+		se := &runner.SetupError{ExitCode: pathErrorCode(err), Msgs: []string{"received transcripts: " + err.Error()}}
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
+	}
+	if rd != nil {
+		rn.SetReceived(rd.write)
+	}
 	out := rn.Run(ctx)
+	if rd != nil {
+		if err := rd.finish(out, rep, "local", ""); err != nil {
+			fmt.Fprintf(stderr, "proctor: writing the received transcripts' manifest: %s\n", safe(err.Error()))
+			if out.ExitCode == exitOK {
+				out.ExitCode, out.Result = exitError, resultName(exitError)
+			}
+		}
+	}
 	return emit(func(w io.Writer, asJSON bool) int { return writeLocalRun(w, asJSON, rep, out) })
 }
 
@@ -141,6 +165,7 @@ func writeLocalRun(w io.Writer, asJSON bool, rep *integrity.Report, out *runner.
 			"summary":    out.Summary,
 			"scenarios":  out.Scenarios,
 			"tables":     out.Tables,
+			"received":   out.Received,
 		})
 		return out.ExitCode
 	}
@@ -164,20 +189,26 @@ func emitLocal(report string, asJSON bool, stdout, stderr io.Writer, render func
 	return code
 }
 
-func writePrivate(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+func reportRefusal(report string, authoritative bool, code int, msg string, stderr io.Writer) int {
+	if report == "" {
+		return code
+	}
+	var doc any = map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": []string{msg}}
+	if authoritative {
+		ar := newAuthReport()
+		ar.Errors = append(ar.Errors, msg)
+		ar.ExitCode, ar.Result = code, resultName(code)
+		ar.Provenance.EndedAt = ar.Provenance.StartedAt
+		doc = ar
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err == nil {
+		err = writePrivate(report, append(data, '\n'))
+	}
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
 	}
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return code
 }
 
 func readBinding(p string) (*model.Binding, error) {
@@ -201,15 +232,15 @@ func specFiles(rep *integrity.Report) []runner.SpecFile {
 }
 
 func describeSteps(ctx context.Context, rep *integrity.Report, b *model.Binding, opt runner.Options) (map[model.StepRef]model.StepInfo, []runner.DriverInfo, *runner.SetupError) {
-	info, drivers, err := runner.Describe(ctx, rep.Config, specFiles(rep), b, opt)
+	d, drivers, err := runner.Describe(ctx, rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		return nil, nil, asSetupError(err)
 	}
-	rep.ApplyStepInfo(info)
+	rep.ApplyStepInfo(d.Steps, d.Entries)
 	if drivers == nil {
 		drivers = []runner.DriverInfo{}
 	}
-	return info, drivers, nil
+	return d.Steps, drivers, nil
 }
 
 func asSetupError(err error) *runner.SetupError {

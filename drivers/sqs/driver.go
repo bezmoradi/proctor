@@ -46,6 +46,11 @@ const (
 	maxDelay      = 900
 	excerptBytes  = 4 << 10
 	maxCABundleSz = 1 << 20
+	holdRule      = "SQS-03"
+	maxHold       = 30
+	releaseMargin = 2 * time.Second
+	releaseGrace  = 500 * time.Millisecond
+	releaseBatch  = 10
 )
 
 var (
@@ -139,6 +144,10 @@ var PolicySchema = map[string]any{
 			"type":                 "object",
 			"additionalProperties": map[string]any{"type": "string"},
 		},
+		"peek_hold": map[string]any{
+			"type":  "array",
+			"items": map[string]any{"type": "string"},
+		},
 	},
 	"required":             []string{"queues"},
 	"additionalProperties": false,
@@ -156,7 +165,8 @@ var ConnectionSchema = map[string]any{
 }
 
 type policy struct {
-	Queues map[string]string `json:"queues"`
+	Queues   map[string]string `json:"queues"`
+	PeekHold []string          `json:"peek_hold"`
 }
 
 type connection struct {
@@ -169,6 +179,7 @@ type queue struct {
 	alias string
 	name  string
 	url   string
+	hold  bool
 }
 
 func (q *queue) fifo() bool {
@@ -238,6 +249,9 @@ func (d *Driver) Configure(ctx context.Context, p protocol.ConfigureParams) erro
 	if len(msgs) > 0 {
 		return protocol.Lastingf(protocol.CauseInvalidRequest, "policy: %s", strings.Join(msgs, "; "))
 	}
+	if msgs := holdQueues(pol.PeekHold, queues); len(msgs) > 0 {
+		return protocol.Lastingf(protocol.CauseInvalidRequest, "policy: %s (%s)", strings.Join(msgs, "; "), holdRule)
+	}
 	if p.Connection != nil {
 		if err := d.connect(p.Connection, p.Secrets); err != nil {
 			return err
@@ -247,6 +261,32 @@ func (d *Driver) Configure(ctx context.Context, p protocol.ConfigureParams) erro
 	}
 	d.aliases, d.queues = aliases, queues
 	return nil
+}
+
+func holdQueues(list []string, queues map[string]*queue) []string {
+	if list == nil {
+		return nil
+	}
+	if len(list) == 0 {
+		return []string{"peek_hold is empty; list the queue aliases whose peeks may hold messages, or remove peek_hold"}
+	}
+	var msgs []string
+	seen := map[string]bool{}
+	for i, alias := range list {
+		q := queues[alias]
+		switch {
+		case seen[alias]:
+			msgs = append(msgs, fmt.Sprintf("peek_hold[%d]: queue %q is listed twice", i, alias))
+		case q == nil:
+			msgs = append(msgs, fmt.Sprintf("peek_hold[%d]: %q is not a queue alias declared in queues", i, alias))
+		case q.fifo():
+			msgs = append(msgs, fmt.Sprintf("peek_hold[%d]: queue %s is a FIFO queue; SQS returns no more of a message group while one of its messages is held, so a hold can't read past it and would stop the group's consumers", i, q.label()))
+		default:
+			q.hold = true
+		}
+		seen[alias] = true
+	}
+	return msgs
 }
 
 func checkQueueName(name string) error {
@@ -374,6 +414,8 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 			add("SQS-01", "$.with.queue", "queue must name a queue alias from the driver's policy as plain text, not %q", alias)
 		case d.queues[alias] == nil:
 			add("SQS-01", "$.with.queue", "queue %q is not declared in the sqs driver's policy in proctor.yaml (declared: %s)", alias, strings.Join(d.aliases, ", "))
+		default:
+			r.Targets = []string{alias}
 		}
 	}
 	if p.Op == OpPeek {

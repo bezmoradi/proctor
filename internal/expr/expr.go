@@ -7,72 +7,75 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"proctor/protocol/jsonpath"
 )
 
 type Path struct {
-	src   string
-	steps []step
+	steps []jsonpath.Segment
 }
-
-type step struct {
-	name  string
-	index int
-	isIdx bool
-}
-
-var nameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*`)
 
 func ParsePath(s string) (Path, error) {
-	p := Path{src: s}
-	if !strings.HasPrefix(s, "$") {
-		return p, fmt.Errorf("JSONPath %q must start with $", s)
-	}
-	rest := s[1:]
-	for rest != "" {
-		switch rest[0] {
-		case '.':
-			m := nameRE.FindString(rest[1:])
-			if m == "" {
-				return p, fmt.Errorf("JSONPath %q: expected a field name after '.'", s)
-			}
-			p.steps = append(p.steps, step{name: m})
-			rest = rest[1+len(m):]
-		case '[':
-			end := strings.IndexByte(rest, ']')
-			if end < 0 {
-				return p, fmt.Errorf("JSONPath %q: unclosed '['", s)
-			}
-			n, err := strconv.Atoi(rest[1:end])
-			if err != nil || n < 0 || rest[1] == '+' || (len(rest[1:end]) > 1 && rest[1] == '0') {
-				return p, fmt.Errorf("JSONPath %q: only non-negative array indexes are supported in Phase 0", s)
-			}
-			p.steps = append(p.steps, step{index: n, isIdx: true})
-			rest = rest[end+1:]
-		default:
-			return p, fmt.Errorf("JSONPath %q: unsupported syntax at %q (Phase 0 supports $, .name and [index])", s, rest)
-		}
-	}
-	return p, nil
+	steps, err := jsonpath.Parse(s)
+	return Path{steps: steps}, err
 }
 
-func (p Path) String() string { return p.src }
+func ParseRelative(s string) (Path, error) {
+	steps, err := jsonpath.ParseRelative(s)
+	return Path{steps: steps}, err
+}
+
+func (p Path) String() string { return jsonpath.String(p.steps) }
+
+func (p Path) Relative() string { return jsonpath.Relative(p.steps) }
+
+type Segment = jsonpath.Segment
+
+func (p Path) Segments() []Segment {
+	return append([]Segment(nil), p.steps...)
+}
+
+func (p Path) Prefix(n int) Path {
+	if n > len(p.steps) {
+		n = len(p.steps)
+	}
+	return Path{steps: append([]jsonpath.Segment(nil), p.steps[:n]...)}
+}
+
+func Child(path, name string) string { return jsonpath.Child(path, name) }
+
+func Canonical(s string) (string, bool) {
+	p, err := ParsePath(s)
+	if err != nil {
+		return "", false
+	}
+	return p.String(), true
+}
+
+func CanonicalRelative(s string) (string, bool) {
+	p, err := ParseRelative(s)
+	if err != nil {
+		return "", false
+	}
+	return p.Relative(), true
+}
 
 func (p Path) Select(doc any) (any, bool) {
 	cur := doc
 	for _, st := range p.steps {
-		if st.isIdx {
+		if st.IsIndex {
 			arr, ok := cur.([]any)
-			if !ok || st.index >= len(arr) {
+			if !ok || st.Index >= len(arr) {
 				return nil, false
 			}
-			cur = arr[st.index]
+			cur = arr[st.Index]
 			continue
 		}
 		obj, ok := cur.(map[string]any)
 		if !ok {
 			return nil, false
 		}
-		v, ok := obj[st.name]
+		v, ok := obj[st.Name]
 		if !ok {
 			return nil, false
 		}

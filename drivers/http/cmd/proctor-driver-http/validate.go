@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"proctor/protocol"
+	"proctor/protocol/jsonpath"
 )
 
 const statusPath = "$.status"
@@ -23,10 +25,13 @@ type expectation struct {
 	None      map[string]any      `json:"none"`
 	Contains  map[string]any      `json:"contains"`
 	Count     map[string]any      `json:"count"`
+	Matches   map[string]any      `json:"matches"`
+	Excludes  map[string]any      `json:"excludes"`
+	Differs   map[string]any      `json:"differs"`
 }
 
 func (e expectation) count() int {
-	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None) + len(e.Contains) + len(e.Count)
+	return len(e.Equal) + len(e.Present) + len(e.Absent) + len(e.Keys) + len(e.Length) + len(e.Unordered) + len(e.Any) + len(e.None) + len(e.Contains) + len(e.Count) + len(e.Matches) + len(e.Excludes) + len(e.Differs)
 }
 
 func (e expectation) paths() []string {
@@ -41,6 +46,9 @@ func (e expectation) paths() []string {
 	out = append(out, sortedKeys(e.None)...)
 	out = append(out, sortedKeys(e.Contains)...)
 	out = append(out, sortedKeys(e.Count)...)
+	out = append(out, sortedKeys(e.Matches)...)
+	out = append(out, sortedKeys(e.Excludes)...)
+	out = append(out, sortedKeys(e.Differs)...)
 	return out
 }
 
@@ -54,8 +62,14 @@ func (v *validation) add(rule, path, format string, args ...any) {
 
 func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (protocol.ValidateResult, error) {
 	v := &validation{r: protocol.ValidateResult{Kind: protocol.KindAct, Problems: []protocol.Problem{}, Refs: []string{}}}
-	if p.Op != opRequest {
-		v.add("EXE-01", "$.do", "the http driver has no operation %q; its only operation is %s", p.Op, opRequest)
+	switch p.Op {
+	case opRequest:
+	case opOpen:
+		return d.validateOpen(p), nil
+	case opFrames:
+		return d.validateFrames(p), nil
+	default:
+		v.add("EXE-01", "$.do", "the http driver has no operation %q; it has %s, %s and %s", p.Op, opRequest, opOpen, opFrames)
 		return v.r, nil
 	}
 	args, isObject := p.Args.(map[string]any)
@@ -66,17 +80,34 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	v.r.Refs = uniqueSorted(refNames(args))
 
 	method, _ := args["method"].(string)
+	literalPath, pathIsText := args["path"].(string)
+	declared := readRequest{method: method, path: literalPath}
+	readShows, declaredRead := d.policy.reads[declared]
+	declaredRead = declaredRead && pathIsText
+	declaredDestructive := pathIsText && d.policy.destructive[declared]
+	switch {
+	case declaredRead:
+		v.r.Uses = []string{readEntry(declared)}
+	case declaredDestructive:
+		v.r.Uses = []string{destructiveEntry(declared)}
+	}
 	if knownMethod(method) {
-		if observes(method) {
+		if observes(method) || declaredRead {
 			v.r.Kind = protocol.KindObserve
 		}
-		v.r.Destructive = destructive(method)
+		v.r.Destructive = destructive(method) || declaredDestructive
 	} else {
 		v.add("EXE-01", "$.with.method", "unsupported method %s", show(args["method"]))
 	}
 
 	if path, ok := args["path"].(string); ok {
-		v.r.FixedTarget = !strings.Contains(path, "${")
+		exact, named := path, refNames(path)
+		if declaredDestructive {
+			exact, named = path+bodyTarget(args)+rawTarget(args, p.Files), refNames([]any{path, args["body"], args["body_text"]})
+		}
+		v.r.FixedTarget = !runScoped(named)
+		v.r.Targets = []string{template(path)}
+		v.r.ExactTargets = []string{exact}
 		if err := checkRequestPath(path); err != nil {
 			v.add("HTTP-05", "$.with.path", "%v", err)
 		}
@@ -88,17 +119,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	headers := v.object(args, "headers")
 	v.checkHeaders(headers)
 
-	body, hasBody := args["body"]
-	if method == "HEAD" && hasBody && body != nil {
-		v.add("EXE-01", "$.with.body", "a HEAD request can't send a body")
-	}
-	bodyText, hasBodyText := args["body_text"]
-	if method == "HEAD" && hasBodyText && bodyText != nil {
-		v.add("EXE-01", "$.with.body_text", "a HEAD request can't send a body")
-	}
-	if hasBody && hasBodyText {
-		v.add("EXE-01", "$.with.body_text", "body and body_text can't both be set; use body for JSON or body_text for text sent as written")
-	}
+	v.checkBodyForms(args, method, headers, p.Files, d.policy.bodyLimit())
 
 	v.onlyInBodyOrHeaders("$.with.method", args["method"])
 	v.onlyInBodyOrHeaders("$.with.path", args["path"])
@@ -111,23 +132,66 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 			ex = expectation{}
 		}
 	}
-	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None, ex.Contains, ex.Count})
+	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None, ex.Contains, ex.Count, ex.Matches, ex.Excludes, ex.Differs})
 	v.checkClaims(ex)
 	v.checkStatus(ex, p)
 	if method == "HEAD" {
 		v.checkHead(ex, p.Save)
 	}
-	if v.r.Kind == protocol.KindObserve && !checksState(ex, p) {
-		no := false
-		v.r.StateCheck = &no
+	if v.r.Kind == protocol.KindObserve {
+		if method == "OPTIONS" || !checksState(ex) {
+			no := false
+			v.r.StateCheck = &no
+		}
+		read := ""
+		switch {
+		case declaredRead:
+			v.r.Shows, read = append([]string(nil), readShows...), declared.String()
+		case method == showsMethod && pathIsText:
+			v.r.Shows, read = append([]string(nil), d.policy.shows[template(literalPath)]...), showsMethod+" "+template(literalPath)
+		}
+		if len(v.r.Shows) > 0 {
+			v.r.ShowsEntries = map[string]string{}
+			for _, act := range v.r.Shows {
+				v.r.ShowsEntries[act] = showsEntry(read, act)
+			}
+		}
 	}
 	v.checkHeaderCase(ex)
 	v.checkConflicts(ex)
 	v.checkUnordered(ex)
-	if method == "GET" && len(ex.Length) > 0 && len(query) == 0 {
+	if (method == "GET" || declaredRead) && len(ex.Length) > 0 && len(query) == 0 {
 		v.add("HTTP-09", "$.expect.length", "asserts a list length on a request with no query parameters; the list may include records the scenario didn't create (filter the request, or waive HTTP-09 with the reason it can't)")
 	}
 	return v.r, nil
+}
+
+func runScoped(names []string) bool {
+	for _, n := range names {
+		if n == runIDRef || savedNameRE.MatchString(n) {
+			return true
+		}
+	}
+	return false
+}
+
+func bodyTarget(args map[string]any) string {
+	var x any
+	switch {
+	case args["body"] != nil:
+		x = args["body"]
+	case args["body_text"] != nil:
+		x = args["body_text"]
+	default:
+		return ""
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(x); err != nil {
+		return " " + show(x)
+	}
+	return " " + strings.TrimSuffix(b.String(), "\n")
 }
 
 func (v *validation) object(args map[string]any, key string) map[string]any {
@@ -228,17 +292,40 @@ func (v *validation) checkStatus(ex expectation, p protocol.ValidateParams) {
 			v.add("AUTH-06", "$.expect.equal", "a request with credential variant %q must expect 401 or 403, not %s", p.Variant, show(raw))
 		}
 	}
-	if !p.Setup && valid && code >= 200 && code < 300 && ex.count() == 1 {
+	if p.Setup || !valid || code < 200 || code >= 300 {
+		return
+	}
+	switch lone := loneBodyAbsence(ex); {
+	case lone != "" && ex.count()-1 == 1:
+		v.add("EXE-03", "$.expect.absent", "absent: [%s] alone doesn't show that the %d response has no body, since a body that isn't JSON is $.body_text and one that is JSON is $.body; list both, absent: [\"$.body\", \"$.body_text\"], or assert a header", lone, code)
+	case ex.count() == 1 && code == 204:
+		v.add("EXE-03", "$.expect", "a verification step expecting %d must also assert that the body is absent, absent: [\"$.body\", \"$.body_text\"], or a header", code)
+	case ex.count() == 1:
 		v.add("EXE-03", "$.expect", "a verification step expecting %d must also assert a body field or header", code)
 	}
 }
 
-func checksState(ex expectation, p protocol.ValidateParams) bool {
-	if p.Variant != "" {
+func loneBodyAbsence(ex expectation) string {
+	hasBody, hasText := slices.Contains(ex.Absent, "$.body"), slices.Contains(ex.Absent, "$.body_text")
+	switch {
+	case hasBody && !hasText:
+		return "$.body"
+	case hasText && !hasBody:
+		return "$.body_text"
+	}
+	return ""
+}
+
+func checksState(ex expectation) bool {
+	code, valid := httpStatus(ex.Equal[statusPath])
+	if !valid {
 		return false
 	}
-	code, valid := httpStatus(ex.Equal[statusPath])
-	return !valid || (code != 401 && code != 403)
+	switch code {
+	case 404, 409, 410, 412, 423:
+		return true
+	}
+	return code >= 200 && code < 400
 }
 
 func under(p, root string) bool {
@@ -273,22 +360,17 @@ func (v *validation) checkHead(ex expectation, save map[string]string) {
 var headerRoots = []string{"$.headers", "$.header_lists"}
 
 func headerPath(p string) (name, rest string, ok bool) {
-	for _, root := range headerRoots {
-		switch {
-		case p == root:
-			return "", "", true
-		case strings.HasPrefix(p, root+"["):
-			return "", p[len(root):], true
-		case !strings.HasPrefix(p, root+"."):
-			continue
-		}
-		tail := p[len(root)+1:]
-		if i := strings.IndexAny(tail, ".["); i >= 0 {
-			return tail[:i], tail[i:], true
-		}
-		return tail, "", true
+	segs, err := jsonpath.Parse(p)
+	if err != nil || len(segs) == 0 || segs[0].IsIndex || !slices.Contains(headerRoots, jsonpath.String(segs[:1])) {
+		return "", "", false
 	}
-	return "", "", false
+	switch {
+	case len(segs) == 1:
+		return "", "", true
+	case segs[1].IsIndex:
+		return "", jsonpath.String(segs[1:])[1:], true
+	}
+	return segs[1].Name, jsonpath.String(segs[2:])[1:], true
 }
 
 func headerRoot(p string) string {
@@ -308,7 +390,7 @@ func (v *validation) checkHeaderCase(ex expectation) {
 			continue
 		}
 		seen[p] = true
-		v.add("HTTP-08", "$.expect", "%s names header %q with capital letters; the driver reports header names in lower case, so write %s.%s", p, name, headerRoot(p), strings.ToLower(name))
+		v.add("HTTP-08", "$.expect", "%s names header %q with capital letters; the driver reports header names in lower case, so write %s", p, name, jsonpath.Child(headerRoot(p), strings.ToLower(name)))
 	}
 }
 
@@ -343,7 +425,7 @@ func (v *validation) checkConflicts(ex expectation) {
 	equal := byHeader(sortedKeys(ex.Equal))
 	present := byHeader(ex.Present)
 	absent := byHeader(ex.Absent)
-	contained := byHeader(sortedKeys(ex.Contains))
+	contained := byHeader(append(append(append(sortedKeys(ex.Contains), sortedKeys(ex.Matches)...), sortedKeys(ex.Excludes)...), sortedKeys(ex.Differs)...))
 	for _, k := range ex.Absent {
 		key, isHeader := headerKey(k)
 		if !isHeader {

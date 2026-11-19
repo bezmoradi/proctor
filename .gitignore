@@ -4,3 +4,5 @@ __pycache__/
 /dist/
 /prd.md
 /.claude/
+/drivers/*/proctor-driver-*
+/simulators/*/proctor-sim-*

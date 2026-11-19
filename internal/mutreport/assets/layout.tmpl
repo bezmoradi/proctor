@@ -1,0 +1,18 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src '{{.Style.Hash}}'; img-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} - Proctor mutation report</title>
+<style>{{.Style.CSS}}</style>
+</head>
+<body>
+{{end}}
+{{define "run"}}<p class="run">Run by Proctor {{.ProctorVersion}}{{if .StartedAt}}, started {{.StartedAt}}{{end}}; drawn by Proctor {{.RenderedBy}}. Repository <code>{{.Repository}}</code>{{if .Coverage}}; coverage from <code>{{.Coverage}}</code>{{end}}.</p>
+{{end}}
+{{define "verdict"}}<span class="verdict v-{{.Verdict}}">{{.Label}}</span>{{end}}
+{{define "foot"}}</body>
+</html>
+{{end}}

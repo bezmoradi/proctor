@@ -11,13 +11,15 @@ import (
 )
 
 var (
-	refRE    = regexp.MustCompile(`\$\{([^}]*)\}`)
-	fillRE   = regexp.MustCompile(`^fill\(([1-9][0-9]{0,7})\)$`)
-	secretRE = regexp.MustCompile(`^secret\.[A-Za-z_][A-Za-z0-9_]*$`)
+	refRE       = regexp.MustCompile(`\$\{([^}]*)\}`)
+	fillRE      = regexp.MustCompile(`^fill\(([1-9][0-9]{0,7})\)$`)
+	secretRE    = regexp.MustCompile(`^secret\.[A-Za-z_][A-Za-z0-9_]*$`)
+	savedNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 const (
 	maxFill     = 16 << 20
+	runIDRef    = "run.id"
 	doubleSlash = "/" + "/"
 )
 

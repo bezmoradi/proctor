@@ -39,6 +39,7 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 func (v *validation) connect(args map[string]any, p protocol.ValidateParams) {
 	if path, ok := args["path"].(string); ok {
 		v.r.FixedTarget = !strings.Contains(path, "${")
+		v.r.Targets = []string{refRE.ReplaceAllString(path, "{}")}
 		if err := checkPath(path, false); err != nil {
 			v.add("WS-01", "$.with.path", "%v", err)
 		}

@@ -19,6 +19,11 @@ const (
 	driverName     = "http"
 	opRequest      = "request"
 	maxBodyBytes   = 10 << 20
+	defaultMaxBody = 16 << 20
+	maxBodyLimit   = 1 << 30
+	maxInlineBody  = 8 << 20
+	maxFillPattern = 64
+	bodyFileArg    = "$.body_file"
 	bodyTextBytes  = 64 << 10
 	excerptBytes   = 4 << 10
 	defaultTimeout = 10 * time.Second
@@ -32,12 +37,24 @@ var scalar = map[string]any{"type": []string{"string", "number", "boolean"}}
 var argsSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"method":    map[string]any{"type": "string", "enum": methods},
-		"path":      map[string]any{"type": "string"},
-		"query":     map[string]any{"type": "object", "additionalProperties": scalar},
-		"headers":   map[string]any{"type": "object", "additionalProperties": scalar},
-		"body":      true,
-		"body_text": map[string]any{"type": "string"},
+		"method":      map[string]any{"type": "string", "enum": methods},
+		"path":        map[string]any{"type": "string"},
+		"query":       map[string]any{"type": "object", "additionalProperties": scalar},
+		"headers":     map[string]any{"type": "object", "additionalProperties": scalar},
+		"body":        true,
+		"body_text":   map[string]any{"type": "string"},
+		"body_base64": map[string]any{"type": "string"},
+		"body_file":   map[string]any{"type": "string"},
+		"body_fill": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"bytes":          map[string]any{"type": "integer", "minimum": 1, "maximum": maxBodyLimit},
+				"pattern":        map[string]any{"type": "string"},
+				"pattern_base64": map[string]any{"type": "string"},
+			},
+			"required":             []string{"bytes"},
+			"additionalProperties": false,
+		},
 	},
 	"required":             []string{"method", "path"},
 	"additionalProperties": false,
@@ -48,14 +65,81 @@ var stringLists = map[string]any{"type": "object", "additionalProperties": map[s
 var factSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"status":       map[string]any{"type": "integer", "minimum": 100, "maximum": 999},
-		"headers":      stringLists,
-		"header_lists": stringLists,
-		"body":         true,
-		"body_text":    map[string]any{"type": "string"},
-		"body_invalid": map[string]any{"type": "string"},
+		"status":         map[string]any{"type": "integer", "minimum": 100, "maximum": 999},
+		"headers":        stringLists,
+		"header_lists":   stringLists,
+		"body":           true,
+		"body_text":      map[string]any{"type": "string"},
+		"body_truncated": map[string]any{"type": "boolean"},
+		"body_invalid":   map[string]any{"type": "string"},
 	},
 	"required":             []string{"status", "headers", "header_lists"},
+	"additionalProperties": false,
+}
+
+var openArgsSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"path":    map[string]any{"type": "string"},
+		"query":   map[string]any{"type": "object", "additionalProperties": scalar},
+		"headers": map[string]any{"type": "object", "additionalProperties": scalar},
+		"format":  map[string]any{"type": "string", "enum": streamFormats},
+	},
+	"required":             []string{"path"},
+	"additionalProperties": false,
+}
+
+var openFactSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"open":           map[string]any{"type": "boolean"},
+		"format":         map[string]any{"type": "string", "enum": streamFormats},
+		"status":         map[string]any{"type": "integer", "minimum": 100, "maximum": 999},
+		"headers":        stringLists,
+		"header_lists":   stringLists,
+		"body":           true,
+		"body_text":      map[string]any{"type": "string"},
+		"body_truncated": map[string]any{"type": "boolean"},
+		"body_invalid":   map[string]any{"type": "string"},
+	},
+	"required":             []string{"open", "status", "headers", "header_lists"},
+	"additionalProperties": false,
+}
+
+var framesArgsSchema = map[string]any{
+	"type":                 []string{"object", "null"},
+	"additionalProperties": false,
+}
+
+var framesFactSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"format": map[string]any{"type": "string", "enum": streamFormats},
+		"count":  map[string]any{"type": "integer", "minimum": 0},
+		"frames": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"text":         map[string]any{"type": "string"},
+					"json":         true,
+					"json_invalid": map[string]any{"type": "string"},
+					"event":        map[string]any{"type": "string"},
+					"data":         map[string]any{"type": "string"},
+					"id":           map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		"closed":          map[string]any{"type": "boolean"},
+		"close_reason":    map[string]any{"type": "string"},
+		"overflow":        map[string]any{"type": "boolean"},
+		"overflow_reason": map[string]any{"type": "string"},
+		"body_text":       map[string]any{"type": "string"},
+		"body_truncated":  map[string]any{"type": "boolean"},
+		"retry":           map[string]any{"type": "integer", "minimum": 0},
+	},
+	"required":             []string{"format", "count", "frames", "closed", "overflow", "body_text", "body_truncated"},
 	"additionalProperties": false,
 }
 
@@ -81,6 +165,8 @@ type driver struct {
 	userAgent string
 	readyPath string
 	client    *http.Client
+	policy    policy
+	streams   streams
 }
 
 func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.HelloResult, error) {
@@ -97,16 +183,36 @@ func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.He
 			Escape:     map[string]string{"$.path": protocol.EscapePathSegment},
 			Redact:     []string{"$.headers.set-cookie", "$.header_lists.set-cookie"},
 			Data:       []string{"$.body", "$.body_text"},
+			Files:      []string{bodyFileArg},
+		}, {
+			Name:        opOpen,
+			Kind:        protocol.KindAct,
+			ArgsSchema:  openArgsSchema,
+			FactSchema:  openFactSchema,
+			OpensHandle: true,
+			Credential:  protocol.CredentialOptional,
+			Escape:      map[string]string{"$.path": protocol.EscapePathSegment},
+			Redact:      []string{"$.headers.set-cookie", "$.header_lists.set-cookie"},
+		}, {
+			Name:        opFrames,
+			Kind:        protocol.KindObserve,
+			ArgsSchema:  framesArgsSchema,
+			FactSchema:  framesFactSchema,
+			UsesHandle:  true,
+			Accumulates: true,
+			Credential:  protocol.CredentialNone,
 		}},
-		PolicySchema:     nil,
+		PolicySchema:     true,
 		ConnectionSchema: connectionSchema,
 	}, nil
 }
 
 func (d *driver) Configure(ctx context.Context, p protocol.ConfigureParams) error {
-	if p.Policy != nil {
-		return protocol.Lastingf(protocol.CauseInvalidRequest, "the http driver takes no policy")
+	pol, err := parsePolicy(p.Policy)
+	if err != nil {
+		return protocol.Lastingf(protocol.CauseInvalidRequest, "%v", err)
 	}
+	d.policy = pol
 	if p.Connection == nil {
 		return nil
 	}
@@ -153,6 +259,10 @@ func (d *driver) Configure(ctx context.Context, p protocol.ConfigureParams) erro
 	return nil
 }
 
+func (d *driver) PolicyEntries() []protocol.PolicyEntry {
+	return d.policy.entries()
+}
+
 func (d *driver) Prove(ctx context.Context) (protocol.ProveResult, error) {
 	return protocol.ProveResult{Proofs: []protocol.Proof{}}, nil
 }
@@ -182,7 +292,7 @@ func (d *driver) Ready(ctx context.Context) (protocol.ReadyResult, error) {
 }
 
 func (d *driver) Close(ctx context.Context, p protocol.CloseParams) error {
-	return protocol.Errorf(protocol.CauseInvalidRequest, "the http driver opens no handles")
+	return d.streams.close(p.Handle)
 }
 
 func (d *driver) join(path string) string {
@@ -194,7 +304,10 @@ func (d *driver) basePath() string {
 }
 
 func main() {
-	if err := protocol.Serve(&driver{}); err != nil {
+	d := &driver{}
+	err := protocol.Serve(d)
+	d.streams.shutdown()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

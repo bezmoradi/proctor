@@ -172,6 +172,15 @@ func isSpecCandidate(p string, r *Report) bool {
 	if r.Config != nil && p == r.ProtectedRoot+"/"+r.Config.Manifest {
 		return false
 	}
+	if r.MutantsPath != "" && p == r.MutantsPath {
+		return false
+	}
+	if r.DimensionsPath != "" && p == r.DimensionsPath {
+		return false
+	}
+	if r.IsApproved(p) {
+		return false
+	}
 	return true
 }
 

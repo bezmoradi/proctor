@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +14,8 @@ import (
 type diffOptions struct {
 	common
 	base, head, prHead string
+	kind, kindSource   string
+	set                func(name string) bool
 }
 
 func newDiffCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -23,9 +24,11 @@ func newDiffCmd(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "diff",
 		Short: "List every changed protected file and scenario between two commits, weakenings first",
 		Example: `  proctor diff --base main --head HEAD
-  proctor diff --head "$TEST_MERGE" --pr-head "$PR_HEAD" --json`,
+  proctor diff --head "$TEST_MERGE" --pr-head "$PR_HEAD" --json
+  proctor diff --base main --head HEAD --change-kind fix`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			o.set = cmd.Flags().Changed
 			return exitWith(diff(o, stdout, stderr))
 		},
 	}
@@ -33,6 +36,7 @@ func newDiffCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&o.base, "base", "", "base commit")
 	cmd.Flags().StringVar(&o.head, "head", "", "head commit, or the test merge commit when --pr-head is given")
 	cmd.Flags().StringVar(&o.prHead, "pr-head", "", "pull request head; makes --head a test merge whose first parent is the base")
+	addChangeKind(cmd, &o.kind, &o.kindSource)
 	return cmd
 }
 
@@ -40,6 +44,11 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 	c, base, head, prHead := o.common, o.base, o.head, o.prHead
 	if head == "" || (base == "") == (prHead == "") {
 		fmt.Fprintln(stderr, "proctor diff: give --head and exactly one of --base or --pr-head")
+		return exitInvalid
+	}
+	kind, err := protdiff.ParseKind(o.kind, o.set("change-kind"), o.kindSource, o.set("change-kind-source"))
+	if err != nil {
+		fmt.Fprintf(stderr, "proctor diff: CHG-01: %s\n", safe(err.Error()))
 		return exitInvalid
 	}
 	repo, err := gitrepo.Open(c.repo)
@@ -57,13 +66,20 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 	if err != nil {
 		return diffError(stdout, stderr, c.json, err)
 	}
+	if err := kind.Check(repo, res, c.config); err != nil {
+		return diffError(stdout, stderr, c.json, err)
+	}
+	code := exitOK
+	if len(kind.Mismatches) > 0 {
+		code = exitIntegrity
+	}
 	if c.json {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{"result": "passed", "exit_code": exitOK, "protected_changes": res.Count(), "weakenings": len(res.Weakenings), "diff": res})
-		return exitOK
+		_ = enc.Encode(map[string]any{"result": resultName(code), "exit_code": code, "protected_changes": res.Count(), "weakenings": len(res.Weakenings), "change_kind": kind, "diff": res})
+		return code
 	}
-	fmt.Fprintf(stdout, "PROCTOR DIFF\n\nBase: %s\nHead: %s\n\n", safe(res.Base), safe(res.Head))
+	fmt.Fprintf(stdout, "PROCTOR DIFF\n\nBase: %s\nHead: %s\nChange kind: %s\n\n", safe(res.Base), safe(res.Head), changeKindLine(kind))
 	if res.Count() == 0 {
 		fmt.Fprintln(stdout, "Protected changes against base: none")
 		return exitOK
@@ -101,6 +117,12 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 	}
+	if len(res.Drivers) > 0 {
+		fmt.Fprintln(stdout, "\nDrivers:")
+		for _, d := range res.Drivers {
+			fmt.Fprintf(stdout, "  %-20s driver %s: %s\n", safe(d.Kind), safe(d.Driver), safe(d.Detail))
+		}
+	}
 	if len(res.Expectations) > 0 {
 		fmt.Fprintln(stdout, "\nChanged actions and expectations:")
 		for _, e := range res.Expectations {
@@ -121,7 +143,30 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  scenarios not compared (file doesn't parse on one side): %s\n", safe(u))
 	}
 	fmt.Fprintf(stdout, "\nProtected changes against base: %d (approval required)\n", res.Count())
-	return exitOK
+	writeKindMismatches(stdout, kind)
+	return code
+}
+
+func addChangeKind(cmd *cobra.Command, kind, source *string) {
+	cmd.Flags().StringVar(kind, "change-kind", "", "the kind of change the author claims: refactor, docs, fix or feature; a refactor or docs change fails on any protected change and a fix on anything but added scenarios and assertions (CHG-02)")
+	cmd.Flags().StringVar(source, "change-kind-source", protdiff.KindFromFlag, "where --change-kind came from, recorded in the report: flag, or label when the workflow mapped a proctor:<kind> pull request label")
+}
+
+func changeKindLine(k *protdiff.KindCheck) string {
+	if k.Source == protdiff.KindFromNone {
+		return k.Kind
+	}
+	return safe(k.Kind) + " (" + safe(k.SourceText()) + ")"
+}
+
+func writeKindMismatches(w io.Writer, k *protdiff.KindCheck) {
+	if len(k.Mismatches) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nChange kind %s doesn't match the protected changes (CHG-02: %s): %d mismatch(es)\n", safe(k.Kind), safe(k.Rule), len(k.Mismatches))
+	for _, m := range k.Mismatches {
+		fmt.Fprintf(w, "  %s: %s\n", safe(m.Place), safe(m.Reason))
+	}
 }
 
 func diffError(stdout, stderr io.Writer, asJSON bool, err error) int {
@@ -136,13 +181,7 @@ func diffError(stdout, stderr io.Writer, asJSON bool, err error) int {
 }
 
 func weakeningPlace(wk protdiff.Weakening, config string) string {
-	switch {
-	case wk.Scenario != "":
-		return strings.TrimSpace(wk.Scenario + " " + wk.Step)
-	case wk.Driver != "":
-		return "driver " + wk.Driver
-	}
-	return config
+	return wk.Place(config)
 }
 
 func orDash(s string) string {

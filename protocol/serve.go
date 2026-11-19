@@ -21,6 +21,10 @@ type Driver interface {
 	Close(ctx context.Context, p CloseParams) error
 }
 
+type PolicyEntryLister interface {
+	PolicyEntries() []PolicyEntry
+}
+
 func Serve(d Driver) error {
 	out := os.Stdout
 	os.Stdout = os.Stderr
@@ -157,11 +161,15 @@ func (s *server) handle(line []byte) (Response, bool) {
 			return invalid(id, CodeInvalidParams, "configure: %v", err), false
 		}
 		err := s.d.Configure(ctx, p)
+		r := ConfigureResult{Entries: []PolicyEntry{}}
 		if err == nil {
 			s.configured = true
 			s.validateOnly = p.Connection == nil
+			if l, ok := s.d.(PolicyEntryLister); ok {
+				r.Entries = append(r.Entries, l.PolicyEntries()...)
+			}
 		}
-		return s.result(id, Empty{}, err), false
+		return s.result(id, r, err), false
 	}
 	if !s.configured {
 		return s.result(id, nil, Errorf(CauseNotConfigured, "configure must come before %s", method)), false

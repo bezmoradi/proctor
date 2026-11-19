@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	phaseSetup = "setup"
-	phaseSteps = "steps"
+	phaseSetup   = "setup"
+	phaseSteps   = "steps"
+	phaseCleanup = "cleanup"
 )
 
 var waivable = map[string]bool{"FIX-05": true, "HTTP-09": true, "EXE-09": true}
@@ -22,16 +23,17 @@ var waivable = map[string]bool{"FIX-05": true, "HTTP-09": true, "EXE-09": true}
 const defaultEvery = 500 * time.Millisecond
 
 type stepAt struct {
-	ref   model.StepRef
-	step  *model.Step
-	label string
-	setup bool
-	quiet bool
+	ref     model.StepRef
+	step    *model.Step
+	label   string
+	setup   bool
+	cleanup bool
+	quiet   bool
 }
 
 func scenarioWhere(sc *model.Scenario) string {
 	if sc.Case != nil {
-		return fmt.Sprintf("table %s case %s", sc.Case.Table, sc.ID)
+		return fmt.Sprintf("table %s case %s", sc.Case.Label(), sc.ID)
 	}
 	return "scenario " + sc.ID
 }
@@ -39,7 +41,7 @@ func scenarioWhere(sc *model.Scenario) string {
 func stepsOf(p string, sc *model.Scenario) []stepAt {
 	where := scenarioWhere(sc)
 	quiet := sc.Case != nil && !sc.Case.First
-	out := make([]stepAt, 0, len(sc.Setup)+len(sc.Steps))
+	out := make([]stepAt, 0, len(sc.Setup)+len(sc.Steps)+len(sc.Cleanup))
 	for j := range sc.Setup {
 		label := fmt.Sprintf("%s setup[%d]", where, j)
 		if sc.Case != nil {
@@ -56,6 +58,16 @@ func stepsOf(p string, sc *model.Scenario) []stepAt {
 			step: &sc.Steps[j], label: fmt.Sprintf("%s steps[%d]", where, j),
 		})
 	}
+	for j := range sc.Cleanup {
+		label := fmt.Sprintf("%s cleanup[%d]", where, j)
+		if sc.Case != nil {
+			label = fmt.Sprintf("table %s cleanup[%d]", sc.Case.Label(), j)
+		}
+		out = append(out, stepAt{
+			ref:  model.StepRef{Spec: p, Scenario: sc.ID, Phase: phaseCleanup, Index: j},
+			step: &sc.Cleanup[j], label: label, cleanup: true, quiet: sc.Case != nil && !sc.Case.FirstRow,
+		})
+	}
 	return out
 }
 
@@ -68,11 +80,13 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 		r.add(Violation, "INT-04", p, "the specification defines no scenarios")
 	}
 	logTables := map[string]bool{}
+	local := map[string]string{}
 	for i := range s.Scenarios {
 		sc := &s.Scenarios[i]
+		laterRow := sc.Case != nil && !sc.Case.FirstRow
 		where := fmt.Sprintf("scenarios[%d]", i)
 		if sc.Case != nil {
-			where = fmt.Sprintf("table %s case", sc.Case.Table)
+			where = fmt.Sprintf("table %s case", sc.Case.Label())
 		}
 		if !idPattern.MatchString(sc.ID) {
 			r.add(Invalid, "INT-02", p, "%s: invalid id %q", where, sc.ID)
@@ -81,10 +95,20 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 			if sc.Case != nil {
 				kind = "case"
 			}
-			r.add(Invalid, "INT-02", p, "%s: %s id %q is also used in %s", where, kind, sc.ID, other)
+			if first, here := local[sc.ID]; here {
+				r.add(Invalid, "INT-02", p, "%s: %s id %q is also used by %s in this file; the drivers' descriptions of steps are keyed by file and id, so theirs can't be told apart, and the checks that use them are skipped for every scenario with this id and every table with a case of it until the id is unique", where, kind, sc.ID, first)
+			} else {
+				r.add(Invalid, "INT-02", p, "%s: %s id %q is also used in %s", where, kind, sc.ID, other)
+			}
 		} else {
 			seen[sc.ID] = p
 			r.ScenarioIDs = append(r.ScenarioIDs, sc.ID)
+		}
+		if _, here := local[sc.ID]; !here {
+			local[sc.ID] = where
+			if sc.Case != nil {
+				local[sc.ID] = "table " + sc.Case.Label()
+			}
 		}
 		where = scenarioWhere(sc)
 		if strings.TrimSpace(sc.Name) == "" && sc.Case == nil {
@@ -93,12 +117,19 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 		if len(sc.Steps) == 0 {
 			r.add(Invalid, "EXE-01", p, "%s: at least one verification step is required", where)
 		}
+		if sc.Cleanup != nil && len(sc.Cleanup) == 0 && !laterRow {
+			cleanupWhere := where
+			if sc.Case != nil {
+				cleanupWhere = "table " + sc.Case.Label()
+			}
+			r.add(Invalid, "EXE-14", p, "%s: cleanup lists no steps; remove it", cleanupWhere)
+		}
 		switch {
 		case sc.Case == nil:
 			r.checkExpectLogs(p, where, sc.ExpectLogs, c)
-		case !logTables[sc.Case.Table]:
-			logTables[sc.Case.Table] = true
-			r.checkExpectLogs(p, "table "+sc.Case.Table, sc.ExpectLogs, c)
+		case !logTables[sc.Case.Key]:
+			logTables[sc.Case.Key] = true
+			r.checkExpectLogs(p, "table "+sc.Case.Label(), sc.ExpectLogs, c)
 		}
 		ids := map[string]bool{}
 		saved := map[string]bool{}
@@ -112,7 +143,7 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 		}
 		for _, at := range stepsOf(p, sc) {
 			r.quietly(at.quiet, func() {
-				r.validateStep(p, at, sc, c, ids, saved)
+				r.validateStep(p, at, sc, c, ids, saved, laterRow && !at.setup)
 				r.checkHandles(p, at, sc, hs)
 			})
 			for name := range at.step.Save {
@@ -120,6 +151,26 @@ func (r *Report) validateSpec(sf SpecFile, c *model.Config, seen map[string]stri
 			}
 		}
 	}
+}
+
+func sharedRefs(s *model.Spec) map[int]bool {
+	count := map[string]int{}
+	for i := range s.Scenarios {
+		count[s.Scenarios[i].ID]++
+	}
+	tables := map[string]bool{}
+	for i := range s.Scenarios {
+		if sc := &s.Scenarios[i]; count[sc.ID] > 1 && sc.Case != nil {
+			tables[sc.Case.Key] = true
+		}
+	}
+	out := map[int]bool{}
+	for i := range s.Scenarios {
+		if sc := &s.Scenarios[i]; count[sc.ID] > 1 || sc.Case != nil && tables[sc.Case.Key] {
+			out[i] = true
+		}
+	}
+	return out
 }
 
 func (r *Report) checkExpectLogs(p, where string, list []model.LogExpectation, c *model.Config) {
@@ -158,7 +209,7 @@ func (r *Report) checkExpectLogs(p, where string, list []model.LogExpectation, c
 	}
 }
 
-func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.Config, ids, saved map[string]bool) {
+func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.Config, ids, saved map[string]bool, tableChecked bool) {
 	st := at.step
 	where := at.label
 	if !idPattern.MatchString(st.ID) {
@@ -168,7 +219,10 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 	}
 	ids[st.ID] = true
 	where = fmt.Sprintf("%s (%s)", where, st.ID)
-	if st.NoStateCheck != "" && strings.TrimSpace(st.NoStateCheck) == "" {
+	if at.cleanup {
+		r.checkCleanupStep(p, where, st, sc.Case != nil)
+	}
+	if st.NoStateCheck != "" && strings.TrimSpace(st.NoStateCheck) == "" && !tableChecked && !at.cleanup {
 		r.add(Invalid, "EXE-07", p, "%s: no_state_check must state a reason", where)
 	}
 	if st.NoStateCheck != "" && at.setup {
@@ -190,7 +244,12 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 		}
 	}
 	r.checkIdentity(p, where, at, c)
-	r.checkTime(p, where, st)
+	if !at.cleanup {
+		r.checkTime(p, where, st, tableChecked)
+	}
+	if !tableChecked {
+		r.checkTimeout(p, where, st, c)
+	}
 	r.checkExpect(p, where, st.Expect)
 	for _, v := range expectValues(st.Expect) {
 		names, err := references(v)
@@ -212,12 +271,34 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 			r.add(Invalid, "EXE-02", p, "%s: save %s: %v", where, name, err)
 		}
 	}
-	for _, rule := range sortedKeys(st.Waive) {
+	rules := sortedKeys(st.Waive)
+	if tableChecked {
+		rules = nil
+	}
+	for _, rule := range rules {
+		w := st.Waive[rule]
 		switch {
 		case !waivable[rule]:
 			r.add(Invalid, "EXE-07", p, "%s: waive names %q; only FIX-05, HTTP-09 and EXE-09 can be waived (EXE-07 uses no_state_check)", where, rule)
-		case strings.TrimSpace(st.Waive[rule]) == "":
+		case strings.TrimSpace(w.Reason) == "":
 			r.add(Invalid, rule, p, "%s: the %s waiver must state a reason", where, rule)
+		}
+		if !w.Listed {
+			continue
+		}
+		named := map[string]bool{}
+		switch {
+		case sc.Case == nil || at.setup:
+			r.add(Invalid, rule, p, "%s: the %s waiver names rows, which only a table's step has; write the reason alone", where, rule)
+		case len(w.Rows) == 0:
+			r.add(Invalid, rule, p, "%s: the %s waiver's rows is empty; name the rows it covers, or write the reason alone if it covers every row", where, rule)
+		default:
+			for _, row := range w.Rows {
+				if named[row] {
+					r.add(Invalid, rule, p, "%s: the %s waiver names row %q twice", where, rule, row)
+				}
+				named[row] = true
+			}
 		}
 	}
 }
@@ -243,7 +324,7 @@ func (r *Report) checkHandles(p string, at stepAt, sc *model.Scenario, hs handle
 		r.add(Invalid, "HND-04", p, "%s: a step can't have both as and on; it either opens a handle or uses one", where)
 	}
 	if sc.Case != nil {
-		r.add(Invalid, "HND-08", p, "%s: a table's setup can't open or use handles, because the table's cases can't use them", where)
+		r.add(Invalid, "HND-08", p, "%s: a table's setup and cleanup can't open or use handles, because the table's cases can't use them", where)
 	}
 	if st.On != "" {
 		d, ok := hs.opened[st.On]
@@ -284,16 +365,84 @@ func (r *Report) checkIdentity(p, where string, at stepAt, c *model.Config) {
 	case declared && !contains(id.Variants, st.Variant) && !contains(id.AcceptedVariants, st.Variant):
 		r.add(Invalid, "AUTH-06", p, "%s: identity %q has no credential variant %q", where, st.Identity, st.Variant)
 	}
-	if at.setup {
+	switch {
+	case at.setup:
 		r.add(Invalid, "AUTH-06", p, "%s: a credential variant is for negative tests, not setup", where)
+	case at.cleanup:
+		r.add(Invalid, "AUTH-06", p, "%s: a credential variant is for negative tests, not cleanup", where)
 	}
+}
+
+func (r *Report) checkCleanupStep(p, where string, st *model.Step, table bool) {
+	if hasTime(st) {
+		r.add(Invalid, "EXE-14", p, "%s: eventually, consistently and never can't be used in cleanup; a cleanup step acts once, and checks that wait for an outcome belong in steps", where)
+	}
+	if len(st.Save) > 0 {
+		r.add(Invalid, "EXE-14", p, "%s: save can't be used in cleanup; no step runs after cleanup to use the value", where)
+	}
+	if st.NoStateCheck != "" {
+		r.add(Invalid, "EXE-14", p, "%s: no_state_check means nothing in cleanup, since cleanup steps need no state check (EXE-07); remove it", where)
+	}
+	if st.As != "" {
+		r.add(Invalid, "EXE-14", p, "%s: as can't be used in cleanup; a handle opened there could never be used, since nothing runs after cleanup", where)
+	}
+	vals := append([]any{st.With}, expectValues(st.Expect)...)
+	seen := map[string]bool{}
+	for _, v := range vals {
+		names, err := references(v)
+		if err != nil {
+			continue
+		}
+		for _, n := range names {
+			if table && strings.HasPrefix(n, "row.") && !seen[n] {
+				seen[n] = true
+				r.add(Invalid, "TBL-05", p, "%s: ${%s} can't be used in cleanup, which is written once for the scenario or table and isn't filled in per row", where, n)
+			}
+		}
+	}
+}
+
+func CleanupNeedsGuard(sc *model.Scenario, i int, in model.StepInfo, known bool) bool {
+	if !known {
+		return true
+	}
+	if in.Kind != kindAct || !in.Destructive {
+		return false
+	}
+	if waived(stepAt{ref: model.StepRef{Scenario: sc.ID, Phase: phaseCleanup, Index: i}, step: &sc.Cleanup[i]}, "EXE-09") {
+		return false
+	}
+	saved := map[string]bool{}
+	for _, st := range append(append([]model.Step{}, sc.Setup...), sc.Steps...) {
+		for name := range st.Save {
+			saved[name] = true
+		}
+	}
+	return described{info: in, runScope: targetsRunScoped(in.ExactTargets, saved)}.fixedTarget()
 }
 
 func hasTime(st *model.Step) bool {
 	return st.Eventually != nil || st.Consistently != nil || st.Never != nil
 }
 
-func (r *Report) checkTime(p, where string, st *model.Step) {
+func (r *Report) checkTimeout(p, where string, st *model.Step, c *model.Config) {
+	if st.Timeout == "" {
+		return
+	}
+	d, err := parseDuration(st.Timeout)
+	switch {
+	case err != nil:
+		r.add(Invalid, "TIME-13", p, "%s: timeout: %v", where, err)
+	case d > r.limits.maxCall:
+		note := ""
+		if c.TimeLimits == nil || c.TimeLimits.MaxCall == "" {
+			note = ", the default when proctor.yaml doesn't set it"
+		}
+		r.add(Invalid, "TIME-13", p, "%s: timeout is %s, longer than time_limits.max_call (%s%s); raise max_call in proctor.yaml, where review sees it, or shorten the timeout", where, d, r.limits.maxCall, note)
+	}
+}
+
+func (r *Report) checkTime(p, where string, st *model.Step, laterRow bool) {
 	type construct struct{ name, field, window, every string }
 	var used []construct
 	if st.Eventually != nil {
@@ -309,7 +458,9 @@ func (r *Report) checkTime(p, where string, st *model.Step) {
 		return
 	}
 	if len(used) > 1 {
-		r.add(Invalid, "EXE-01", p, "%s: a step can use only one of eventually, consistently and never", where)
+		if !laterRow {
+			r.add(Invalid, "EXE-01", p, "%s: a step can use only one of eventually, consistently and never", where)
+		}
 		return
 	}
 	t := used[0]
@@ -318,6 +469,9 @@ func (r *Report) checkTime(p, where string, st *model.Step) {
 	}
 	if t.name != "eventually" && len(st.Save) > 0 {
 		r.add(Invalid, "TIME-11", p, "%s: save can't be used with %s; only eventually saves, from its passing sample", where, t.name)
+	}
+	if laterRow {
+		return
 	}
 	window, werr := parseDuration(t.window)
 	if t.window == "" {
@@ -381,6 +535,44 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 			r.add(Invalid, "EXE-03", p, "%s: contains: the expected text for %s must be text", where, k)
 		}
 	}
+	for _, k := range sortedKeys(ex.Matches) {
+		note("matches", k)
+		pattern, isText := ex.Matches[k].(string)
+		if !isText {
+			r.add(Invalid, "EXE-12", p, "%s: matches: the pattern for %s must be text", where, k)
+			continue
+		}
+		if _, err := model.MatchPattern(pattern); err != nil {
+			r.add(Invalid, "EXE-12", p, "%s: matches %s: %v", where, k, err)
+		}
+	}
+	for _, k := range sortedKeys(ex.Excludes) {
+		note("excludes", k)
+		texts, multi, ok := model.ExcludedTexts(ex.Excludes[k])
+		switch {
+		case !ok:
+			r.add(Invalid, "EXE-12", p, "%s: excludes: the text for %s must be text or a list of texts", where, k)
+			continue
+		case multi && len(texts) == 0:
+			r.add(Invalid, "EXE-12", p, "%s: excludes of %s lists no texts", where, k)
+		}
+		seen := map[string]bool{}
+		for _, t := range texts {
+			switch {
+			case t == "":
+				r.add(Invalid, "EXE-12", p, "%s: excludes of %s has an empty text, which every text contains, so the step could never pass", where, k)
+			case seen[t]:
+				r.add(Invalid, "EXE-12", p, "%s: excludes of %s lists %q twice", where, k, t)
+			}
+			seen[t] = true
+		}
+	}
+	for _, k := range sortedKeys(ex.Differs) {
+		note("differs", k)
+		if err := checkJSONValue(ex.Differs[k]); err != nil {
+			r.add(Invalid, "EXE-12", p, "%s: differs: the value for %s isn't a JSON value: %v", where, k, err)
+		}
+	}
 	for _, list := range []struct {
 		name  string
 		paths []string
@@ -388,10 +580,13 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 		for _, k := range list.paths {
 			if contains(in[k], list.name) {
 				r.add(Invalid, "EXE-03", p, "%s: %s lists %s twice", where, list.name, k)
-			} else if list.name == "present" && contains(in[k], "equal") {
-				r.add(Invalid, "EXE-03", p, "%s: %s is asserted by both equal and present", where, k)
-			} else if list.name == "present" && contains(in[k], "contains") {
-				r.add(Invalid, "EXE-03", p, "%s: %s is asserted by both contains and present", where, k)
+			} else if list.name == "present" {
+				for _, m := range []string{"equal", "contains", "matches", "excludes", "differs"} {
+					if contains(in[k], m) {
+						r.add(Invalid, "EXE-03", p, "%s: %s is asserted by both %s and present", where, k, m)
+						break
+					}
+				}
 			}
 			note(list.name, k)
 		}
@@ -436,6 +631,8 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 				for _, sub := range sortedKeys(claim) {
 					if strings.TrimSpace(sub) == "" {
 						r.add(Invalid, "EXE-03", p, "%s: %s has an empty field name", where, of)
+					} else if _, err := expr.ParseRelative(sub); err != nil {
+						r.add(Invalid, "EXE-03", p, "%s: %s: claim key %s: %v", where, of, sub, err)
 					}
 					if err := checkJSONValue(claim[sub]); err != nil {
 						r.add(Invalid, "EXE-03", p, "%s: %s: expected value for %s isn't a JSON value: %v", where, of, sub, err)
@@ -476,6 +673,8 @@ func (r *Report) checkExpect(p, where string, ex *model.Expect) {
 			for _, sub := range sortedKeys(cm.Where) {
 				if strings.TrimSpace(sub) == "" {
 					r.add(Invalid, "EXE-03", p, "%s: %s has an empty field name in where", where, of)
+				} else if _, err := expr.ParseRelative(sub); err != nil {
+					r.add(Invalid, "EXE-03", p, "%s: %s: where key %s: %v", where, of, sub, err)
 				}
 				if err := checkJSONValue(cm.Where[sub]); err != nil {
 					r.add(Invalid, "EXE-03", p, "%s: %s: expected value for %s isn't a JSON value: %v", where, of, sub, err)
@@ -539,6 +738,12 @@ func expectValues(ex *model.Expect) []any {
 		for _, cm := range ex.Counts[k].All() {
 			out = append(out, cm.Where, cm.Is)
 		}
+	}
+	for _, k := range sortedKeys(ex.Excludes) {
+		out = append(out, ex.Excludes[k])
+	}
+	for _, k := range sortedKeys(ex.Differs) {
+		out = append(out, ex.Differs[k])
 	}
 	return out
 }
@@ -695,11 +900,15 @@ func (r *Report) checkSetupExercised(checked map[model.StepRef]bool) {
 	setup := map[string]use{}
 	var order []string
 	for _, sf := range r.Specs {
-		for _, sc := range sf.Spec.Scenarios {
+		shared := sharedRefs(sf.Spec)
+		for k, sc := range sf.Spec.Scenarios {
 			for i := range sc.Steps {
 				if key, _, ok := operation(&sc.Steps[i]); ok {
 					verified[key] = true
 				}
+			}
+			if shared[k] {
+				continue
 			}
 			for i := range sc.Setup {
 				key, desc, ok := operation(&sc.Setup[i])

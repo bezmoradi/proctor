@@ -1,0 +1,46 @@
+{{template "head" .}}<header>
+<h1>Mutation report</h1>
+{{template "run" .Run}}</header>
+<main>
+<section aria-labelledby="summary">
+<h2 id="summary">Summary</h2>
+<table class="counts">
+<caption>Mutants by verdict ({{.Total}} in all)</caption>
+<thead><tr>{{range .Counts}}<th scope="col">{{template "verdict" .}}</th>{{end}}</tr></thead>
+<tbody><tr>{{range .Counts}}<td>{{.N}}</td>{{end}}</tr></tbody>
+</table>
+<dl class="facts">
+<dt>Mutation score</dt><dd>{{.Score}}</dd>
+<dt>Run time</dt><dd>{{.Duration}}{{if .Run.EndedAt}} (ended {{.Run.EndedAt}}){{end}}</dd>
+<dt>Result</dt><dd>{{.Run.Result}} (exit {{.Run.ExitCode}})</dd>
+<dt>Baseline</dt><dd>{{.Run.Baseline}}</dd>
+<dt>Configuration</dt><dd><code>{{.Run.Config}}</code>, mutants from <code>{{.Run.MutantsFile}}</code></dd>
+{{if .Run.Stopped}}<dt>Stopped</dt><dd>{{.Run.Stopped}}</dd>{{end}}
+</dl>
+<p class="note">The score counts the mutants a scenario caught, killed and killed elsewhere, out of those and the survivors. Mutants that ended in error or didn't run aren't in it. A killed elsewhere mutant failed only scenarios outside its <code>killed_by</code>, so <code>proctor mutate</code> counts it as survived for its exit code.</p>
+</section>
+<section aria-labelledby="survivors">
+<h2 id="survivors">Survivors</h2>
+{{if .Survivors}}<ul class="survivors">
+{{range .Survivors}}<li>{{template "verdict" .}} {{if .Href}}<a href="{{.Href}}">{{.ID}}</a>{{else}}{{.ID}}{{end}} {{.Title}}{{if .File}} <span class="where">{{.File}}{{if .Line}}:{{.Line}}{{end}}</span>{{end}}</li>
+{{end}}</ul>
+{{else}}<p>No mutant survived.</p>
+{{end}}</section>
+<section aria-labelledby="files">
+<h2 id="files">Files</h2>
+<table class="files">
+<caption>Mutated files, those with survivors first</caption>
+<thead><tr><th scope="col">File</th>{{range .Columns}}<th scope="col">{{template "verdict" .}}</th>{{end}}<th scope="col">All</th></tr></thead>
+<tbody>
+{{range .Files}}<tr><th scope="row"><a href="{{.Href}}">{{.Path}}</a></th>{{range .Counts}}<td>{{.}}</td>{{end}}<td>{{.Total}}</td></tr>
+{{end}}</tbody>
+</table>
+</section>
+{{if .Unplaced}}<section aria-labelledby="unplaced">
+<h2 id="unplaced">Mutants not on a file page</h2>
+<ul>
+{{range .Unplaced}}<li>{{template "verdict" .}} {{.ID}} {{.Title}}: <code>{{.File}}</code>, {{.Reason}}</li>
+{{end}}</ul>
+</section>
+{{end}}</main>
+{{template "foot"}}

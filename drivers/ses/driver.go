@@ -28,6 +28,7 @@ const (
 	Name         = "ses"
 	OpSent       = "sent"
 	SentPath     = "/__proctor/sent"
+	Mailbox      = "sent"
 	MaxResponse  = 15 << 20
 	CallTimeout  = 10 * time.Second
 	ReadyAttempt = 3 * time.Second
@@ -181,6 +182,7 @@ func (d *Driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		add("EXE-01", "$.do", "unknown operation %q; the ses driver has only %q", p.Op, OpSent)
 		return r, nil
 	}
+	r.Targets = []string{Mailbox}
 	if p.Setup {
 		add("FIX-03", "$.do", "reading sent emails is a verification step; setup goes through the application")
 	}

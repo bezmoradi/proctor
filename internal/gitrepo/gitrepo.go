@@ -2,9 +2,12 @@ package gitrepo
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -27,14 +30,48 @@ func (e Entry) Regular() bool {
 
 var oidPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
+type NotRepositoryError struct {
+	Dir string
+	Git string
+}
+
+func (e *NotRepositoryError) Error() string {
+	return fmt.Sprintf("not a Git repository: %s (%s); this command reads Git, and only proctor validate without --commit reads a folder outside one", e.Dir, e.Git)
+}
+
 func Open(dir string) (*Repo, error) {
 	r := &Repo{dir: dir}
 	out, err := r.git(nil, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if plain, ok := plainFolder(dir); ok && strings.Contains(err.Error(), "not a git repository") {
+			return nil, &NotRepositoryError{Dir: plain, Git: err.Error()}
+		}
 		return nil, err
 	}
 	r.dir = strings.TrimSpace(string(out))
 	return r, nil
+}
+
+func plainFolder(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false
+	}
+	if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	for d := real; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
+			return "", false
+		}
+		if filepath.Dir(d) == d {
+			return real, true
+		}
+	}
 }
 
 func (r *Repo) Dir() string { return r.dir }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,14 +21,15 @@ type subCheck struct {
 }
 
 type check struct {
-	kind   string
-	target string
-	path   expr.Path
-	perr   error
-	want   any
-	subs   []subCheck
-	n      int
-	claim  *int
+	kind    string
+	target  string
+	path    expr.Path
+	perr    error
+	want    any
+	subs    []subCheck
+	n       int
+	claim   *int
+	pattern *regexp.Regexp
 }
 
 func newCheck(kind, target string) check {
@@ -119,6 +121,47 @@ func (r *Runner) prepare(ex *model.Expect, vars expr.Vars) ([]check, error) {
 		c.want = want
 		out = append(out, c)
 	}
+	for _, key := range sortedKeys(ex.Matches) {
+		text, isText := ex.Matches[key].(string)
+		if !isText {
+			return nil, fmt.Errorf("matches %s: the pattern must be text", key)
+		}
+		re, err := model.MatchPattern(text)
+		if err != nil {
+			return nil, fmt.Errorf("matches %s: %v", key, err)
+		}
+		c := newCheck("matches", key)
+		c.want, c.pattern = text, re
+		out = append(out, c)
+	}
+	for _, key := range sortedKeys(ex.Excludes) {
+		texts, multi, ok := model.ExcludedTexts(ex.Excludes[key])
+		if !ok {
+			return nil, fmt.Errorf("excludes %s: the text must be text or a list of texts", key)
+		}
+		for i, text := range texts {
+			c := newCheck("excludes", key)
+			c.claim = claimIndex(multi, i)
+			want, err := vars.Text(text, nil)
+			if err != nil {
+				return nil, fmt.Errorf("excludes %s%s: %v", key, claimLabel(c.claim), err)
+			}
+			if want == "" {
+				return nil, fmt.Errorf("excludes %s%s: the text is empty, and every text contains it", key, claimLabel(c.claim))
+			}
+			c.want = want
+			out = append(out, c)
+		}
+	}
+	for _, key := range sortedKeys(ex.Differs) {
+		want, err := vars.Value(ex.Differs[key])
+		if err != nil {
+			return nil, fmt.Errorf("differs %s: %v", key, err)
+		}
+		c := newCheck("differs", key)
+		c.want = want
+		out = append(out, c)
+	}
 	for _, key := range sortedKeys(ex.Counts) {
 		for i, cm := range ex.Counts[key].All() {
 			c := newCheck("count", key)
@@ -158,18 +201,11 @@ func whereChecks(c *check, m map[string]any, vars expr.Vars) (map[string]any, er
 		if err != nil {
 			return nil, fmt.Errorf("%s: %v", sk, err)
 		}
-		p, perr := expr.ParsePath(subPath(sk))
+		p, perr := expr.ParseRelative(sk)
 		c.subs = append(c.subs, subCheck{key: sk, path: p, perr: perr, want: v})
 		want[sk] = v
 	}
 	return want, nil
-}
-
-func subPath(sk string) string {
-	if strings.HasPrefix(sk, "$") {
-		return sk
-	}
-	return "$." + sk
 }
 
 func anyList(l []any) any {
@@ -231,6 +267,52 @@ func sameMultiset(want, got []any) bool {
 	return true
 }
 
+type missingKey struct {
+	key, part string
+	whole     bool
+}
+
+func keyInNoElement(subs []subCheck, list []any) (missingKey, bool) {
+	if len(list) == 0 {
+		return missingKey{}, false
+	}
+	for _, s := range subs {
+		found := false
+		for _, el := range list {
+			if _, ok := s.path.Select(el); ok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return missingPart(s, list), true
+		}
+	}
+	return missingKey{}, false
+}
+
+func missingPart(s subCheck, list []any) missingKey {
+	n := len(s.path.Segments())
+	held := 0
+	for _, el := range list {
+		for held < n-1 {
+			if _, ok := s.path.Prefix(held + 1).Select(el); !ok {
+				break
+			}
+			held++
+		}
+	}
+	return missingKey{key: s.key, part: s.path.Prefix(held + 1).Relative(), whole: held+1 >= n}
+}
+
+func vacuousMessage(m missingKey, target string) string {
+	head := fmt.Sprintf("claim key %s is in no element of %s; the claim can't fail (EXE-11)", m.key, target)
+	if m.whole {
+		return head + ": check the key against an element, or add a claim that some element has it (any, or count with is above 0)"
+	}
+	return fmt.Sprintf("%s: no element has %s. A missing %s isn't read as \"not this value\", since the claim would then pass whenever the elements stop carrying %s; add a claim that some element has it (any, or count with is above 0, on %s), or, if no element should, assert what the elements are instead (for example count them by type)", head, m.part, m.part, m.part, m.key)
+}
+
 func matchesAll(subs []subCheck, el any) bool {
 	for _, s := range subs {
 		got, ok := s.path.Select(el)
@@ -252,6 +334,16 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 		return a
 	}
 	got, ok := c.path.Select(fact)
+	if kept, cut := truncatedText(c, fact, got); cut {
+		a.Expected, a.Present, a.CutAt, a.vacuous = c.want, true, kept, true
+		fail(fmt.Sprintf("%s was cut at %d bytes (body_truncated: true): the driver keeps only the start of a longer body, so %s can't judge the text after the cut; assert on a smaller response", c.target, kept, c.kind))
+		return r.redactAssertion(a, c, elem, red)
+	}
+	if list, why, over := overflowed(c, fact); over {
+		a.Expected, a.Present, a.Overflow, a.vacuous = c.want, ok, true, true
+		fail(fmt.Sprintf("the driver left frames out of %s (%s: true%s), so %s on %s can't be judged: a frame left out could change it. On a stream that overflowed only any, present and checks on a frame that is there are judged; assert on a shorter stream", list, overflowMarkName, why, c.kind, c.target))
+		return r.redactAssertion(a, c, elem, red)
+	}
 	switch c.kind {
 	case "equal":
 		a.Expected = c.want
@@ -262,6 +354,38 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 		a.Present, a.Actual = true, got
 		if !expr.Equal(c.want, got) {
 			fail("value differs")
+			if c.target == statusPath {
+				a.Response = r.responseCause(fact, red)
+			}
+		}
+	case "differs":
+		a.Expected = c.want
+		if !ok {
+			fail(notPresent)
+			break
+		}
+		a.Present, a.Actual = true, got
+		if expr.Equal(c.want, got) {
+			fail("the value is the one it must differ from")
+		}
+	case "matches", "excludes":
+		want := c.want.(string)
+		a.Expected = want
+		text, isText := got.(string)
+		switch {
+		case !ok:
+			fail(notPresent)
+		case !isText:
+			a.Present, a.Actual = true, got
+			fail("not text")
+		default:
+			a.Present, a.Actual = true, text
+			if c.kind == "matches" && !c.pattern.MatchString(text) {
+				fail("doesn't match the pattern, which must match the whole text")
+			}
+			if at := strings.Index(text, want); c.kind == "excludes" && at >= 0 {
+				fail(fmt.Sprintf("contains the excluded text at byte %d of %d", at, len(text)))
+			}
 		}
 	case "present":
 		if !ok {
@@ -378,9 +502,14 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 			if len(at) > 0 {
 				matched = fmt.Sprintf("%d of the %d elements have these values: %s", len(at), len(list), strings.Join(at, ", "))
 			}
-			if len(at) == c.n {
+			key, vacuous := keyInNoElement(c.subs, list)
+			switch {
+			case c.n == 0 && vacuous:
+				a.vacuous = true
+				fail(vacuousMessage(key, c.target))
+			case len(at) == c.n:
 				a.Message = matched
-			} else {
+			default:
 				fail(fmt.Sprintf("%s; expected %d", matched, c.n))
 			}
 		}
@@ -418,10 +547,123 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 			case idx >= 0:
 				a.Actual, elem = list[idx], fmt.Sprintf("%s[%d]", c.target, idx)
 				fail(fmt.Sprintf("element [%d] has these values, expected none", idx))
+			default:
+				if key, vacuous := keyInNoElement(c.subs, list); vacuous {
+					a.Actual, a.vacuous = list, true
+					fail(vacuousMessage(key, c.target))
+				}
 			}
 		}
 	}
 	return r.redactAssertion(a, c, elem, red)
+}
+
+const (
+	statusPath    = "$.status"
+	cutTextName   = "body_text"
+	cutMarkName   = "body_truncated"
+	responseSlack = 64 << 10
+)
+
+const (
+	overflowMarkName = "overflow"
+	overflowWhyName  = "overflow_reason"
+	countFieldName   = "count"
+)
+
+var overflowJudged = map[string]bool{"any": true, "present": true}
+
+func overflowed(c check, fact any) (string, string, bool) {
+	segs := c.path.Segments()
+	obj, _ := fact.(map[string]any)
+	if len(segs) == 0 || segs[0].IsIndex || obj[overflowMarkName] != true {
+		return "", "", false
+	}
+	name := segs[0].Name
+	_, isList := obj[name].([]any)
+	if !isList && name != countFieldName {
+		return "", "", false
+	}
+	at := expr.Child("$", name)
+	if !isList {
+		for _, sibling := range sortedKeys(obj) {
+			if _, ok := obj[sibling].([]any); ok {
+				at = expr.Child("$", sibling)
+				break
+			}
+		}
+	}
+	why := ""
+	if text, isText := obj[overflowWhyName].(string); isText && text != "" {
+		why = "; " + text
+	}
+	switch {
+	case len(segs) == 1 && !overflowJudged[c.kind]:
+		return at, why, true
+	case len(segs) > 1 && isList && c.kind == "absent":
+		if _, there := c.path.Prefix(2).Select(fact); !there {
+			return at, why, true
+		}
+	}
+	return "", "", false
+}
+
+var textMatchers = map[string]bool{"equal": true, "contains": true, "matches": true, "excludes": true, "differs": true}
+
+func truncatedText(c check, fact, got any) (int, bool) {
+	text, isText := got.(string)
+	segs := c.path.Segments()
+	if !textMatchers[c.kind] || !isText || len(segs) == 0 {
+		return 0, false
+	}
+	if last := segs[len(segs)-1]; last.IsIndex || last.Name != cutTextName {
+		return 0, false
+	}
+	parent, _ := c.path.Prefix(len(segs) - 1).Select(fact)
+	obj, _ := parent.(map[string]any)
+	if obj[cutMarkName] != true {
+		return 0, false
+	}
+	return len(text), true
+}
+
+func (r *Runner) responseCause(fact any, red []string) string {
+	obj, _ := fact.(map[string]any)
+	if body, isObj := obj["body"].(map[string]any); isObj {
+		var parts []string
+		for _, k := range []string{"error", "message"} {
+			if v, has := body[k]; has {
+				parts = append(parts, k+" "+compactJSON(r.redactValue("$.body."+k, v, red)))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, ", ")
+		}
+	}
+	text := ""
+	switch {
+	case obj[cutTextName] != nil:
+		text, _ = r.redactValue("$."+cutTextName, obj[cutTextName], red).(string)
+	case obj["body"] != nil:
+		text = compactJSON(r.redactValue("$.body", obj["body"], red))
+	}
+	if text == "" {
+		return ""
+	}
+	if limit := r.excerpt + responseSlack; len(text) > limit {
+		text = cut(text, limit)
+	}
+	return "body " + text
+}
+
+func compactJSON(v any) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return fmt.Sprint(v)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string) Assertion {
@@ -486,33 +728,84 @@ func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string
 func (r *Runner) redactWhere(target string, want map[string]any, red []string) map[string]any {
 	out := map[string]any{}
 	for k, v := range want {
-		out[k] = r.redactValue(target+"[0]"+strings.TrimPrefix(subPath(k), "$"), v, red)
+		out[k] = r.redactValue(target+"[0]"+whereSuffix(k), v, red)
 	}
 	return out
 }
 
+func whereSuffix(k string) string {
+	if p, err := expr.ParseRelative(k); err == nil {
+		return strings.TrimPrefix(p.String(), "$")
+	}
+	if strings.HasPrefix(k, "$") {
+		return strings.TrimPrefix(k, "$")
+	}
+	return "." + k
+}
+
+type redactPath struct {
+	canonical, dotted string
+}
+
+func (p redactPath) child(name string) redactPath {
+	return redactPath{canonical: expr.Child(p.canonical, name), dotted: p.dotted + "." + name}
+}
+
+func (p redactPath) index(i int) redactPath {
+	at := fmt.Sprintf("[%d]", i)
+	return redactPath{canonical: p.canonical + at, dotted: p.dotted + at}
+}
+
+func (r *Runner) listedAt(p redactPath, red []string) bool {
+	return r.listedPath(p.canonical, red) || r.listedPath(p.dotted, red)
+}
+
+func (p redactPath) sensitive() bool {
+	return sensitivePath(p.canonical) || sensitivePath(p.dotted)
+}
+
+func newRedactPath(path string) redactPath {
+	p, err := expr.ParsePath(path)
+	if err != nil {
+		return redactPath{canonical: path, dotted: path}
+	}
+	dotted := "$"
+	for _, seg := range p.Segments() {
+		if seg.IsIndex {
+			dotted += fmt.Sprintf("[%d]", seg.Index)
+		} else {
+			dotted += "." + seg.Name
+		}
+	}
+	return redactPath{canonical: path, dotted: dotted}
+}
+
 func (r *Runner) redactValue(path string, v any, red []string) any {
+	return r.redactAt(newRedactPath(path), v, red)
+}
+
+func (r *Runner) redactAt(path redactPath, v any, red []string) any {
 	if v == nil {
 		return nil
 	}
-	if r.listedPath(path, red) {
+	if r.listedAt(path, red) {
 		return redacted
 	}
 	switch x := v.(type) {
 	case string:
-		if sensitivePath(path) {
+		if path.sensitive() {
 			return redacted
 		}
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
-			out[k] = r.redactValue(path+"."+k, e, red)
+			out[k] = r.redactAt(path.child(k), e, red)
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, e := range x {
-			out[i] = r.redactValue(fmt.Sprintf("%s[%d]", path, i), e, red)
+			out[i] = r.redactAt(path.index(i), e, red)
 		}
 		return out
 	}
@@ -520,7 +813,11 @@ func (r *Runner) redactValue(path string, v any, red []string) any {
 }
 
 func (r *Runner) scrubRedacted(path string, v any, red []string) {
-	if r.listedPath(path, red) {
+	r.scrubAt(newRedactPath(path), v, red)
+}
+
+func (r *Runner) scrubAt(path redactPath, v any, red []string) {
+	if r.listedAt(path, red) {
 		for _, s := range textLeaves(v) {
 			r.scrub.add(s)
 		}
@@ -528,16 +825,16 @@ func (r *Runner) scrubRedacted(path string, v any, red []string) {
 	}
 	switch x := v.(type) {
 	case string:
-		if sensitivePath(path) {
+		if path.sensitive() {
 			r.scrub.add(x)
 		}
 	case map[string]any:
 		for k, e := range x {
-			r.scrubRedacted(path+"."+k, e, red)
+			r.scrubAt(path.child(k), e, red)
 		}
 	case []any:
 		for i, e := range x {
-			r.scrubRedacted(fmt.Sprintf("%s[%d]", path, i), e, red)
+			r.scrubAt(path.index(i), e, red)
 		}
 	}
 }

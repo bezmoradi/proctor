@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"proctor/internal/gitrepo"
 	"proctor/internal/integrity"
+	"proctor/internal/mutate"
 	"proctor/internal/runner"
 )
 
@@ -38,12 +40,19 @@ func newValidateCmd(stdout, stderr io.Writer) *cobra.Command {
 
 func validate(o validateOptions, stdout, stderr io.Writer) int {
 	c, commit := o.common, o.commit
+	repoDir, inGit := "", true
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
-		return exitInvalid
+		var plain *gitrepo.NotRepositoryError
+		if commit != "" || !errors.As(err, &plain) {
+			fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
+			return exitInvalid
+		}
+		repoDir, inGit = plain.Dir, false
+	} else {
+		repoDir = repo.Dir()
 	}
-	var src integrity.Source = integrity.WorkTreeSource{Root: repo.Dir()}
+	var src integrity.Source = integrity.WorkTreeSource{Root: repoDir}
 	if commit != "" {
 		cs, err := integrity.NewCommitSource(repo, commit)
 		if err != nil {
@@ -53,7 +62,14 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		src = cs
 	}
 	r := integrity.Load(src, c.config)
-	dc := &driverCheck{}
+	if r.Config != nil && r.Config.Mutation != nil {
+		if inGit {
+			checkMutation(r, repoDir, src, true)
+		} else {
+			r.CheckMutantFiles(repoDir, src, untrackable, true)
+		}
+	}
+	dc := &driverCheck{outsideGit: !inGit}
 	if r.Config != nil {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
@@ -64,4 +80,27 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		code = dc.setup.ExitCode
 	}
 	return write(stdout, c.json, "VALIDATE", r, dc, code, resultName(code))
+}
+
+var errNoGit = errors.New("not a Git repository, so Proctor can't tell whether Git tracks this file or ignores it; validate the mutation settings in a Git repository")
+
+func untrackable(string) (integrity.FileState, error) {
+	return integrity.FileState{}, errNoGit
+}
+
+func checkMutation(r *integrity.Report, repoDir string, src integrity.Source, lines bool) {
+	if cs, ok := src.(*integrity.CommitSource); ok {
+		r.CheckMutantFiles(repoDir, src, cs.FileState, lines)
+		return
+	}
+	files, err := mutate.ListFiles(repoDir)
+	if err != nil {
+		r.CheckMutantFiles(repoDir, src, func(string) (integrity.FileState, error) { return integrity.FileState{}, err }, lines)
+		return
+	}
+	listed := map[string]bool{}
+	for _, f := range files {
+		listed[f] = true
+	}
+	r.CheckMutantFiles(repoDir, src, integrity.WorkTreeState(repoDir, listed), lines)
 }

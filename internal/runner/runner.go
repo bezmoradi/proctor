@@ -36,6 +36,9 @@ const (
 	ReasonAborted             = "aborted"
 	ReasonTrustViolation      = "trust_violation"
 	ReasonAppLogs             = "app_logs"
+	ReasonCleanupFailed       = "cleanup_failed"
+	ReasonCleanupUnguarded    = "cleanup_unguarded"
+	ReasonHandleNotOpen       = "handle_not_open"
 )
 
 const (
@@ -50,6 +53,8 @@ const (
 	CauseDriverFailed       = protocol.CauseDriverFailed
 	CauseNotConfigured      = protocol.CauseNotConfigured
 	CauseAppLogsUnreadable  = "app_logs_unreadable"
+	CauseAppLogsUnparsed    = "app_logs_unparsed"
+	CauseAppLogsUnmapped    = "app_logs_unmapped_level"
 )
 
 const (
@@ -60,6 +65,7 @@ const (
 const (
 	PhaseSetup        = "setup"
 	PhaseVerification = "verification"
+	PhaseCleanup      = "cleanup"
 )
 
 const redacted = "[redacted]"
@@ -87,6 +93,10 @@ type Assertion struct {
 	Present  bool   `json:"present"`
 	Result   Result `json:"result"`
 	Message  string `json:"message,omitempty"`
+	Response string `json:"response,omitempty"`
+	CutAt    int    `json:"cut_at,omitempty"`
+	Overflow bool   `json:"overflow,omitempty"`
+	vacuous  bool
 }
 
 type Action struct {
@@ -121,6 +131,10 @@ type StepResult struct {
 	Samples    int         `json:"samples,omitempty"`
 	Assertions []Assertion `json:"assertions,omitempty"`
 	Saved      []string    `json:"saved,omitempty"`
+
+	AfterSkippedAct bool `json:"after_skipped_act,omitempty"`
+
+	rec *stepRecord
 }
 
 type ScenarioResult struct {
@@ -134,6 +148,17 @@ type ScenarioResult struct {
 	Steps   []StepResult   `json:"steps"`
 	Handles []HandleRecord `json:"handles,omitempty"`
 	AppLogs *AppLogResult  `json:"app_logs,omitempty"`
+
+	FirstFailure   string            `json:"first_failure,omitempty"`
+	Cleanup        Result            `json:"cleanup,omitempty"`
+	CleanupFailure string            `json:"cleanup_failure,omitempty"`
+	Transcript     *TranscriptResult `json:"transcript,omitempty"`
+	ApprovedLog    *TranscriptResult `json:"approved_log,omitempty"`
+
+	rec      *scenarioRecord
+	logRec   *logRecord
+	logVars  *scenarioRecord
+	tableKey string
 }
 
 const AppLogCheck = "app-logs"
@@ -145,9 +170,18 @@ type AppLogResult struct {
 	Message         string           `json:"message,omitempty"`
 	Note            string           `json:"note,omitempty"`
 	LinesRead       int              `json:"lines_read"`
+	LinesParsed     int              `json:"lines_parsed"`
+	UnparsedCount   int              `json:"unparsed_count"`
+	FirstUnparsed   string           `json:"first_unparsed,omitempty"`
+	UnmappedCount   int              `json:"unmapped_count"`
+	UnmappedLevel   string           `json:"unmapped_level,omitempty"`
+	FirstUnmapped   string           `json:"first_unmapped,omitempty"`
 	Unexpected      []AppLogLine     `json:"unexpected,omitempty"`
 	UnexpectedCount int              `json:"unexpected_count"`
 	Expected        []AppLogExpected `json:"expected,omitempty"`
+
+	window []string
+	kept   bool
 }
 
 type AppLogLine struct {
@@ -173,15 +207,19 @@ type TableRow struct {
 }
 
 type TableResult struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Spec      string        `json:"specification"`
-	SetupFrom string        `json:"setup_from,omitempty"`
-	Columns   []string      `json:"columns"`
-	Rows      []TableRow    `json:"rows"`
-	Result    Result        `json:"result"`
-	Reason    string        `json:"reason,omitempty"`
-	AppLogs   *AppLogResult `json:"app_logs,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Spec        string            `json:"specification"`
+	SetupFrom   string            `json:"setup_from,omitempty"`
+	Columns     []string          `json:"columns"`
+	Rows        []TableRow        `json:"rows"`
+	Result      Result            `json:"result"`
+	Reason      string            `json:"reason,omitempty"`
+	AppLogs     *AppLogResult     `json:"app_logs,omitempty"`
+	ApprovedLog *TranscriptResult `json:"approved_log,omitempty"`
+
+	key    string
+	logRec *logRecord
 }
 
 type Summary struct {
@@ -221,6 +259,7 @@ type Outcome struct {
 	Summary    Summary          `json:"summary"`
 	ExitCode   int              `json:"exit_code"`
 	Result     string           `json:"result"`
+	Received   string           `json:"received,omitempty"`
 }
 
 const (
@@ -228,6 +267,8 @@ const (
 	ExitInvalid   = 3
 	ExitIntegrity = 4
 )
+
+var identityKeys = map[string]bool{"id": true, "user_id": true}
 
 type SetupError struct {
 	ExitCode int
@@ -272,19 +313,34 @@ type Options struct {
 	DriverDir     string
 	Described     map[model.StepRef]model.StepInfo
 	Progress      func(Progress)
+	RunID         string
+	Received      ReceivedWriter
 }
 
 type Progress struct {
 	Index, Total int
 	ID           string
+	Table        string
 	Done         bool
 	Result       Result
+	Cleanup      Result
 	Elapsed      time.Duration
 }
 
-func (o Options) withDefaults() (Options, error) {
+func (o Options) withDefaults(cfg *model.Config) (Options, error) {
+	var tl *model.TimeLimits
+	if cfg != nil {
+		tl = cfg.TimeLimits
+	}
+	limit, err := tl.MaxCallLimit()
+	if err != nil {
+		limit = model.DefaultMaxCall
+	}
 	if o.CallTimeout <= 0 {
-		o.CallTimeout = defaultCallTimeout
+		o.CallTimeout = min(defaultCallTimeout, limit)
+	}
+	if o.CallTimeout > limit {
+		return o, &SetupError{ExitCode: ExitInvalid, Msgs: []string{fmt.Sprintf("--call-timeout %s is longer than time_limits.max_call (%s%s); raise max_call in proctor.yaml, where review sees it, or give the slow steps their own timeout (TIME-13)", o.CallTimeout, limit, defaultNote(tl))}}
 	}
 	if o.ReadyTimeout <= 0 {
 		o.ReadyTimeout = defaultReadyTimeout
@@ -323,16 +379,25 @@ type Runner struct {
 	excerpt  int
 	scrub    *scrubber
 	info     map[model.StepRef]model.StepInfo
+	checked  map[string]string
 	logs     applogs.Source
 	logRules applogs.Rules
+	logLoose bool
+}
+
+func defaultNote(tl *model.TimeLimits) string {
+	if tl == nil || tl.MaxCall == "" {
+		return ", the default when proctor.yaml doesn't set it"
+	}
+	return ""
 }
 
 func credKey(identity, variant string) string { return identity + "\x00" + variant }
 
 func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*Runner, error) {
-	opt, err := opt.withDefaults()
+	opt, err := opt.withDefaults(cfg)
 	if err != nil {
-		return nil, &SetupError{ExitCode: ExitError, Msgs: []string{err.Error()}}
+		return nil, asSetup(err)
 	}
 	if b == nil {
 		return nil, &SetupError{ExitCode: ExitInvalid, Msgs: []string{"a binding is required to run specifications"}}
@@ -342,6 +407,9 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 	if cfg.Redaction != nil {
 		for _, p := range cfg.Redaction.JSONPaths {
 			r.redactJS[p] = true
+			if c, ok := expr.Canonical(p); ok {
+				r.redactJS[c] = true
+			}
 		}
 	}
 	if cfg.Report != nil && cfg.Report.ExcerptBytes > 0 {
@@ -364,7 +432,9 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 			return nil, &SetupError{ExitCode: ExitError, Msgs: []string{r.scrub.clean(fmt.Sprintf("app_logs: cannot read the application's log: %v", err))}}
 		}
 		r.logs = src
-		r.logRules = applogs.Rules{Levels: cfg.AppLogs.EffectiveLevels(), LevelField: cfg.AppLogs.LevelKey(), MessageField: cfg.AppLogs.MessageKey()}
+		r.logRules = applogs.Rules{Format: cfg.AppLogs.FormatName(), Levels: cfg.AppLogs.EffectiveLevels(), LevelField: cfg.AppLogs.LevelKey(),
+			MessageField: cfg.AppLogs.MessageKey(), Numbers: cfg.AppLogs.NumberLevels()}
+		r.logLoose = cfg.AppLogs.UnparsedAllowed()
 	}
 	infos := opt.Described
 	if infos == nil {
@@ -374,23 +444,29 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 			return nil, err
 		}
 	}
-	checkDescribed(cfg, specs, infos, &probs)
+	checkDescribed(cfg, specs, infos, sess.entries(), &probs)
 	if err := probs.err(r.scrub); err != nil {
 		sess.close()
 		return nil, err
 	}
 	r.info = infos
+	r.checked = map[string]string{}
+	for _, in := range infos {
+		for _, f := range in.Files {
+			r.checked[f.Path] = f.SHA256
+		}
+	}
 	return r, nil
 }
 
-func checkDescribed(cfg *model.Config, specs []SpecFile, infos map[model.StepRef]model.StepInfo, probs *problems) {
+func checkDescribed(cfg *model.Config, specs []SpecFile, infos map[model.StepRef]model.StepInfo, entries map[string][]model.PolicyEntry, probs *problems) {
 	rep := &integrity.Report{Config: cfg}
 	for _, f := range specs {
 		if f.Spec != nil {
 			rep.Specs = append(rep.Specs, integrity.SpecFile{Path: f.Path, Spec: f.Spec})
 		}
 	}
-	rep.ApplyStepInfo(infos)
+	rep.ApplyStepInfo(infos, entries)
 	for _, f := range rep.Findings {
 		code := ExitInvalid
 		if f.Kind == integrity.Violation {
@@ -404,6 +480,7 @@ func (r *Runner) loadCredentials(probs *problems) {
 	bad := func(format string, args ...any) { probs.add(ExitInvalid, format, args...) }
 	lookup := r.opt.LookupEnv
 	cfg, b := r.cfg, r.b
+	holder := map[string]string{}
 	for _, name := range sortedKeys(b.Identities) {
 		id, ok := cfg.Identities[name]
 		if !ok {
@@ -420,7 +497,25 @@ func (r *Runner) loadCredentials(probs *problems) {
 				bad("binding: identity %q: value name %q must be letters, digits and _", name, k)
 				continue
 			}
-			r.values[name+"."+k] = b.Identities[name].Values[k]
+			v := b.Identities[name].Values[k]
+			r.values[name+"."+k] = v
+			if !identityKeys[k] {
+				continue
+			}
+			if other, taken := holder[k+"\x00"+v]; taken {
+				bad("binding: identities %q and %q have the same %s value; each identity needs its own, or a scenario that keeps one user from another's data tests a user against themselves (AUTH-03)", other, name, k)
+				continue
+			}
+			holder[k+"\x00"+v] = name
+		}
+	}
+	for _, ref := range r.usedValues() {
+		v, ok := b.Identities[ref[0]].Values[ref[1]]
+		switch {
+		case !ok:
+			bad("binding: identity %q has no value %q, which a step uses as ${%s.%s}; add it under the identity's values (AUTH-03)", ref[0], ref[1], ref[0], ref[1])
+		case strings.TrimSpace(v) == "":
+			bad("binding: identity %q: value %q, which a step uses as ${%s.%s}, is empty (AUTH-03)", ref[0], ref[1], ref[0], ref[1])
 		}
 	}
 	owner := map[string]string{}
@@ -500,7 +595,7 @@ func (r *Runner) loadCredentials(probs *problems) {
 }
 
 func allSteps(sc model.Scenario) []model.Step {
-	return append(append([]model.Step{}, sc.Setup...), sc.Steps...)
+	return append(append(append([]model.Step{}, sc.Setup...), sc.Steps...), sc.Cleanup...)
 }
 
 func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
@@ -529,6 +624,36 @@ func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
 		return variants[i][0]+"\x00"+variants[i][1] < variants[j][0]+"\x00"+variants[j][1]
 	})
 	return idents, variants
+}
+
+func (r *Runner) usedValues() [][2]string {
+	seen := map[[2]string]bool{}
+	for _, f := range r.specs {
+		if f.Spec == nil {
+			continue
+		}
+		for _, sc := range f.Spec.Scenarios {
+			for _, st := range allSteps(sc) {
+				for _, v := range []any{st.With, st.Expect} {
+					for _, n := range refsIn(v) {
+						i := strings.LastIndexByte(n, '.')
+						if i <= 0 || i == len(n)-1 || n == expr.RunID || expr.IsSecret(n) {
+							continue
+						}
+						if _, declared := r.cfg.Identities[n[:i]]; declared {
+							seen[[2]string{n[:i], n[i+1:]}] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	out := make([][2]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0]+"\x00"+out[i][1] < out[j][0]+"\x00"+out[j][1] })
+	return out
 }
 
 func (r *Runner) usedSecrets() []string {
@@ -567,7 +692,11 @@ func (r *Runner) Close() {
 }
 
 func (r *Runner) Run(ctx context.Context) *Outcome {
-	out := &Outcome{Target: r.b.Environment, RunID: NewRunID()}
+	runID := r.opt.RunID
+	if runID == "" {
+		runID = NewRunID()
+	}
+	out := &Outcome{Target: r.b.Environment, RunID: runID}
 	stopAll := ""
 	if msg := r.waitReady(ctx); msg != "" {
 		stopAll = ReasonEnvironmentNotReady
@@ -600,7 +729,11 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 		for i, sc := range f.Spec.Scenarios {
 			n++
 			began := time.Now()
-			r.progress(Progress{Index: n, Total: total, ID: sc.ID})
+			tableLabel := ""
+			if sc.Case != nil {
+				tableLabel = sc.Case.Label()
+			}
+			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel})
 			var res ScenarioResult
 			switch {
 			case stopAll != "":
@@ -608,7 +741,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			case ctx.Err() != nil:
 				res = notRunScenario(p, sc, ReasonAborted)
 			case sc.Case != nil:
-				key := p + "\x00" + sc.Case.Group
+				key := p + "\x00" + sc.Case.GroupKey
 				if groups[key] == nil {
 					groups[key] = &tableGroup{}
 				}
@@ -620,30 +753,36 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				w := r.openLogs()
 				res = r.scenario(ctx, p, sc, out.RunID)
 				if w != nil {
-					res.AppLogs = r.closeLogs(ctx, w, sc.ExpectLogs)
+					res.AppLogs = r.closeLogs(ctx, w, sc.ExpectLogs, sc.ApprovedLogWanted())
 					applyLogs(res.AppLogs, &res.Result, &res.Reason, &res.Cause)
+				}
+				if sc.ApprovedLogWanted() {
+					res.logRec = newLogRecord(res.AppLogs)
 				}
 			}
 			if sc.Case != nil {
-				res.Table = sc.Case.Table
+				res.Table, res.tableKey = sc.Case.Table, sc.Case.Key
 				for i := range res.Steps {
 					res.Steps[i].Case = sc.ID
 				}
 				out.addTableRow(p, sc, res)
 			}
 			out.Scenarios = append(out.Scenarios, res)
-			done := Progress{Index: n, Total: total, ID: sc.ID, Done: true, Result: res.Result, Elapsed: time.Since(began)}
+			done := Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel, Done: true, Result: res.Result, Cleanup: res.Cleanup, Elapsed: time.Since(began)}
 			if table == nil {
 				r.progress(done)
 				continue
 			}
 			table.rows = append(table.rows, len(out.Scenarios)-1)
 			table.done = append(table.done, done)
-			if next := i + 1; next < len(f.Spec.Scenarios) && f.Spec.Scenarios[next].Case != nil && f.Spec.Scenarios[next].Case.Table == sc.Case.Table {
+			if next := i + 1; next < len(f.Spec.Scenarios) && f.Spec.Scenarios[next].Case != nil && f.Spec.Scenarios[next].Case.Key == sc.Case.Key {
 				continue
 			}
-			al := r.closeLogs(ctx, table.w, sc.ExpectLogs)
-			out.applyTableLogs(p, sc.Case.Table, table.rows, al)
+			al := r.closeLogs(ctx, table.w, sc.ExpectLogs, sc.ApprovedLogWanted())
+			out.applyTableLogs(p, sc.Case.Key, table.rows, al)
+			if sc.ApprovedLogWanted() {
+				out.keepTableLog(p, sc.Case.Key, table.rows, al)
+			}
 			for j, ev := range table.done {
 				ev.Result = out.Scenarios[table.rows[j]].Result
 				r.progress(ev)
@@ -653,6 +792,9 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 	}
 	r.sess.close()
 	out.Drivers = r.sess.infos()
+	own := ownResults(out)
+	r.applyTranscripts(out)
+	r.applyApprovedLogs(out, own)
 	out.finish()
 	r.scrubOutcome(out)
 	return out
@@ -758,49 +900,69 @@ func (r *Runner) prove(ctx context.Context) ([]string, string) {
 }
 
 type tableGroup struct {
-	ran   bool
-	ok    bool
-	cause string
-	vars  expr.Vars
+	ran       bool
+	ok        bool
+	cause     string
+	vars      expr.Vars
+	setup     []StepResult
+	rowFailed map[string]bool
 }
 
 func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup) ScenarioResult {
 	hs := newHandleSet()
-	res := r.tableCaseSteps(ctx, p, sc, runID, g, hs)
+	res, vars := r.tableCaseSteps(ctx, p, sc, runID, g, hs)
+	cleanVars := vars
+	if cleanVars == nil {
+		cleanVars = expr.Vars{}
+		for k, v := range g.vars {
+			cleanVars[k] = v
+		}
+	}
+	if g.rowFailed == nil {
+		g.rowFailed = map[string]bool{}
+	}
+	r.cleanup(ctx, p, sc, &res, cleanVars, hs, g.ok && !g.rowFailed[sc.Case.Key])
+	if res.Result != Pass {
+		g.rowFailed[sc.Case.Key] = true
+	}
 	res.Handles = r.closeHandles(ctx, hs)
+	r.recordTranscript(&res, sc, g.setup, vars)
+	r.keepLogVars(&res, sc, vars)
 	return res
 }
 
-func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup, hs *handleSet) ScenarioResult {
+func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario, runID string, g *tableGroup, hs *handleSet) (ScenarioResult, expr.Vars) {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
+	keep := r.wantsTranscript(sc)
 	if !g.ran {
 		g.ran, g.ok = true, true
-		g.vars = r.baseVars(runID + "-" + sc.Case.Group)
+		g.vars = r.baseVars(runID + "-" + sc.Case.RunScope)
 		for _, st := range sc.Setup {
 			if !g.ok {
 				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseSetup, Result: NotRun, Reason: ReasonSetupFailed})
 				continue
 			}
-			sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseSetup}, g.vars, hs)
+			sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseSetup}, keep), g.vars, hs)
 			if sr.Result != Pass {
 				sr.Result, sr.Reason = Error, ReasonSetupFailed
 				g.ok, g.cause = false, sr.Cause
 			}
 			res.Steps = append(res.Steps, sr)
 		}
+		g.setup = setupResults(res.Steps)
 	}
 	if !g.ok {
 		res.Result, res.Reason, res.Cause = NotRun, ReasonSetupFailed, g.cause
 		for _, st := range sc.Steps {
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: ReasonSetupFailed})
 		}
-		return res
+		return res, nil
 	}
 	vars := expr.Vars{}
 	for k, v := range g.vars {
 		vars[k] = v
 	}
-	stop, failed := "", false
+	stop, failed, skippedAct := "", false, false
 	for i, st := range sc.Steps {
 		if stop != "" {
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
@@ -808,6 +970,7 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 		}
 		if failed {
 			if reason, msg := r.afterFailure(p, sc.ID, i, st, vars, hs); reason != "" {
+				skippedAct = skippedAct || !r.observes(p, sc.ID, i)
 				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: reason, Message: msg})
 				continue
 			}
@@ -820,9 +983,10 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
-		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: PhaseVerification}, vars, hs)
+		sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseVerification}, keep), vars, hs)
 		switch sr.Result {
 		case Fail:
+			noteFailure(&res, &sr, skippedAct)
 			res.Result, failed = Fail, true
 		case Error:
 			if !failed {
@@ -832,14 +996,15 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 		}
 		res.Steps = append(res.Steps, sr)
 	}
-	return res
+	return res, vars
 }
 
 func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runID string) ScenarioResult {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Pass}
 	vars := r.baseVars(runID + "-" + sc.ID)
 	hs := newHandleSet()
-	stop, failed := "", false
+	keep := r.wantsTranscript(sc)
+	stop, failed, skippedAct := "", false, false
 	run := func(i int, st model.Step, phase string) {
 		if stop != "" {
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
@@ -847,6 +1012,7 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 		}
 		if failed {
 			if reason, msg := r.afterFailure(p, sc.ID, i, st, vars, hs); reason != "" {
+				skippedAct = skippedAct || !r.observes(p, sc.ID, i)
 				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: reason, Message: msg})
 				return
 			}
@@ -859,13 +1025,14 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
 			return
 		}
-		sr := r.step(ctx, st, StepResult{ID: st.ID, Phase: phase}, vars, hs)
+		sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: phase}, keep), vars, hs)
 		switch {
 		case phase == PhaseSetup && sr.Result != Pass:
 			sr.Result, sr.Reason = Error, ReasonSetupFailed
 			res.Result, res.Reason, res.Cause = Error, ReasonSetupFailed, sr.Cause
 			stop = ReasonSetupFailed
 		case sr.Result == Fail:
+			noteFailure(&res, &sr, skippedAct)
 			res.Result, failed = Fail, true
 		case sr.Result == Error:
 			if !failed {
@@ -881,18 +1048,36 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 	for i, st := range sc.Steps {
 		run(i, st, PhaseVerification)
 	}
+	r.cleanup(ctx, p, sc, &res, vars, hs, true)
 	res.Handles = r.closeHandles(ctx, hs)
+	r.recordTranscript(&res, sc, setupResults(res.Steps), vars)
+	r.keepLogVars(&res, sc, vars)
 	return res
 }
 
-func (r *Runner) afterFailure(p, scenario string, i int, st model.Step, vars expr.Vars, hs *handleSet) (string, string) {
+func (r *Runner) observes(p, scenario string, i int) bool {
 	in, ok := r.info[model.StepRef{Spec: p, Scenario: scenario, Phase: "steps", Index: i}]
-	if !ok || in.Kind != protocol.KindObserve {
+	return ok && in.Kind == protocol.KindObserve
+}
+
+func noteFailure(res *ScenarioResult, sr *StepResult, skippedAct bool) {
+	if res.FirstFailure == "" {
+		res.FirstFailure = sr.ID
+	}
+	sr.AfterSkippedAct = skippedAct
+}
+
+func (r *Runner) afterFailure(p, scenario string, i int, st model.Step, vars expr.Vars, hs *handleSet) (string, string) {
+	if !r.observes(p, scenario, i) {
 		return ReasonEarlierStepFailed, ""
 	}
 	if st.On != "" && hs.open[st.On] == nil {
 		return ReasonEarlierStepFailed, fmt.Sprintf("on %q: the handle isn't open, because an earlier step failed or didn't run", st.On)
 	}
+	return missingSaved(st, vars)
+}
+
+func missingSaved(st model.Step, vars expr.Vars) (string, string) {
 	var missing []string
 	for _, v := range []any{st.With, st.Expect} {
 		for _, name := range refsIn(v) {
@@ -919,7 +1104,71 @@ func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
 	for _, st := range sc.Steps {
 		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: reason})
 	}
+	for _, st := range sc.Cleanup {
+		res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseCleanup, Result: NotRun, Reason: reason})
+	}
+	if len(sc.Cleanup) > 0 {
+		res.Cleanup, res.CleanupFailure = NotRun, sc.Cleanup[0].ID
+	}
 	return res
+}
+
+func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *ScenarioResult, vars expr.Vars, hs *handleSet, earlierPassed bool) {
+	if len(sc.Cleanup) == 0 {
+		return
+	}
+	keep := r.wantsTranscript(sc)
+	clean := earlierPassed
+	for _, sr := range res.Steps {
+		if sr.Result != Pass {
+			clean = false
+		}
+	}
+	res.Cleanup = Pass
+	cause := ""
+	for i, st := range sc.Cleanup {
+		sr := StepResult{ID: st.ID, Phase: PhaseCleanup}
+		reason, msg := r.cleanupBlocked(p, sc, i, st, vars, hs, clean)
+		switch {
+		case ctx.Err() != nil:
+			sr.Result, sr.Reason, sr.Message = NotRun, ReasonAborted, "the run was interrupted, which stops the drivers, so nothing was sent; what the scenario created may remain"
+		case reason != "":
+			sr.Result, sr.Reason, sr.Message = NotRun, reason, msg
+		default:
+			sr = r.step(ctx, st, recording(sr, keep), vars, hs)
+		}
+		if sr.Result != Pass {
+			clean = false
+			if res.CleanupFailure == "" {
+				res.CleanupFailure, cause = st.ID, sr.Cause
+			}
+			if tableRank[sr.Result] > tableRank[res.Cleanup] {
+				res.Cleanup = sr.Result
+			}
+		}
+		res.Steps = append(res.Steps, sr)
+	}
+	switch {
+	case res.Result != Pass || res.Cleanup == Pass:
+	case ctx.Err() != nil:
+		res.Result, res.Reason, res.Cause = Error, ReasonAborted, ""
+	default:
+		res.Result, res.Reason, res.Cause = Error, ReasonCleanupFailed, cause
+	}
+}
+
+func (r *Runner) cleanupBlocked(p string, sc model.Scenario, i int, st model.Step, vars expr.Vars, hs *handleSet, clean bool) (string, string) {
+	if st.On != "" && hs.open[st.On] == nil {
+		return ReasonHandleNotOpen, fmt.Sprintf("on %q: the handle isn't open, because the step that opens it failed or didn't run, so nothing was sent", st.On)
+	}
+	if reason, msg := missingSaved(st, vars); reason != "" {
+		return reason, msg + "; nothing was sent"
+	}
+	in, known := r.info[model.StepRef{Spec: p, Scenario: sc.ID, Phase: "cleanup", Index: i}]
+	if !clean && integrity.CleanupNeedsGuard(&sc, i, in, known) {
+		return ReasonCleanupUnguarded, "this step acts destructively on a fixed target, which EXE-09 accepted only because an earlier step guards it; an earlier step (in a table, also one of an earlier row) didn't pass, so the guard isn't proven for this run and nothing was sent"
+	}
+	return "", ""
 }
 
 var tableRank = map[Result]int{Pass: 0, NotRun: 1, Error: 2, Fail: 3}
@@ -927,13 +1176,13 @@ var tableRank = map[Result]int{Pass: 0, NotRun: 1, Error: 2, Fail: 3}
 func (o *Outcome) addTableRow(p string, sc model.Scenario, res ScenarioResult) {
 	var t *TableResult
 	for i := range o.Tables {
-		if o.Tables[i].ID == sc.Case.Table && o.Tables[i].Spec == p {
+		if o.Tables[i].key == sc.Case.Key && o.Tables[i].Spec == p {
 			t = &o.Tables[i]
 		}
 	}
 	if t == nil {
 		o.Tables = append(o.Tables, TableResult{ID: sc.Case.Table, Name: sc.Name, Spec: p, SetupFrom: sc.Case.SetupFrom,
-			Columns: sc.Case.Columns, Result: Pass})
+			Columns: sc.Case.Columns, Result: Pass, key: sc.Case.Key})
 		t = &o.Tables[len(o.Tables)-1]
 	}
 	t.Rows = append(t.Rows, TableRow{Case: sc.ID, Cells: sc.Case.Cells, Result: res.Result})

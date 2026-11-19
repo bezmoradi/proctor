@@ -27,9 +27,12 @@ func resultName(code int) string {
 }
 
 type driverCheck struct {
-	drivers []runner.DriverInfo
-	setup   *runner.SetupError
+	drivers    []runner.DriverInfo
+	setup      *runner.SetupError
+	outsideGit bool
 }
+
+const outsideGitNote = "not a Git repository: the folder was read as it is"
 
 func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driverCheck, code int, result string) int {
 	if dc == nil {
@@ -49,6 +52,10 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driv
 		if dc.setup != nil {
 			doc["errors"] = errs
 		}
+		if dc.outsideGit {
+			doc["git"] = false
+			doc["note"] = outsideGitNote
+		}
 		_ = enc.Encode(doc)
 		return code
 	}
@@ -57,6 +64,9 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driv
 		fmt.Fprintf(w, "Commit:          %s\n", safe(r.Commit))
 	}
 	fmt.Fprintf(w, "Configuration:   %s\n", safe(r.ConfigPath))
+	if dc.outsideGit {
+		fmt.Fprintf(w, "Note:            %s\n", outsideGitNote)
+	}
 	writeDrivers(w, dc.drivers)
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d   Unlisted: %d\n", len(r.Specs), len(r.ScenarioIDs), len(r.Unlisted))
 	for _, u := range r.Unlisted {
@@ -127,6 +137,9 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		fmt.Fprintf(w, "Readiness:       %s\n", safe(out.Readiness))
 	}
 	fmt.Fprintf(w, "Run ID:          %s\n", safe(out.RunID))
+	if out.Received != "" {
+		fmt.Fprintf(w, "Received:        %s\n", safe(out.Received))
+	}
 	if mode != "authoritative" {
 		writeDrivers(w, out.Drivers)
 	}
@@ -153,10 +166,12 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		} else if sc.Cause != "" && sc.Result == runner.Error {
 			line += "  (" + safe(sc.Cause) + ")"
 		}
-		fmt.Fprintln(w, line)
+		fmt.Fprintln(w, line+cleanupNote(sc))
 		if sc.Result != runner.Pass {
 			writeSteps(w, sc)
 		}
+		writeTranscript(w, sc)
+		writeApprovedResult(w, sc.ApprovedLog, "approved log")
 		writeHandles(w, sc)
 		writeAppLogs(w, sc.AppLogs)
 	}
@@ -166,25 +181,61 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	fmt.Fprintf(w, "RESULT: %s (exit %d, %s)\n", strings.ToUpper(out.Result), out.ExitCode, mode)
 }
 
-func writeSteps(w io.Writer, sc runner.ScenarioResult) {
+func cleanupNote(sc runner.ScenarioResult) string {
+	if sc.Cleanup == "" || sc.Cleanup == runner.Pass || sc.Reason == runner.ReasonCleanupFailed {
+		return ""
+	}
+	return fmt.Sprintf("  [cleanup %s at %s, reported apart]", sc.Cleanup, safe(sc.CleanupFailure))
+}
+
+func stepLabel(st runner.StepResult) string {
+	label := safe(st.ID)
+	switch st.Phase {
+	case runner.PhaseSetup:
+		label = "setup " + label
+	case runner.PhaseCleanup:
+		label = "cleanup " + label
+	}
+	switch {
+	case st.Case == "":
+	case st.Phase == runner.PhaseVerification && st.ID == "case":
+		label = "case " + safe(st.Case)
+	default:
+		label = "case " + safe(st.Case) + " " + label
+	}
+	return label
+}
+
+func writeFirstFailure(w io.Writer, sc runner.ScenarioResult) {
+	if sc.Result != runner.Fail || sc.FirstFailure == "" {
+		return
+	}
 	for _, st := range sc.Steps {
-		label := safe(st.ID)
-		if st.Phase == runner.PhaseSetup {
-			label = "setup " + label
+		if st.Phase == runner.PhaseVerification && st.Result == runner.Fail && st.ID == sc.FirstFailure {
+			fmt.Fprintf(w, "           cause: %s failed first\n", stepLabel(st))
+			return
 		}
-		switch {
-		case st.Case == "":
-		case st.Phase != runner.PhaseSetup && st.ID == "case":
-			label = "case " + safe(st.Case)
-		default:
-			label = "case " + safe(st.Case) + " " + label
+	}
+}
+
+func writeSteps(w io.Writer, sc runner.ScenarioResult) {
+	writeFirstFailure(w, sc)
+	inCleanup := false
+	for _, st := range sc.Steps {
+		if st.Phase == runner.PhaseCleanup && !inCleanup {
+			inCleanup = true
+			fmt.Fprintf(w, "           cleanup %s  (run after the steps and reported apart; it turns only a PASS into ERROR cleanup_failed)\n", sc.Cleanup)
 		}
+		label := stepLabel(st)
 		act := actionText(st)
 		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, act)
 		if st.Reason != "" {
 			stepLine += "  (" + safe(st.Reason) + causeText(st.Cause) + ")"
 		} else if st.Cause != "" && st.Result == runner.Error {
 			stepLine += "  (" + safe(st.Cause) + ")"
+		}
+		if st.AfterSkippedAct {
+			stepLine += "  (after a skipped act)"
 		}
 		fmt.Fprintln(w, stepLine)
 		if st.Message != "" {
@@ -199,6 +250,9 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 				label += fmt.Sprintf(" claim[%d]", *a.Claim)
 			}
 			fmt.Fprintf(w, "                    %s %s\n", safe(label)+":", safe(describe(a)))
+			if a.Response != "" {
+				fmt.Fprintf(w, "                    response: %s\n", safe(a.Response))
+			}
 		}
 	}
 }
@@ -218,6 +272,12 @@ func writeAppLogs(w io.Writer, al *runner.AppLogResult) {
 	if al.Note != "" {
 		fmt.Fprintf(w, "                    note: %s\n", safe(al.Note))
 	}
+	if al.FirstUnparsed != "" {
+		fmt.Fprintf(w, "                    first_unparsed: %s\n", safe(al.FirstUnparsed))
+	}
+	if al.FirstUnmapped != "" {
+		fmt.Fprintf(w, "                    first_unmapped (level %s): %s\n", safe(al.UnmappedLevel), safe(al.FirstUnmapped))
+	}
 	for _, l := range al.Unexpected {
 		at := ""
 		if l.Time != "" {
@@ -234,6 +294,30 @@ func writeAppLogs(w io.Writer, al *runner.AppLogResult) {
 			count = fmt.Sprintf(" (count %d)", *e.Count)
 		}
 		fmt.Fprintf(w, "                    expect_logs %s %s%s: %s\n", safe(e.Level), safe(show(e.Message)), count, safe(e.Problem))
+	}
+}
+
+func writeTranscript(w io.Writer, sc runner.ScenarioResult) {
+	label := "case " + sc.ID + " transcript"
+	if sc.Table == "" {
+		label = "transcript"
+	}
+	writeApprovedResult(w, sc.Transcript, label)
+}
+
+func writeApprovedResult(w io.Writer, tr *runner.TranscriptResult, label string) {
+	if tr == nil || tr.Result == runner.TranscriptApproved {
+		return
+	}
+	fmt.Fprintf(w, "           %-8s %s  %s: %s\n", tr.Result, safe(label), safe(tr.ApprovedPath), safe(tr.Message))
+	if tr.Received != "" {
+		fmt.Fprintf(w, "                    received: %s (sha256 %s)\n", safe(tr.Received), safe(tr.ReceivedSHA256))
+	}
+	for _, l := range tr.Diff {
+		fmt.Fprintf(w, "                    %s\n", safe(l))
+	}
+	if tr.DiffMore > 0 {
+		fmt.Fprintf(w, "                    ... %d more diff lines; proctor approve shows them all\n", tr.DiffMore)
 	}
 }
 
@@ -305,11 +389,14 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 				failedSetup = true
 			}
 		}
-		if sc.Result == runner.Pass || (sc.Reason == runner.ReasonSetupFailed && !failedSetup) {
+		cleanOK := sc.Cleanup == "" || sc.Cleanup == runner.Pass
+		if sc.Result == runner.Pass || (sc.Reason == runner.ReasonSetupFailed && !failedSetup && cleanOK) {
 			continue
 		}
 		writeSteps(w, sc)
+		writeTranscript(w, sc)
 	}
+	writeApprovedResult(w, t.ApprovedLog, "approved log")
 	writeAppLogs(w, t.AppLogs)
 }
 
@@ -354,9 +441,29 @@ func plural(n int) string {
 	return "s"
 }
 
+const excludedContext = 80
+
 func describe(a runner.Assertion) string {
 	msg := a.Message
 	switch {
+	case a.CutAt > 0 && a.Expected == nil:
+		return msg
+	case a.CutAt > 0, a.Overflow:
+		if a.Expected == nil {
+			return msg
+		}
+		return fmt.Sprintf("%s: expected %s", msg, show(a.Expected))
+	case a.Present && a.Kind == "excludes" && a.Result == runner.Fail && isText(a.Actual):
+		want, _ := a.Expected.(string)
+		text := a.Actual.(string)
+		if at := strings.Index(text, want); want != "" && at >= 0 {
+			return fmt.Sprintf("%s: %s, in %s", msg, show(a.Expected), show(around(text, at, len(want))))
+		}
+		return fmt.Sprintf("%s: %s", msg, show(a.Expected))
+	case a.Present && a.Kind == "differs" && a.Result == runner.Fail:
+		return fmt.Sprintf("%s: got %s", msg, show(a.Actual))
+	case !a.Present && (a.Kind == "differs" || a.Kind == "excludes"):
+		return msg
 	case !a.Present && a.Expected != nil:
 		return fmt.Sprintf("expected %s, but %s", show(a.Expected), msg)
 	case !a.Present:
@@ -367,6 +474,29 @@ func describe(a runner.Assertion) string {
 		return fmt.Sprintf("%s; got %s", msg, show(a.Actual))
 	}
 	return fmt.Sprintf("%s: expected %s, got %s", msg, show(a.Expected), show(a.Actual))
+}
+
+func isText(v any) bool {
+	_, ok := v.(string)
+	return ok
+}
+
+func around(text string, at, n int) string {
+	from, to := max(at-excludedContext, 0), min(at+n+excludedContext, len(text))
+	for from > 0 && !utf8.RuneStart(text[from]) {
+		from--
+	}
+	for to < len(text) && !utf8.RuneStart(text[to]) {
+		to++
+	}
+	out := text[from:to]
+	if from > 0 {
+		out = "..." + out
+	}
+	if to < len(text) {
+		out += "..."
+	}
+	return out
 }
 
 func show(v any) string {

@@ -66,6 +66,37 @@ else
 	version=""
 fi
 
+dirty_digest() {
+	{
+		git diff HEAD --binary --no-color --no-ext-diff --no-textconv
+		git ls-files -z --others --exclude-standard | while IFS= read -r -d '' f; do
+			if [ -L "$f" ]; then
+				printf 'untracked link %s\0%s\0' "$f" "$(readlink "$f")"
+			elif [ -f "$f" ]; then
+				printf 'untracked file %s\0%s\0' "$f" "$(wc -c <"$f" | tr -d ' ')"
+				cat "$f"
+			else
+				printf 'untracked other %s\0' "$f"
+			fi
+		done
+	} | sum | cut -c1-12
+}
+
+if [ -n "$version" ] && [[ $version != *-dirty ]] && [ -n "$(git ls-files --others --exclude-standard | head -n 1)" ]; then
+	version=$version-dirty
+fi
+
+case $version in
+*-dirty)
+	digest=$(dirty_digest)
+	if ! [[ $digest =~ ^[0-9a-f]{12}$ ]]; then
+		echo "build: couldn't hash the uncommitted changes for the version" >&2
+		exit 1
+	fi
+	version=$version-$digest
+	;;
+esac
+
 xflags() {
 	[ -n "$version" ] || return 0
 	local mod

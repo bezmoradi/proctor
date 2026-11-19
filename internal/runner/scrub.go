@@ -87,9 +87,12 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 	}
 	for i := range out.Tables {
 		r.scrubAppLogs(out.Tables[i].AppLogs)
+		s.scrubApproved(out.Tables[i].ApprovedLog)
 	}
 	for i := range out.Scenarios {
 		r.scrubAppLogs(out.Scenarios[i].AppLogs)
+		s.scrubApproved(out.Scenarios[i].Transcript)
+		s.scrubApproved(out.Scenarios[i].ApprovedLog)
 		for j := range out.Scenarios[i].Handles {
 			hr := &out.Scenarios[i].Handles[j]
 			hr.Handle, hr.Message = s.clean(hr.Handle), s.clean(hr.Message)
@@ -107,8 +110,21 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 			for k := range st.Assertions {
 				a := &st.Assertions[k]
 				a.Expected, a.Actual, a.Message, a.Target = s.walk(a.Expected), s.walk(a.Actual), s.clean(a.Message), s.clean(a.Target)
+				if a.Response != "" {
+					a.Response = cut(s.clean(a.Response), r.excerpt)
+				}
 			}
 		}
+	}
+}
+
+func (s *scrubber) scrubApproved(tr *TranscriptResult) {
+	if tr == nil {
+		return
+	}
+	tr.Message = s.clean(tr.Message)
+	for j := range tr.Diff {
+		tr.Diff[j] = s.clean(tr.Diff[j])
 	}
 }
 
@@ -118,6 +134,8 @@ func (r *Runner) scrubAppLogs(al *AppLogResult) {
 	}
 	s := r.scrub
 	al.Message, al.Note = s.clean(al.Message), s.clean(al.Note)
+	al.FirstUnparsed = cut(s.clean(al.FirstUnparsed), r.excerpt)
+	al.UnmappedLevel, al.FirstUnmapped = cut(s.clean(al.UnmappedLevel), r.excerpt), cut(s.clean(al.FirstUnmapped), r.excerpt)
 	for i := range al.Unexpected {
 		l := &al.Unexpected[i]
 		l.Level, l.Time = cut(s.clean(l.Level), r.excerpt), cut(s.clean(l.Time), r.excerpt)
