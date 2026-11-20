@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,10 +64,26 @@ func (u *updateCheck) report(w io.Writer) {
 	select {
 	case latest := <-u.result:
 		if latest != "" {
-			fmt.Fprintf(w, "\nproctor %s is available (you have %s): https://github.com/%s/releases/latest\nSet PROCTOR_NO_UPDATE_CHECK=1 to stop this check.\n", latest, Version, UpdateRepo)
+			fmt.Fprintf(w, "\nproctor %s is available (you have %s). To update:\n  curl -fsSL https://github.com/%s/releases/latest/download/install.sh | %ssh\nSet PROCTOR_NO_UPDATE_CHECK=1 to stop this check.\n", latest, Version, UpdateRepo, installDirPrefix())
 		}
 	case <-time.After(wait):
 	}
+}
+
+func installDirPrefix() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	if !filepath.IsAbs(dir) || safe(dir) != dir {
+		return ""
+	}
+	return "PROCTOR_INSTALL_DIR='" + strings.ReplaceAll(dir, "'", `'\''`) + "' "
 }
 
 func newerVersion() string {

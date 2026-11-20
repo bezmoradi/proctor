@@ -49,7 +49,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Build the archives
+      - name: Build the archives and render install.sh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/release.sh "$VERSION" "$RUNNER_TEMP/dist"
@@ -72,6 +72,25 @@ jobs:
             echo "::error::The linux/amd64 proctor reports version $got, not $VERSION."
             exit 1
           fi
+      - name: Check install.sh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          install="$dist/install.sh"
+          grep -qx "[0-9a-f]\{64\}  install.sh" "$dist/SHA256SUMS"
+          if grep -q '@[A-Z0-9_]*@' "$install" || ! sh -n "$install" || [ "$(grep -cxF "version='$VERSION'" "$install")" != 1 ]; then
+            echo "::error::install.sh still holds a placeholder, doesn't parse, or doesn't carry version $VERSION."
+            exit 1
+          fi
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            sum=$(awk -v n="proctor-$VERSION-$target.tar.gz" 'NF == 2 && $2 == n { print $1 }' "$dist/SHA256SUMS")
+            key=$(printf '%s' "$target" | tr - _)
+            if ! printf '%s\n' "$sum" | grep -Eqx '[0-9a-f]{64}' || [ "$(grep -cxF "sha256_$key='$sum'" "$install")" != 1 ]; then
+              echo "::error::install.sh doesn't carry the SHA256SUMS checksum of proctor-$VERSION-$target.tar.gz."
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -79,6 +98,7 @@ jobs:
             ${{ runner.temp }}/dist/*.tar.gz
             ${{ runner.temp }}/dist/*-NOTICES.txt
             ${{ runner.temp }}/dist/SHA256SUMS
+            ${{ runner.temp }}/dist/install.sh
           if-no-files-found: error
           retention-days: 1
 
@@ -94,7 +114,7 @@ jobs:
         with:
           name: dist
           path: ${{ runner.temp }}/dist
-      - name: Check the archives against SHA256SUMS
+      - name: Check the archives and install.sh against SHA256SUMS
         run: cd "$RUNNER_TEMP/dist" && sha256sum --strict -c SHA256SUMS
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -102,6 +122,7 @@ jobs:
             ${{ runner.temp }}/dist/*.tar.gz
             ${{ runner.temp }}/dist/*-NOTICES.txt
             ${{ runner.temp }}/dist/SHA256SUMS
+            ${{ runner.temp }}/dist/install.sh
           create-storage-record: false
 
   draft:
@@ -115,7 +136,7 @@ jobs:
         with:
           name: dist
           path: ${{ runner.temp }}/dist
-      - name: Create a draft release with the archives
+      - name: Create a draft release with the archives and install.sh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -128,7 +149,15 @@ jobs:
           case "$VERSION" in *-*) set -- --prerelease ;; esac
           fence='```'
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Proctor $VERSION for linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64. Each archive holds \`proctor\`, the drivers whose checksums are built into it, the SES simulator, \`LICENSE\`, \`NOTICES.txt\` and a \`SHA256SUMS\` of its files. Keep them in one folder: \`proctor\` refuses drivers that don't match (INT-17).
+          Proctor $VERSION for linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64. Each archive holds \`proctor\`, the drivers whose checksums are built into it (\`proctor-driver-*\`), the simulators (\`proctor-sim-*\`), \`LICENSE\`, \`NOTICES.txt\` and a \`SHA256SUMS\` of its files. Keep the programs in one folder: \`proctor\` refuses drivers that don't match (INT-17).
+
+          Install this version into \`~/.local/bin\` (or \`PROCTOR_INSTALL_DIR\`), with curl, tar, git and sha256sum or shasum, and no Go:
+
+          ${fence}bash
+          curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh | sh
+          ${fence}
+
+          The script checks the archive for your platform against the SHA-256 it carries and the archive's own \`SHA256SUMS\`. To check the script first, download it, run \`gh attestation verify install.sh -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref refs/tags/$TAG\`, then \`sh install.sh\`. Or download and check an archive yourself:
 
           ${fence}bash
           VERSION=$VERSION OS=linux ARCH=amd64
@@ -138,8 +167,8 @@ jobs:
           gh attestation verify proctor-\$VERSION-\$OS-\$ARCH.tar.gz -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref refs/tags/v\$VERSION
           ${fence}
 
-          The archives, \`SHA256SUMS\` and the notices carry build provenance signed keylessly with Sigstore by this repository's release workflow for $TAG, from commit $GITHUB_SHA.
+          The archives, \`install.sh\`, \`SHA256SUMS\` and the notices carry build provenance signed keylessly with Sigstore by this repository's release workflow for $TAG, from commit $GITHUB_SHA.
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "$@" \
             --title "Proctor $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
-            "$dist"/*.tar.gz "$dist"/*-NOTICES.txt "$dist/SHA256SUMS"
+            "$dist"/*.tar.gz "$dist"/*-NOTICES.txt "$dist/SHA256SUMS" "$dist/install.sh"
