@@ -1062,7 +1062,7 @@ An assertion that moved to another step sending the same request is listed under
 | `scripts/release.sh`, `.github/workflows/release.yml` | Builds the release archives; drafts a release from a `v*` tag on main |
 | `.github/workflows/ci.yml`, `pull-requests.yml`, `workflow-guard.yml` | CI and pull request checks |
 | `.github/rulesets/` | The branch and tag rulesets the owner applies on GitHub |
-| `.go-arch-lint.yml`, `scripts/check-arch.sh` | Which packages may import which |
+| `.go-arch-lint.yml`, `scripts/check-arch.sh` | Which packages may import which; `internal/model`, `internal/expr`, `internal/transcript` and `internal/strictyaml` stay free of file, process and network access |
 | `examples/github/` | The reference GitHub workflow and CODEOWNERS file |
 | `examples/github/verify/` | An example disposable environment for the workflow, copied to `proctor/verify/` |
 

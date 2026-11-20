@@ -54,7 +54,37 @@ for dir in protocol drivers/*/ simulators/*/; do
 	fi
 done
 
+pure="model expr transcript strictyaml"
+allowed="^proctor/internal/($(echo "$pure" | tr ' ' '|'))\$"
+for name in $pure; do
+	pkg=proctor/internal/$name
+	: >"$tmp/deps"
+	for target in linux/amd64 darwin/arm64 windows/amd64; do
+		if ! GOWORK=off GOOS=${target%/*} GOARCH=${target#*/} go list -f '{{join .Imports "\n"}}' "$pkg" >"$tmp/imports" 2>"$tmp/err"; then
+			cat "$tmp/err"
+			echo "check-arch: go list failed for $pkg on $target"
+			failed=1
+			continue
+		fi
+		grep -E '^(os|net|syscall)(/|$)' "$tmp/imports" >"$tmp/bad"
+		if [ -s "$tmp/bad" ]; then
+			sed "s|^|$pkg imports |; s|\$| on $target, a file, process or network package, in a package that must stay I/O-free|" "$tmp/bad"
+			failed=1
+		fi
+		if ! GOWORK=off GOOS=${target%/*} GOARCH=${target#*/} go list -deps -f '{{.ImportPath}}' "$pkg" >>"$tmp/deps" 2>"$tmp/err"; then
+			cat "$tmp/err"
+			echo "check-arch: go list -deps failed for $pkg on $target"
+			failed=1
+		fi
+	done
+	LC_ALL=C sort -u "$tmp/deps" | grep -E '^proctor(/|$)' | grep -vE "$allowed" >"$tmp/bad"
+	if [ -s "$tmp/bad" ]; then
+		sed "s|^|$pkg depends on |; s|\$|, a Proctor package outside internal/model, internal/expr, internal/transcript and internal/strictyaml, which must stay I/O-free|" "$tmp/bad"
+		failed=1
+	fi
+done
+
 if [ "$failed" = 1 ]; then
 	exit 1
 fi
-echo "Architecture: the proctor module's packages import only what .go-arch-lint.yml allows, and protocol, each driver and each simulator import no package of another proctor module."
+echo "Architecture: the proctor module's packages import only what .go-arch-lint.yml allows, protocol, each driver and each simulator import no package of another proctor module, and internal/model, internal/expr, internal/transcript and internal/strictyaml import no file, process or network package and depend on no other Proctor package."
