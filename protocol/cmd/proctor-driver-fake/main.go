@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"proctor/protocol"
-	"proctor/protocol/schema"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/schema"
 )
 
 var refRE = regexp.MustCompile(`\$\{([^}]*)\}`)

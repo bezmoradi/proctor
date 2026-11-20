@@ -24,7 +24,7 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 type sendInput struct {

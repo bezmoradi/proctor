@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 var Version = "0.0.0-dev"

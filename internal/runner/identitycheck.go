@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bezmoradi/proctor/protocol"
 	"proctor/internal/expr"
 	"proctor/internal/model"
-	"proctor/protocol"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const MaxObjects = 200

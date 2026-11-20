@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"proctor/protocol/jsonpath"
+	"github.com/bezmoradi/proctor/protocol/jsonpath"
 )
 
 type Path struct {

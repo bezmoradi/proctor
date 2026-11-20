@@ -2,6 +2,6 @@ module proctor/drivers/docker
 
 go 1.27.1
 
-require proctor/protocol v0.0.0
+require github.com/bezmoradi/proctor/protocol v0.0.0
 
-replace proctor/protocol => ../../protocol
+replace github.com/bezmoradi/proctor/protocol => ../../protocol

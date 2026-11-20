@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const (

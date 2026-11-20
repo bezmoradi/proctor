@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.74.0
 	github.com/aws/smithy-go v1.28.9
-	proctor/protocol v0.0.0
+	github.com/bezmoradi/proctor/protocol v0.0.0
 )
 
 require (
@@ -17,4 +17,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.13.12 // indirect
 )
 
-replace proctor/protocol => ../../protocol
+replace github.com/bezmoradi/proctor/protocol => ../../protocol

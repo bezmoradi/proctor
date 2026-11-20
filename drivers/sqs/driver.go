@@ -20,8 +20,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"proctor/protocol"
-	"proctor/protocol/schema"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/schema"
 )
 
 var Version = "0.0.0-dev"

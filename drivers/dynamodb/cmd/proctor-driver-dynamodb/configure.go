@@ -18,8 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
-	"proctor/protocol"
-	"proctor/protocol/schema"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/schema"
 )
 
 const (

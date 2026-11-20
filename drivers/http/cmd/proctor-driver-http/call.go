@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const (

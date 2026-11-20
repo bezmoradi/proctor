@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/bezmoradi/proctor/protocol"
 	"proctor/internal/model"
-	"proctor/protocol"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 var refRE = regexp.MustCompile(`\$\{([^}]*)\}`)

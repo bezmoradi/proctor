@@ -880,7 +880,7 @@ An assertion that moved to another step sending the same request is listed under
 |---|---|
 | `cmd/proctor`, `internal/` | The CLI |
 | `drivers/<name>/` | The official drivers, one Go module each (`docker`, `dynamodb`, `http`, `postgres`, `ses`, `sqs`, `ws`) |
-| `protocol/` | The protocol between `proctor` and its drivers |
+| `protocol/` | The protocol between `proctor` and its drivers, Go module `github.com/bezmoradi/proctor/protocol` |
 | `simulators/ses/` | `proctor-sim-ses`, a local SES stand-in for the ses driver |
 | `scripts/build.sh` | Builds `proctor`, its drivers and the simulator |
 | `scripts/release.sh`, `.github/workflows/release.yml` | Builds the release archives; drafts a release from a `v*` tag on main |

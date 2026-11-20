@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.6
-	proctor/protocol v0.0.0
+	github.com/bezmoradi/proctor/protocol v0.0.0
 )
 
 require (
@@ -13,4 +13,4 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 )
 
-replace proctor/protocol => ./protocol
+replace github.com/bezmoradi/proctor/protocol => ./protocol

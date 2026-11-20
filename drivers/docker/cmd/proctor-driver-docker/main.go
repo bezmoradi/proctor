@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bezmoradi/proctor/protocol"
 	"proctor/drivers/docker"
-	"proctor/protocol"
 )
 
 func main() {

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const (

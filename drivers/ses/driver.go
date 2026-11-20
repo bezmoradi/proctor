@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"proctor/protocol"
-	"proctor/protocol/schema"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/schema"
 )
 
 var Version = "0.0.0-dev"

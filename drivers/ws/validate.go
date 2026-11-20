@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const statusPath = "$.status"

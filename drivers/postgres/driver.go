@@ -13,9 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"proctor/protocol"
-	"proctor/protocol/jsonpath"
-	"proctor/protocol/schema"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/jsonpath"
+	"github.com/bezmoradi/proctor/protocol/schema"
 )
 
 var Version = "0.0.0-dev"

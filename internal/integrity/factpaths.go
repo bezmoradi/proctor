@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bezmoradi/proctor/protocol/schema"
 	"proctor/internal/expr"
 	"proctor/internal/model"
-	"proctor/protocol/schema"
 )
 
 const factPathsRule = "EXE-11"

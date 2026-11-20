@@ -12,7 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 const hidden = "[hidden]"

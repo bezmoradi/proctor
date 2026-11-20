@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/jackc/pgx/v5 v5.12.0
-	proctor/protocol v0.0.0
+	github.com/bezmoradi/proctor/protocol v0.0.0
 )
 
 require (
@@ -13,4 +13,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 )
 
-replace proctor/protocol => ../../protocol
+replace github.com/bezmoradi/proctor/protocol => ../../protocol

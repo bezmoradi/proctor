@@ -15,7 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 var (

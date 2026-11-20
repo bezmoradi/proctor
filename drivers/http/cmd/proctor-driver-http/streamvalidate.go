@@ -1,7 +1,7 @@
 package main
 
 import (
-	"proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol"
 )
 
 func (d *driver) validateOpen(p protocol.ValidateParams) protocol.ValidateResult {

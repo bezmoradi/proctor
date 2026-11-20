@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"proctor/protocol"
-	"proctor/protocol/jsonpath"
+	"github.com/bezmoradi/proctor/protocol"
+	"github.com/bezmoradi/proctor/protocol/jsonpath"
 )
 
 const statusPath = "$.status"

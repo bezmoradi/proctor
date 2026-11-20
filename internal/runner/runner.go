@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bezmoradi/proctor/protocol"
 	"proctor/internal/applogs"
 	"proctor/internal/expr"
 	"proctor/internal/integrity"
 	"proctor/internal/model"
-	"proctor/protocol"
 )
 
 type Result string
