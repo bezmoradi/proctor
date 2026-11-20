@@ -1272,6 +1272,7 @@ An assertion that moved to another step sending the same request is listed under
 | `scripts/release.sh`, `.github/workflows/release.yml` | Builds the release archives; drafts a release from a `v*` tag on main |
 | `scripts/install.sh`, `scripts/release-install.sh` | The install script's template, which refuses to run; `release.sh` renders it into the release with the version and the archives' checksums |
 | `.github/workflows/ci.yml`, `pull-requests.yml`, `workflow-guard.yml` | CI and pull request checks |
+| `.github/workflows/proctor.yml` | The [self-check](#self-check) in authoritative mode |
 | `.github/rulesets/` | The branch and tag rulesets the owner applies on GitHub |
 | `.go-arch-lint.yml`, `scripts/check-arch.sh` | Which packages may import which; `internal/model`, `internal/expr`, `internal/transcript` and `internal/strictyaml` stay free of file, process and network access |
 | `examples/github/` | The reference GitHub workflow and CODEOWNERS file |
@@ -1293,7 +1294,7 @@ CI (`.github/workflows/ci.yml`) runs these and the rest of the checks in [CLAUDE
 
 ### Self-check
 
-The root `proctor/` folder is Proctor's check of itself with the cli driver: its scenarios run the `proctor` first on `PATH` (`version`, `version --features`, `validate` on the sample, `run` without `--binding`, and `init`'s refusals). CI's "Sample end to end" job runs it in the step "Proctor checks itself". To run it locally, from the repository root:
+The root `proctor/` folder is Proctor's check of itself with the cli driver: its scenarios run the `proctor` first on `PATH` (`version`, `version --features`, `validate` on the sample, `run` without `--binding`, and `init`'s refusals). CI's "Sample end to end" job runs it in local mode in the step "Proctor checks itself". To run it locally, from the repository root:
 
 ```sh
 scripts/build.sh /tmp/proctor-self
@@ -1305,6 +1306,14 @@ proctor run --binding proctor/environments/local.yaml
 ```
 
 The third line builds the sample's `kafka` driver, as step 1 of [`examples/sample/README.md`](examples/sample/README.md) does, since SELF-003 validates the sample's configuration; the sample's stack needn't run. The binding passes `PROCTOR_NO_UPDATE_CHECK` to the checked commands, so it must be set. `proctor.yaml` protects `examples/sample/proctor/` because SELF-003 names a file there, and an observe command's files must be protected (CLI-04).
+
+On a pull request and in a merge queue, `.github/workflows/proctor.yml` also runs it in [authoritative mode](#authoritative-mode), modeled on the reference workflow, [`examples/github/proctor.yml`](examples/github/proctor.yml):
+
+- **build** builds the pull request's `proctor`, its drivers and the sample's `kafka` driver into an image, with only `contents: read`.
+- **verify** builds the verifier, `proctor` and its drivers, from the base commit's source with its `scripts/build.sh`, outside the checkout; no release is pinned. On `PATH` it puts a `proctor` script, outside the checkout, that runs the pull request's image with no network, no environment but `PROCTOR_NO_UPDATE_CHECK`, and the checkout mounted read-only, so this job's host never runs the pull request's code. The binding gives that image's ID as both digests.
+- **verdict** is the check to require: it fails unless the report is a passing authoritative report for this commit, run and attempt. The owner adds it to the ruleset on GitHub; `.github/rulesets/main.json` lists it.
+
+The scenarios are the tested commit's. A change to a protected file, in `proctor/`, `examples/sample/proctor/` or `.github/`, is listed as "approval required", with any weakening, in the report and the verify job's summary. There is no code-owner rule: `verdict` fails on such a change until the owner adds the `review-override` label after the latest push, as the Workflow guard does; adding or removing the label runs the workflow again. A merge group run skips this, since each pull request in it passed `verdict` first. The workflow runs as the pull request has it, so the Workflow guard check needs the owner's `review-override` label for a change to it.
 
 ### Releasing
 

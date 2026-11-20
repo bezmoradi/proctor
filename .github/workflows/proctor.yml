@@ -1,0 +1,318 @@
+name: Self-check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+env:
+  SUBJECT_BASE_IMAGE: docker.io/library/buildpack-deps:noble-scm@sha256:c4e7382cc1abefe0bbaaf99324fad5122f9def4d3840fbfad17d3c2fd77b9dc9
+  KAFKA_DRIVER: examples/sample/proctor/drivers/kafka/bin/proctor-driver-kafka
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+      - name: Build the pull request's proctor, its drivers and the sample's kafka driver
+        run: |
+          ctx="$RUNNER_TEMP/subject-image"
+          rm -rf "$ctx"
+          mkdir -p "$ctx"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 scripts/build.sh "$ctx/proctor"
+          (cd examples/sample/proctor/drivers/kafka && GOWORK=off GOTOOLCHAIN=go1.27.4 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false -o bin/proctor-driver-kafka ./cmd/proctor-driver-kafka)
+          cp "$KAFKA_DRIVER" "$ctx/proctor-driver-kafka"
+      - name: Build the image
+        id: image
+        run: |
+          cat > "$RUNNER_TEMP/Dockerfile" <<EOF
+          FROM $SUBJECT_BASE_IMAGE
+          COPY proctor/ /opt/proctor/
+          COPY proctor-driver-kafka /opt/kafka/proctor-driver-kafka
+          ENTRYPOINT ["/opt/proctor/proctor"]
+          EOF
+          docker build --platform linux/amd64 --file "$RUNNER_TEMP/Dockerfile" --tag proctor-subject:tested "$RUNNER_TEMP/subject-image"
+          docker save proctor-subject:tested -o "$RUNNER_TEMP/image.tar"
+          echo "digest=$(docker image inspect --format '{{.Id}}' proctor-subject:tested)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  verify:
+    name: verify
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name == 'merge_group' && '0' || '2' }}
+          persist-credentials: false
+      - name: Find the base
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          case "$EVENT" in
+            pull_request)
+              test "$(git rev-parse --verify 'HEAD^2^{commit}')" = "$PR_HEAD"
+              base=$(git rev-parse --verify 'HEAD^1^{commit}')
+              ;;
+            merge_group)
+              base=$(git rev-parse --verify "$GROUP_BASE^{commit}")
+              git merge-base --is-ancestor "$base" HEAD
+              ;;
+            *)
+              echo "::error::The workflow doesn't handle the $EVENT event."
+              exit 1
+              ;;
+          esac
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      - name: Take the base commit's source
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          src="$RUNNER_TEMP/base-src"
+          rm -rf "$src"
+          mkdir -p "$src"
+          git archive --format=tar "$BASE" | tar -x -C "$src" --no-same-owner
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ runner.temp }}/base-src/go.mod
+          check-latest: true
+          cache: false
+      - name: Build the verifier from the base commit
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          (cd "$RUNNER_TEMP/base-src" && env -i PATH="$PATH" HOME="$HOME" scripts/build.sh "$RUNNER_TEMP/verifier")
+          echo "built the verifier from $BASE: proctor sha256 $(sha256sum "$RUNNER_TEMP/verifier/proctor" | cut -d' ' -f1)"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Load the image
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+        run: |
+          docker load -i "$RUNNER_TEMP/image/image.tar"
+          test "$(docker image inspect --format '{{.Id}}' proctor-subject:tested)" = "$BUILT"
+      - name: Put the pull request's proctor on PATH, run only in a container
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+        run: |
+          ws=$(pwd -P)
+          subject="$RUNNER_TEMP/subject"
+          rm -rf "$subject"
+          mkdir -p "$subject/bin"
+          kafka="$subject/proctor-driver-kafka"
+          cid=$(docker create --platform linux/amd64 --network none "$BUILT")
+          docker cp "$cid:/opt/kafka/proctor-driver-kafka" "$kafka"
+          running=$(docker inspect --format '{{.Image}}' "$cid")
+          docker rm "$cid" > /dev/null
+          test "$running" = "$BUILT"
+          if [ -L "$kafka" ] || [ ! -f "$kafka" ]; then
+            echo "::error::The image's /opt/kafka/proctor-driver-kafka isn't a regular file."
+            exit 1
+          fi
+          echo "the image's kafka driver has sha256 $(sha256sum "$kafka" | cut -d' ' -f1)"
+          dir=${KAFKA_DRIVER%/bin/*}
+          sub=
+          for part in $(printf '%s' "$dir" | tr '/' ' '); do
+            sub=${sub:+$sub/}$part
+            if [ -L "$sub" ] || [ ! -d "$sub" ]; then
+              echo "::error::$sub in the checkout isn't a folder."
+              exit 1
+            fi
+          done
+          mkdir "$dir/bin"
+          : > "$KAFKA_DRIVER"
+          for value in "$ws" "$subject" "$running" "$KAFKA_DRIVER"; do
+            if ! printf '%s' "$value" | grep -qE '^[A-Za-z0-9/._:-]+$'; then
+              echo "::error::$value can't be written into the shim."
+              exit 1
+            fi
+          done
+          cat > "$subject/bin/proctor" <<EOF
+          #!/bin/sh
+          here=\$(pwd -P) || exit 125
+          case "\$here/" in
+          $ws/*) ;;
+          *)
+            echo "proctor: \$here isn't in the checkout $ws" >&2
+            exit 125
+            ;;
+          esac
+          exec docker run --rm -i --platform linux/amd64 --network none --read-only --cap-drop ALL --security-opt no-new-privileges \\
+            --user $(id -u):$(id -g) --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m --env HOME=/tmp --env TMPDIR=/tmp \\
+            \${PROCTOR_NO_UPDATE_CHECK+--env PROCTOR_NO_UPDATE_CHECK} \\
+            --mount type=bind,src=$ws,dst=$ws,readonly \\
+            --mount type=bind,src=$kafka,dst=$ws/$KAFKA_DRIVER,readonly \\
+            --workdir "\$here" $running "\$@"
+          EOF
+          chmod 0755 "$subject/bin/proctor"
+          cat "$subject/bin/proctor"
+          echo "RUNNING=$running" >> "$GITHUB_ENV"
+      - name: Download the earlier attempts' reports
+        if: fromJSON(github.run_attempt) > 1
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: proctor-report-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/earlier-reports
+      - name: Run Proctor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BUILT: ${{ needs.build.outputs.digest }}
+          BASE: ${{ steps.base.outputs.base }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          verifier="$RUNNER_TEMP/verifier/proctor"
+          echo "executing proctor with sha256 $(sha256sum "$verifier" | cut -d' ' -f1)"
+
+          umask 077
+          binding="$RUNNER_TEMP/binding.yaml"
+          {
+            printf 'environment: github-actions\n'
+            printf 'drivers:\n  cli: { PROCTOR_NO_UPDATE_CHECK_env: PROCTOR_NO_UPDATE_CHECK }\n'
+            printf 'image: { built_digest: "%s", running_digest: "%s" }\n' "$BUILT" "$RUNNING"
+          } > "$binding"
+
+          set --
+          case "$EVENT" in
+            pull_request) set -- --pr-head "$PR_HEAD" ;;
+            merge_group) set -- --base "$BASE" ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/earlier-reports"
+          PATH="$RUNNER_TEMP/subject/bin:$PATH" PROCTOR_NO_UPDATE_CHECK=1 "$verifier" run --authoritative --config proctor/proctor.yaml \
+            --binding "$binding" --earlier-reports "$RUNNER_TEMP/earlier-reports" \
+            --report "$RUNNER_TEMP/report-$GITHUB_RUN_ATTEMPT.json" "$@"
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proctor-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report-${{ github.run_attempt }}.json
+          if-no-files-found: error
+      - name: Delete the binding
+        if: always()
+        run: rm -f "$RUNNER_TEMP/binding.yaml"
+
+  verdict:
+    name: verdict
+    needs: [build, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: read
+    steps:
+      - name: Download this attempt's report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: proctor-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report
+      - name: Every prerequisite succeeded and the report passed
+        env:
+          BUILD: ${{ needs.build.result }}
+          VERIFY: ${{ needs.verify.result }}
+          TESTED: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          echo "build: $BUILD, verify: $VERIFY"
+          ok=1
+          for result in "$BUILD" "$VERIFY"; do
+            [ "$result" = success ] || ok=0
+          done
+          report="$RUNNER_TEMP/report/report-$RUN_ATTEMPT.json"
+          if [ ! -f "$report" ] || [ -L "$report" ]; then
+            echo "::error::This attempt left no Proctor report (REP-13)."
+            ok=0
+          elif ! jq -e -s --arg tested "$TESTED" --arg run "$RUN_ID" --arg attempt "$RUN_ATTEMPT" '
+              length == 1 and (.[0] | type == "object"
+                and .mode == "authoritative"
+                and .result == "passed" and .exit_code == 0
+                and (.provenance | type == "object")
+                and .provenance.tested_commit == $tested
+                and .provenance.ci_run_id == $run
+                and .provenance.ci_run_attempt == $attempt
+                and (.scenarios | type == "array"))' "$report" > /dev/null; then
+            echo "::error::The report isn't a passing authoritative Proctor report for $TESTED from this attempt (REP-13)."
+            ok=0
+          else
+            jq -r '"report: \(.result), exit \(.exit_code), tested \(.provenance.tested_commit), base \(.provenance.base)"' "$report"
+          fi
+          test "$ok" = 1
+      - name: The owner allowed the protected changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          OWNER: bezmoradi
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/report/report-$RUN_ATTEMPT.json"
+          if jq -e '.trust.approval_required == false' "$report" > /dev/null; then
+            echo "The tested commit changes no protected file."
+            exit 0
+          fi
+          if ! jq -e '.trust.approval_required == true' "$report" > /dev/null; then
+            echo "::error::The report doesn't say whether the protected changes need approval."
+            exit 1
+          fi
+          count=$(jq -r '.protected_changes.files | length' "$report")
+          weakenings=$(jq -r '.protected_changes.weakenings | length' "$report")
+          if [ "$EVENT" = merge_group ]; then
+            echo "A merge group carries no labels: each pull request in it passed verdict, with the owner's review-override label for its protected changes, before it was queued. $count protected change(s), $weakenings weakening(s)."
+            exit 0
+          fi
+          labeled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/labels" --jq 'any(.[]; .name == "review-override")')
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$NUMBER/events" > "$RUNNER_TEMP/events.json"
+          added=$(jq -rs --arg owner "$OWNER" '[add | .[] | select(.event == "labeled" and .label.name == "review-override" and .actor.login == $owner) | .created_at] | max // empty' "$RUNNER_TEMP/events.json")
+          forced=$(jq -rs '[add | .[] | select(.event == "head_ref_force_pushed") | .created_at] | max // empty' "$RUNNER_TEMP/events.json")
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA" > "$RUNNER_TEMP/runs.json"
+          pushed=$(jq -rs --arg ref "$HEAD_REF" --arg repo "$HEAD_REPO" --arg name "$GITHUB_WORKFLOW" '[.[].workflow_runs[] | select(.event == "pull_request" and .name == $name and .head_branch == $ref and .head_repository.full_name == $repo) | .created_at] | min // empty' "$RUNNER_TEMP/runs.json")
+          if [[ "$forced" > "$pushed" ]]; then
+            pushed=$forced
+          fi
+          if [ "$labeled" = true ] && [ -n "$pushed" ] && [[ "$added" > "$pushed" ]]; then
+            echo "The owner ($OWNER) added the review-override label after this commit was pushed, so its $count protected change(s), $weakenings weakening(s), are allowed."
+            exit 0
+          fi
+          echo "::error title=Protected changes::This pull request makes $count protected change(s), $weakenings weakening(s), listed in the verify job's summary. verdict passes once the owner ($OWNER) adds the review-override label after the latest push."
+          exit 1
