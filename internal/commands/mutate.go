@@ -115,7 +115,7 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 	}
 	dc := &driverCheck{}
 	if rep.Config != nil {
-		_, dc.drivers, dc.setup = describeSteps(ctx, rep, nil, runner.Options{})
+		_, dc.drivers, dc.setup = describeSteps(ctx, rep, nil, runner.Options{RepoDir: repo.Dir()})
 	}
 	code = rep.ExitCode()
 	if dc.setup != nil && dc.setup.ExitCode > code {
@@ -136,7 +136,7 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 	if !ok {
 		output = os.Stderr
 	}
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir()}
 	plan := mutate.Plan{
 		RepoDir: repo.Dir(), Files: files, Mutants: mutants,
 		Up: filepath.Join(repo.Dir(), filepath.FromSlash(up)), Down: filepath.Join(repo.Dir(), filepath.FromSlash(down)),

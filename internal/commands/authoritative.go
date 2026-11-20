@@ -286,6 +286,9 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 	if base != "" && rep != nil && rep.Config != nil {
 		ar.Trust.UnownedProtectedPaths = unowned(repo, base, tested, rep)
 	}
+	if rep != nil && rep.Config != nil {
+		ar.Violations = append(ar.Violations, runner.ResolveDrivers(rep.Config, runner.Options{Authoritative: true, RepoDir: o.repoDir})...)
+	}
 
 	code := exitOK
 	switch {
@@ -381,7 +384,7 @@ func newAuthReport() *authReport {
 }
 
 func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress, RepoDir: o.repoDir}
 	refused := func(se *runner.SetupError) int {
 		if se.ExitCode == exitIntegrity {
 			ar.Violations = append(ar.Violations, se.Msgs...)
@@ -643,7 +646,7 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 			for _, p := range d.Proofs {
 				proofs = append(proofs, p.Name+": "+p.Status)
 			}
-			fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", md(d.Name), code("proctor-driver-"+d.Official), md(orDash(d.Version)), md(d.Origin), md(orDash(strings.Join(proofs, ", "))))
+			fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", md(d.Name), code(programOf(d)), md(orDash(d.Version)), md(d.Origin), md(orDash(strings.Join(proofs, ", "))))
 		}
 		fmt.Fprintln(w)
 	}

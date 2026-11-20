@@ -64,8 +64,9 @@ const (
 )
 
 const (
-	OriginOfficial = "official"
-	OriginUnpinned = "unpinned"
+	OriginOfficial   = "official"
+	OriginRepository = "repository"
+	OriginUnpinned   = "unpinned"
 )
 
 const (
@@ -279,6 +280,8 @@ type Proof struct {
 type DriverInfo struct {
 	Name          string  `json:"name"`
 	Official      string  `json:"official"`
+	Program       string  `json:"program,omitempty"`
+	Platform      string  `json:"platform,omitempty"`
 	Version       string  `json:"version"`
 	Origin        string  `json:"origin"`
 	SHA256        string  `json:"sha256"`
@@ -352,6 +355,7 @@ type Options struct {
 	LookupEnv     func(string) (string, bool)
 	Authoritative bool
 	DriverDir     string
+	RepoDir       string
 	Described     map[model.StepRef]model.StepInfo
 	Progress      func(Progress)
 	RunID         string
@@ -404,6 +408,11 @@ func (o Options) withDefaults(cfg *model.Config) (Options, error) {
 		return o, fmt.Errorf("driver folder %s: %v", o.DriverDir, err)
 	}
 	o.DriverDir = abs
+	if o.RepoDir != "" {
+		if o.RepoDir, err = filepath.Abs(o.RepoDir); err != nil {
+			return o, fmt.Errorf("repository folder: %v", err)
+		}
+	}
 	return o, nil
 }
 

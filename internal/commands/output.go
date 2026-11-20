@@ -133,7 +133,7 @@ func writeDrivers(w io.Writer, drivers []runner.DriverInfo) {
 		if len(sum) > 16 {
 			sum = sum[:16]
 		}
-		fmt.Fprintf(w, "  %-14s proctor-driver-%s %s  %s  sha256 %s\n", safe(d.Name), safe(d.Official), safe(orDash(d.Version)), safe(d.Origin), safe(orDash(sum)))
+		fmt.Fprintf(w, "  %-14s %s %s  %s  sha256 %s\n", safe(d.Name), safe(programOf(d)), safe(orDash(d.Version)), safe(d.Origin), safe(orDash(sum)))
 		for _, p := range d.Proofs {
 			line := fmt.Sprintf("  %-14s proof %s: %s", "", safe(p.Name), safe(p.Status))
 			if p.Detail != "" {
@@ -142,6 +142,13 @@ func writeDrivers(w io.Writer, drivers []runner.DriverInfo) {
 			fmt.Fprintln(w, line)
 		}
 	}
+}
+
+func programOf(d runner.DriverInfo) string {
+	if d.Program != "" {
+		return d.Program
+	}
+	return "proctor-driver-" + d.Official
 }
 
 func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode string) {

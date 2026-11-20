@@ -113,7 +113,7 @@ func approve(o approveOptions, ids []string, stdin io.Reader, stdout, stderr io.
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if _, _, se := describeSteps(ctx, rep, nil, runner.Options{}); se != nil || rep.ExitCode() != exitOK {
+	if _, _, se := describeSteps(ctx, rep, nil, runner.Options{RepoDir: repo.Dir()}); se != nil || rep.ExitCode() != exitOK {
 		if se != nil {
 			for _, m := range se.Msgs {
 				fmt.Fprintf(stderr, "proctor approve: %s\n", safe(m))

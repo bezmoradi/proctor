@@ -22,6 +22,12 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 var driverName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+var programName = regexp.MustCompile(`^proctor-driver-[a-z][a-z0-9_-]*$`)
+
+var platformKey = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
+
+var sumHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 var headerName = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 var identityTypes = map[string]bool{"none": true, "bearer": true}
@@ -62,6 +68,9 @@ func LoadConfig(src Source, configPath string) *Report {
 		r.checkNullAppLogs(data)
 	}
 	r.validateConfig(&cfg)
+	if cs, ok := src.(*CommitSource); ok {
+		r.checkTrackedPrograms(&cfg, cs)
+	}
 	return r
 }
 
@@ -176,10 +185,17 @@ func (r *Report) validateConfig(c *model.Config) {
 			r.add(Invalid, "INT-12", p, "invalid driver name %q (a lower-case letter, then lower-case letters, digits or _)", name)
 		}
 		switch {
+		case d.Official != "" && d.Program != "":
+			r.add(Invalid, "INT-12", p, "driver %q has both official and program; give official for a driver that ships with Proctor, or program for one kept in the repository", name)
+		case d.Program != "":
+			r.validateProgram(c, name, d)
 		case d.Official == "":
 			r.add(Invalid, "INT-12", p, "driver %q must name its official driver (official: <name>)", name)
 		case !driverName.MatchString(d.Official):
 			r.add(Invalid, "INT-12", p, "driver %q: invalid official driver name %q (a lower-case letter, then lower-case letters, digits or _)", name, d.Official)
+		}
+		if d.Official != "" && d.Program == "" && (d.SHA256 != nil || d.Operations != nil) {
+			r.add(Invalid, "INT-12", p, "driver %q: sha256 and operations are only for a driver with program; an official driver's checksum is built into proctor", name)
 		}
 		switch {
 		case name == "logs" || d.Official == "logs":
@@ -254,6 +270,60 @@ func (r *Report) validateConfig(c *model.Config) {
 	r.validateTranscripts(c)
 	r.validateRelations(c)
 	r.validateIdentityCheck(c)
+}
+
+func (r *Report) validateProgram(c *model.Config, name string, d model.DriverConfig) {
+	p := r.ConfigPath
+	pathOK := false
+	switch err := checkRelPath(d.Program); {
+	case err != nil:
+		r.add(Invalid, "INT-12", p, "driver %q: program: %v; give the program's path from the repository root, such as proctor/drivers/%s/bin/proctor-driver-%s", name, err, name, name)
+	case strings.Contains(d.Program, "${"):
+		r.add(Invalid, "INT-12", p, "driver %q: program %q can't use ${...}; name the file as written", name, d.Program)
+	case !programName.MatchString(path.Base(d.Program)):
+		r.add(Invalid, "INT-12", p, "driver %q: program %q must be a file named proctor-driver-<name>, where <name> is a lower-case letter, then lower-case letters, digits, _ or -", name, d.Program)
+	default:
+		pathOK = true
+	}
+	if len(d.SHA256) == 0 {
+		r.add(Invalid, "INT-12", p, "driver %q: sha256 must pin the program's checksum for at least one platform, such as sha256: { linux/amd64: <64 hex digits> }", name)
+	}
+	for _, k := range slices.Sorted(maps.Keys(d.SHA256)) {
+		if !platformKey.MatchString(k) {
+			r.add(Invalid, "INT-12", p, "driver %q: sha256 key %q isn't a platform <os>/<arch>, such as linux/amd64 or darwin/arm64", name, k)
+		}
+		if !sumHex.MatchString(d.SHA256[k]) {
+			r.add(Invalid, "INT-12", p, "driver %q: sha256 %s must be 64 lower-case hex digits, as shasum -a 256 prints them", name, k)
+		}
+	}
+	if len(d.Operations) == 0 {
+		r.add(Invalid, "INT-12", p, "driver %q: operations must list every operation of the program, each act or observe, such as operations: { read: observe }", name)
+	}
+	for _, op := range slices.Sorted(maps.Keys(d.Operations)) {
+		if !driverName.MatchString(op) {
+			r.add(Invalid, "INT-12", p, "driver %q: invalid operation name %q (a lower-case letter, then lower-case letters, digits or _)", name, op)
+		}
+		switch d.Operations[op] {
+		case "act", "observe":
+		default:
+			r.add(Invalid, "INT-12", p, "driver %q: operation %q is %q; a repository driver's operation is act or observe", name, op, d.Operations[op])
+		}
+	}
+	if pathOK && !ProtectedFolder(path.Dir(d.Program), r.ProtectedRoot, c.ProtectedPaths) {
+		r.add(Violation, "INT-21", p, "driver %q: program %s is in %s, which isn't a protected folder, so its source could change without review; keep it under %s/, or list its folder in protected_paths with a trailing /", name, d.Program, path.Dir(d.Program), r.ProtectedRoot)
+	}
+}
+
+func (r *Report) checkTrackedPrograms(c *model.Config, cs *CommitSource) {
+	for _, name := range sortedKeys(c.Drivers) {
+		prog := c.Drivers[name].Program
+		if prog == "" || checkRelPath(prog) != nil {
+			continue
+		}
+		if _, tracked := cs.tree[prog]; tracked {
+			r.add(Violation, "INT-21", prog, "driver %q: the commit tracks the program; build it in the job from the reviewed source instead, so remove it with git rm --cached and ignore it", name)
+		}
+	}
 }
 
 func (r *Report) validateIdentityCheck(c *model.Config) {

@@ -487,10 +487,18 @@ func compareDrivers(b, h *model.Config) ([]Weakening, []DriverChange) {
 			continue
 		}
 		bd := b.Drivers[name]
-		if bd.Official != hd.Official {
+		switch {
+		case bd.Program == "" && hd.Program == "" && bd.Official != hd.Official:
 			out = append(out, Weakening{Driver: name, Kind: "driver_origin_changed",
 				Detail: fmt.Sprintf("official %s became official %s; every step that names %s now runs another program",
 					orNone(bd.Official), orNone(hd.Official), name)})
+		case bd.Program != hd.Program || bd.Official != hd.Official:
+			out = append(out, Weakening{Driver: name, Kind: "driver_origin_changed",
+				Detail: fmt.Sprintf("%s became %s; every step that names %s now runs another program", bd.Label(), hd.Label(), name)})
+		case hd.Program != "":
+			ws, ds := compareProgram(name, bd, hd)
+			out = append(out, ws...)
+			added = append(added, ds...)
 		}
 		bp, hp := resolvedPolicy(b, name), resolvedPolicy(h, name)
 		if bd.PolicyFrom != hd.PolicyFrom {
@@ -530,14 +538,58 @@ func compareDrivers(b, h *model.Config) ([]Weakening, []DriverChange) {
 		if hd.PolicyFrom != "" {
 			from = fmt.Sprintf(" (policy_from %s, so it shares state checks with it)", hd.PolicyFrom)
 		}
+		origin := "official " + orNone(hd.Official)
+		if hd.Program != "" {
+			origin = fmt.Sprintf("program %s pinned %s, operations %s,", hd.Program, canonical(hd.SHA256), canonical(hd.Operations))
+		}
 		added = append(added, DriverChange{Driver: name, Kind: "driver_added",
-			Detail: fmt.Sprintf("official %s with policy %s%s; its steps may touch what this policy allows", orNone(hd.Official), canonical(hp), from)})
+			Detail: fmt.Sprintf("%s with policy %s%s; its steps may touch what this policy allows", origin, canonical(hp), from)})
 		if gained, declared, ok := httpPolicyGained(name, officialHTTP, hd.Official, nil, hp); ok {
 			out = append(out, gained...)
 			added = append(added, declared...)
 		}
 	}
 	return out, added
+}
+
+func compareProgram(name string, b, h model.DriverConfig) ([]Weakening, []DriverChange) {
+	var out []Weakening
+	var changes []DriverChange
+	source := path.Dir(h.Program)
+	if path.Base(source) == "bin" {
+		source = path.Dir(source)
+	}
+	for _, pl := range keysOf(b.SHA256, h.SHA256) {
+		was, inBase := b.SHA256[pl]
+		now, inHead := h.SHA256[pl]
+		switch {
+		case inBase && !inHead:
+			changes = append(changes, DriverChange{Driver: name, Kind: "driver_pin_removed",
+				Detail: fmt.Sprintf("sha256 %s %s was removed, so an authoritative run on %s refuses the driver", pl, was, pl)})
+		case !inBase || was != now:
+			out = append(out, Weakening{Driver: name, Kind: "driver_program_changed",
+				Detail: fmt.Sprintf("sha256 %s %s became %s: every step that names %s now runs another program; read the change under %s/ and rebuild it to check the pin", pl, orNone(was), now, name, source)})
+		}
+	}
+	for _, op := range keysOf(b.Operations, h.Operations) {
+		was, inBase := b.Operations[op]
+		now, inHead := h.Operations[op]
+		switch {
+		case inBase && inHead && was == "act" && now == "observe":
+			out = append(out, Weakening{Driver: name, Kind: "operation_now_observes",
+				Detail: fmt.Sprintf("operation %s.%s was act and is now observe: its steps no longer need a state check after them, and the rules for writes no longer apply to them", name, op)})
+		case inBase && inHead && was != now:
+			changes = append(changes, DriverChange{Driver: name, Kind: "operations_changed",
+				Detail: fmt.Sprintf("operation %s.%s was %s and is now %s", name, op, was, now)})
+		case !inBase:
+			changes = append(changes, DriverChange{Driver: name, Kind: "operations_changed",
+				Detail: fmt.Sprintf("operation %s.%s was added as %s", name, op, now)})
+		case !inHead:
+			changes = append(changes, DriverChange{Driver: name, Kind: "operations_changed",
+				Detail: fmt.Sprintf("operation %s.%s (%s) was removed", name, op, was)})
+		}
+	}
+	return out, changes
 }
 
 func resolvedPolicy(c *model.Config, name string) any {
@@ -1063,6 +1115,17 @@ func stripPositions(n *yaml.Node) *yaml.Node {
 		c.Content = append(c.Content, stripPositions(child))
 	}
 	return c
+}
+
+func keysOf(a, b map[string]string) []string {
+	seen := map[string]bool{}
+	for k := range a {
+		seen[k] = true
+	}
+	for k := range b {
+		seen[k] = true
+	}
+	return sortedKeys(seen)
 }
 
 func union(a, b map[string]gitrepo.Entry) []string {

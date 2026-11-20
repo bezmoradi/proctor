@@ -38,6 +38,19 @@ func Protected(p, root string, extra []string) bool {
 	return false
 }
 
+func ProtectedFolder(dir, root string, extra []string) bool {
+	d := dir + "/"
+	if strings.HasPrefix(d, root+"/") {
+		return true
+	}
+	for _, e := range extra {
+		if strings.HasSuffix(e, "/") && strings.HasPrefix(d, e) {
+			return true
+		}
+	}
+	return false
+}
+
 func checkRelPath(p string) error {
 	switch {
 	case p == "":

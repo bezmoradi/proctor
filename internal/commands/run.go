@@ -118,7 +118,7 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		se := &runner.SetupError{ExitCode: exitError, Msgs: []string{"the run was interrupted before any scenario started"}}
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, true) })
 	}
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir()}
 	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })

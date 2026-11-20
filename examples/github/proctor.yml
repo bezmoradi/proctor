@@ -111,6 +111,22 @@ jobs:
               ;;
           esac
           echo "base=$base" >> "$GITHUB_OUTPUT"
+      - name: Build repository drivers
+        run: |
+          for dir in proctor/drivers/*/; do
+            dir=${dir%/}
+            name=${dir##*/}
+            [ -d "$dir/cmd/proctor-driver-$name" ] || continue
+            if ! printf '%s' "$name" | grep -qE '^[a-z][a-z0-9_-]*$'; then
+              echo "::error::$dir: a repository driver's folder name must match ^[a-z][a-z0-9_-]*$."
+              exit 1
+            fi
+            mod=readonly
+            [ ! -f "$dir/vendor/modules.txt" ] || mod=vendor
+            (cd "$dir" && env -i PATH="$PATH" HOME="$HOME" GOWORK=off GOTOOLCHAIN=go1.27.1 CGO_ENABLED=0 GOFLAGS="-mod=$mod" \
+              GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o "bin/proctor-driver-$name" "./cmd/proctor-driver-$name")
+            echo "built $dir/bin/proctor-driver-$name with sha256 $(sha256sum "$dir/bin/proctor-driver-$name" | cut -d' ' -f1)"
+          done
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: image

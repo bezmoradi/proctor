@@ -190,9 +190,22 @@ func (a *AppLogs) MessageKey() string {
 }
 
 type DriverConfig struct {
-	Official   string `yaml:"official"`
-	Policy     any    `yaml:"policy"`
-	PolicyFrom string `yaml:"policy_from"`
+	Official   string            `yaml:"official"`
+	Program    string            `yaml:"program"`
+	SHA256     map[string]string `yaml:"sha256"`
+	Operations map[string]string `yaml:"operations"`
+	Policy     any               `yaml:"policy"`
+	PolicyFrom string            `yaml:"policy_from"`
+}
+
+func (d DriverConfig) Label() string {
+	if d.Program != "" {
+		return "program " + d.Program
+	}
+	if d.Official == "" {
+		return "official none"
+	}
+	return "official " + d.Official
 }
 
 func (c *Config) PolicyOf(name string) (any, error) {
@@ -209,8 +222,10 @@ func (c *Config) PolicyOf(name string) (any, error) {
 		return nil, fmt.Errorf("driver %q: policy_from names the driver itself", name)
 	case !ok:
 		return nil, fmt.Errorf("driver %q: policy_from names %q, which isn't a driver in proctor.yaml", name, d.PolicyFrom)
-	case src.Official != d.Official:
+	case src.Program == "" && d.Program == "" && src.Official != d.Official:
 		return nil, fmt.Errorf("driver %q: policy_from names %q, whose official driver is %q, not %q; only drivers of the same official program can share a policy", name, d.PolicyFrom, src.Official, d.Official)
+	case src.Program != d.Program || src.Official != d.Official:
+		return nil, fmt.Errorf("driver %q: policy_from names %q, which runs %s, not %s; only drivers of the same official program or the same program can share a policy", name, d.PolicyFrom, src.Label(), d.Label())
 	case src.PolicyFrom != "":
 		return nil, fmt.Errorf("driver %q: policy_from names %q, which takes its own policy from %q; name the driver that holds the policy", name, d.PolicyFrom, src.PolicyFrom)
 	case d.Policy != nil:

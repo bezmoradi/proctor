@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -33,6 +36,10 @@ var (
 type host struct {
 	name     string
 	official string
+	program  string
+	platform string
+	declared map[string]string
+	tmp      string
 	path     string
 	sha      string
 	origin   string
@@ -91,6 +98,131 @@ func fileSHA(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+const maxProgram = 256 << 20
+
+func runPlatform() string { return runtime.GOOS + "/" + runtime.GOARCH }
+
+func resolveRepoHost(name string, dc model.DriverConfig, opt Options, probs *problems) *host {
+	h := &host{name: name, program: dc.Program, platform: runPlatform(), declared: dc.Operations}
+	if opt.RepoDir == "" {
+		probs.add(ExitError, "driver %s: this command has no repository to read the program %s from", name, dc.Program)
+		return nil
+	}
+	tmp, file, sha, code, err := copyRepoProgram(opt.RepoDir, dc.Program)
+	if err != nil {
+		probs.add(code, "driver %s: %v", name, err)
+		return nil
+	}
+	h.tmp, h.path, h.sha = tmp, file, sha
+	want, pinned := dc.SHA256[h.platform]
+	switch {
+	case pinned && want != sha:
+		probs.add(ExitIntegrity, "driver %s: program %s has checksum %s on %s, but drivers.%s.sha256.%s pins %s; rebuild it from the source, or update drivers.%s.sha256.%s (INT-17)", name, dc.Program, sha, h.platform, name, h.platform, want, name, h.platform)
+	case !pinned && opt.Authoritative:
+		probs.add(ExitIntegrity, "driver %s: drivers.%s.sha256 pins no checksum for %s, this run's platform, and an authoritative run refuses unpinned drivers (INT-17)", name, name, h.platform)
+	case pinned:
+		h.origin = OriginRepository
+		return h
+	default:
+		h.origin = OriginUnpinned
+		return h
+	}
+	_ = os.RemoveAll(tmp)
+	return nil
+}
+
+func copyRepoProgram(repoDir, rel string) (tmp, file, sum string, code int, err error) {
+	if !filepath.IsLocal(filepath.FromSlash(rel)) || path.Clean(rel) != rel || strings.ContainsAny(rel, "\\\x00") {
+		return "", "", "", ExitInvalid, fmt.Errorf("program %q isn't a clean path inside the repository (INT-12)", rel)
+	}
+	root, err := os.OpenRoot(repoDir)
+	if err != nil {
+		return "", "", "", ExitError, fmt.Errorf("cannot open the repository %s: %v", repoDir, err)
+	}
+	defer root.Close()
+	parts := strings.Split(rel, "/")
+	var last fs.FileInfo
+	for i := range parts {
+		sub := strings.Join(parts[:i+1], "/")
+		fi, err := root.Lstat(filepath.FromSlash(sub))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return "", "", "", ExitError, fmt.Errorf("program %s doesn't exist; build it from its source first, with the command in the README's Repository drivers section", rel)
+		case err != nil:
+			return "", "", "", ExitError, fmt.Errorf("cannot read program %s: %v", rel, err)
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return "", "", "", ExitIntegrity, fmt.Errorf("%s is a symbolic link; a repository driver's program and the folders above it must be a regular file and folders in the repository (INT-21)", sub)
+		case i < len(parts)-1 && !fi.IsDir():
+			return "", "", "", ExitError, fmt.Errorf("program %s doesn't exist: %s isn't a folder", rel, sub)
+		}
+		last = fi
+	}
+	switch {
+	case !last.Mode().IsRegular():
+		return "", "", "", ExitIntegrity, fmt.Errorf("program %s isn't a regular file (INT-21)", rel)
+	case last.Size() > maxProgram:
+		return "", "", "", ExitIntegrity, fmt.Errorf("program %s is larger than 256 MiB, the most Proctor runs (INT-21)", rel)
+	}
+	f, err := root.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return "", "", "", ExitError, fmt.Errorf("cannot read program %s: %v", rel, err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return "", "", "", ExitError, fmt.Errorf("cannot read program %s: %v", rel, err)
+	}
+	if !os.SameFile(opened, last) || !opened.Mode().IsRegular() {
+		return "", "", "", ExitIntegrity, fmt.Errorf("program %s changed while it was read (INT-21)", rel)
+	}
+	tmp, err = os.MkdirTemp("", "proctor-driver-")
+	if err != nil {
+		return "", "", "", ExitError, fmt.Errorf("cannot make a private folder for program %s under TMPDIR: %v", rel, err)
+	}
+	fail := func(code int, format string, args ...any) (string, string, string, int, error) {
+		_ = os.RemoveAll(tmp)
+		return "", "", "", code, fmt.Errorf(format, args...)
+	}
+	file = filepath.Join(tmp, path.Base(rel))
+	out, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		return fail(ExitError, "cannot copy program %s to %s: %v", rel, tmp, err)
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(f, maxProgram+1))
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	switch {
+	case err != nil:
+		return fail(ExitError, "cannot copy program %s to %s: %v", rel, tmp, err)
+	case n > maxProgram:
+		return fail(ExitIntegrity, "program %s is larger than 256 MiB, the most Proctor runs (INT-21)", rel)
+	}
+	return tmp, file, hex.EncodeToString(h.Sum(nil)), 0, nil
+}
+
+func ResolveDrivers(cfg *model.Config, opt Options) []string {
+	var out []string
+	if cfg == nil {
+		return nil
+	}
+	for _, name := range sortedKeys(cfg.Drivers) {
+		dc := cfg.Drivers[name]
+		if dc.Program == "" {
+			continue
+		}
+		var probs problems
+		if h := resolveRepoHost(name, dc, opt, &probs); h != nil {
+			_ = os.RemoveAll(h.tmp)
+		}
+		if probs.code == ExitIntegrity {
+			out = append(out, probs.msgs...)
+		}
+	}
+	return out
 }
 
 func driverEnv() []string {
@@ -160,6 +292,12 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 	}
 	for _, name := range sortedKeys(cfg.Drivers) {
 		dc := cfg.Drivers[name]
+		if dc.Program != "" {
+			if h := resolveRepoHost(name, dc, opt, &probs); h != nil {
+				sess.hosts[name] = h
+			}
+			continue
+		}
 		if !officialName.MatchString(dc.Official) {
 			probs.add(ExitInvalid, "proctor.yaml: drivers.%s: official %q must name an official driver, such as http", name, dc.Official)
 			continue
@@ -201,6 +339,7 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		checkBindingAppLogs(cfg, b, &probs)
 	}
 	if err := probs.err(s); err != nil {
+		sess.close()
 		return nil, err
 	}
 	policies := map[string]any{}
@@ -213,6 +352,7 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		policies[h.name] = policy
 	}
 	if err := probs.err(s); err != nil {
+		sess.close()
 		return nil, err
 	}
 	for _, h := range sess.ordered() {
@@ -255,6 +395,10 @@ func (sess *session) callCtx(ctx context.Context) (context.Context, context.Canc
 
 func (sess *session) start(ctx context.Context, h *host, policy, conn any, secrets protocol.Secrets, probs *problems) {
 	c, err := protocol.Start(ctx, h.path, nil, driverEnv())
+	if err != nil && h.program != "" {
+		probs.add(ExitError, "driver %s: cannot start the private copy %s of program %s: %v; it sits under TMPDIR (%s), which must allow running programs", h.name, h.path, h.program, err, os.TempDir())
+		return
+	}
 	if err != nil {
 		probs.add(ExitError, "driver %s: cannot start %s: %v", h.name, h.path, err)
 		return
@@ -270,6 +414,12 @@ func (sess *session) start(ctx context.Context, h *host, policy, conn any, secre
 	if msgs := checkHello(h); len(msgs) > 0 {
 		for _, m := range msgs {
 			probs.add(ExitError, "driver %s: %s", h.name, m)
+		}
+		return
+	}
+	if msgs := h.checkOperations(); len(msgs) > 0 {
+		for _, m := range msgs {
+			probs.add(ExitInvalid, "proctor.yaml: drivers.%s.operations: %s (INT-21)", h.name, m)
 		}
 		return
 	}
@@ -430,8 +580,36 @@ func checkHello(h *host) []string {
 	return msgs
 }
 
+func (h *host) checkOperations() []string {
+	if h.program == "" {
+		return nil
+	}
+	var msgs []string
+	for _, name := range sortedKeys(h.ops) {
+		kind := h.ops[name].Kind
+		want, listed := h.declared[name]
+		switch {
+		case kind == protocol.KindByArgs:
+			msgs = append(msgs, fmt.Sprintf("the driver's operation %q has kind by_args, which a repository driver can't use; give it one kind, act or observe", name))
+		case !listed:
+			msgs = append(msgs, fmt.Sprintf("the driver has operation %q (%s), which operations doesn't list", name, kind))
+		case want != kind:
+			msgs = append(msgs, fmt.Sprintf("operation %q is %s in the driver but %s here", name, kind, want))
+		}
+	}
+	for _, name := range sortedKeys(h.declared) {
+		if _, ok := h.ops[name]; !ok {
+			msgs = append(msgs, fmt.Sprintf("operations lists %q, which the driver doesn't have", name))
+		}
+	}
+	return msgs
+}
+
 func (sess *session) close() {
 	for _, h := range sess.ordered() {
+		if h.tmp != "" && (h.client == nil || h.closed) {
+			_ = os.RemoveAll(h.tmp)
+		}
 		if h.closed || h.client == nil {
 			continue
 		}
@@ -448,13 +626,16 @@ func (sess *session) close() {
 			raw = raw[cut:]
 		}
 		h.stderr = raw
+		if h.tmp != "" {
+			_ = os.RemoveAll(h.tmp)
+		}
 	}
 }
 
 func (sess *session) infos() []DriverInfo {
 	var out []DriverInfo
 	for _, h := range sess.ordered() {
-		d := DriverInfo{Name: h.name, Official: h.official, Version: h.hello.Version, Origin: h.origin, SHA256: h.sha,
+		d := DriverInfo{Name: h.name, Official: h.official, Program: h.program, Platform: h.platform, Version: h.hello.Version, Origin: h.origin, SHA256: h.sha,
 			Proofs: h.proofs, Stderr: h.stderr, StderrDropped: h.dropped}
 		out = append(out, d)
 	}
