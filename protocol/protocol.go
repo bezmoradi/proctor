@@ -205,17 +205,18 @@ type ValidateParams struct {
 }
 
 type ValidateResult struct {
-	Kind         string            `json:"kind"`
-	Destructive  bool              `json:"destructive"`
-	FixedTarget  bool              `json:"fixed_target"`
-	Problems     []Problem         `json:"problems"`
-	Refs         []string          `json:"refs"`
-	StateCheck   *bool             `json:"state_check,omitempty"`
-	Targets      []string          `json:"targets,omitempty"`
-	Shows        []string          `json:"shows,omitempty"`
-	ExactTargets []string          `json:"exact_targets,omitempty"`
-	Uses         []string          `json:"uses,omitempty"`
-	ShowsEntries map[string]string `json:"shows_entries,omitempty"`
+	Kind          string            `json:"kind"`
+	Destructive   bool              `json:"destructive"`
+	FixedTarget   bool              `json:"fixed_target"`
+	Problems      []Problem         `json:"problems"`
+	Refs          []string          `json:"refs"`
+	StateCheck    *bool             `json:"state_check,omitempty"`
+	NoStateChange bool              `json:"no_state_change,omitempty"`
+	Targets       []string          `json:"targets,omitempty"`
+	Shows         []string          `json:"shows,omitempty"`
+	ExactTargets  []string          `json:"exact_targets,omitempty"`
+	Uses          []string          `json:"uses,omitempty"`
+	ShowsEntries  map[string]string `json:"shows_entries,omitempty"`
 }
 
 type Problem struct {

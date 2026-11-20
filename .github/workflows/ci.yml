@@ -177,6 +177,11 @@ jobs:
             echo "::error::The kafka driver's origin is \"$origin\", not repository: its pin in examples/sample/proctor/proctor.yaml doesn't hold for linux/amd64."
             exit 1
           fi
+      - name: Proctor checks itself
+        run: |
+          export PATH="$RUNNER_TEMP/proctor:$PATH"
+          proctor validate
+          proctor run --binding proctor/environments/local.yaml
       - name: Upload the report
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

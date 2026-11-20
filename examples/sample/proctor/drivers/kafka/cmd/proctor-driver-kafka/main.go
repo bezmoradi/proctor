@@ -65,13 +65,14 @@ var argsSchema = map[string]any{
 }
 
 var recordSchema = object(map[string]any{
-	"partition":  count,
-	"offset":     count,
-	"timestamp":  text,
-	"key":        text,
-	"headers":    textMap,
-	"value_text": text,
-	"value":      true,
+	"partition":       count,
+	"offset":          count,
+	"timestamp":       text,
+	"key":             text,
+	"headers":         textMap,
+	"value_text":      text,
+	"value_truncated": map[string]any{"type": "boolean"},
+	"value":           true,
 })
 
 var factSchema = map[string]any{
@@ -366,6 +367,7 @@ func (d *kafkaDriver) read(ctx context.Context, topic string, a args) (map[strin
 	}
 	defer consumer.Close()
 	scanned := 0
+	tooMany := false
 	for !reached(next, end) {
 		fetches := consumer.PollFetches(ctx)
 		if ctx.Err() != nil {
@@ -389,12 +391,11 @@ func (d *kafkaDriver) read(ctx context.Context, topic string, a args) (map[strin
 			}
 			scanned++
 			r := record(rec)
-			if !matches(r, a) {
+			if !matches(r, rec.Value, a) {
 				return
 			}
 			if len(records) == maxReturned {
-				fact["overflow"] = true
-				fact["overflow_reason"] = fmt.Sprintf("more than %d records match", maxReturned)
+				tooMany = true
 				return
 			}
 			records = append(records, r)
@@ -407,6 +408,23 @@ func (d *kafkaDriver) read(ctx context.Context, topic string, a args) (map[strin
 		}
 		return ri["offset"].(int64) < rj["offset"].(int64)
 	})
+	var reasons []string
+	if tooMany {
+		reasons = append(reasons, fmt.Sprintf("more than %d records match", maxReturned))
+	}
+	cut := 0
+	for _, r := range records {
+		if r.(map[string]any)["value_truncated"] == true {
+			cut++
+		}
+	}
+	if cut > 0 {
+		reasons = append(reasons, fmt.Sprintf("value_text was cut at 64 KiB (value_truncated) in %d of the %d returned records", cut, len(records)))
+	}
+	if len(reasons) > 0 {
+		fact["overflow"] = true
+		fact["overflow_reason"] = strings.Join(reasons, "; ")
+	}
 	fact["records"], fact["count"], fact["scanned"] = records, len(records), scanned
 	return fact, scanned, nil
 }
@@ -433,7 +451,8 @@ func record(rec *kgo.Record) map[string]any {
 		headers[strings.ToValidUTF8(h.Key, "�")] = strings.ToValidUTF8(string(h.Value), "�")
 	}
 	value := rec.Value
-	if len(value) > maxValueText {
+	truncated := len(value) > maxValueText
+	if truncated {
 		value = value[:maxValueText]
 	}
 	var decoded any
@@ -443,21 +462,22 @@ func record(rec *kgo.Record) map[string]any {
 		decoded = nil
 	}
 	return map[string]any{
-		"partition":  int64(rec.Partition),
-		"offset":     rec.Offset,
-		"timestamp":  rec.Timestamp.UTC().Format(time.RFC3339Nano),
-		"key":        strings.ToValidUTF8(string(rec.Key), "�"),
-		"headers":    headers,
-		"value_text": strings.ToValidUTF8(string(value), "�"),
-		"value":      decoded,
+		"partition":       int64(rec.Partition),
+		"offset":          rec.Offset,
+		"timestamp":       rec.Timestamp.UTC().Format(time.RFC3339Nano),
+		"key":             strings.ToValidUTF8(string(rec.Key), "�"),
+		"headers":         headers,
+		"value_text":      strings.ToValidUTF8(string(value), "�"),
+		"value_truncated": truncated,
+		"value":           decoded,
 	}
 }
 
-func matches(r map[string]any, a args) bool {
+func matches(r map[string]any, value []byte, a args) bool {
 	if a.Key != nil && r["key"] != *a.Key {
 		return false
 	}
-	if a.ValueContains != nil && !strings.Contains(r["value_text"].(string), *a.ValueContains) {
+	if a.ValueContains != nil && !strings.Contains(strings.ToValidUTF8(string(value), "�"), *a.ValueContains) {
 		return false
 	}
 	for k, want := range a.Where {

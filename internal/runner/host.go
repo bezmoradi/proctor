@@ -354,6 +354,7 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		for _, name := range sortedKeys(cfg.Drivers) {
 			conns[name], secrets[name] = resolveConnection(name, b.Drivers[name], opt.LookupEnv, &probs, s)
 		}
+		addRepository(cfg, b, opt, conns, &probs)
 		checkBindingAppLogs(cfg, b, &probs)
 	}
 	if err := probs.err(s); err != nil {
@@ -385,6 +386,45 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 		return nil, err
 	}
 	return sess, nil
+}
+
+const (
+	officialCLI   = "cli"
+	repositoryKey = "repository"
+)
+
+func addRepository(cfg *model.Config, b *model.Binding, opt Options, conns map[string]any, probs *problems) {
+	for _, name := range sortedKeys(cfg.Drivers) {
+		dc := cfg.Drivers[name]
+		if dc.Program != "" || dc.Official != officialCLI || opt.Withheld[name] != "" {
+			continue
+		}
+		set := false
+		for _, k := range []string{repositoryKey, repositoryKey + "_env"} {
+			if _, has := b.Drivers[name][k]; has {
+				probs.add(ExitInvalid, "binding: drivers.%s.%s is set by Proctor; remove it", name, k)
+				set = true
+			}
+		}
+		if set {
+			continue
+		}
+		root, err := filepath.Abs(opt.Checkout)
+		if opt.Checkout == "" || err != nil || opt.ProtectedRoot == "" {
+			probs.add(ExitError, "driver %s: this command has no repository for the commands to run in", name)
+			continue
+		}
+		paths := []any{}
+		for _, p := range cfg.ProtectedPaths {
+			paths = append(paths, p)
+		}
+		conn, _ := conns[name].(map[string]any)
+		if conn == nil {
+			conn = map[string]any{}
+		}
+		conn[repositoryKey] = map[string]any{"root": root, "protected_root": opt.ProtectedRoot, "protected_paths": paths}
+		conns[name] = conn
+	}
 }
 
 func checkBindingAppLogs(cfg *model.Config, b *model.Binding, probs *problems) {
@@ -847,6 +887,12 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	}
 	if res.StateCheck != nil {
 		info.StateCheck = *res.StateCheck
+	}
+	switch {
+	case res.NoStateChange && h.program != "":
+		problem("INT-21", "do", "driver %s answered no_state_change for %s, which a repository driver can't use; an act on a repository driver needs a state check like any act", name, st.Do)
+	case res.NoStateChange:
+		info.NoStateChange = info.Kind == protocol.KindAct
 	}
 	seen := map[string]bool{}
 	for _, n := range res.Refs {

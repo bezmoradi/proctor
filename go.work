@@ -2,11 +2,14 @@ go 1.27.4
 
 use (
 	.
+	./drivers/browser
+	./drivers/cli
 	./drivers/docker
 	./drivers/dynamodb
 	./drivers/http
 	./drivers/otel
 	./drivers/postgres
+	./drivers/redis
 	./drivers/ses
 	./drivers/sqs
 	./drivers/stub

@@ -1,0 +1,85 @@
+version: 2
+suite: self
+scenarios:
+  - id: SELF-001
+    name: proctor version prints its version
+    steps:
+      - id: version
+        do: cli.run
+        with: { command: version }
+        expect:
+          equal: { $.exit_code: 0, $.stderr_text: "" }
+          matches: { $.stdout_text: "[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?\n" }
+
+  - id: SELF-002
+    name: proctor version --features lists init and the cli, redis and browser drivers
+    steps:
+      - id: features
+        do: cli.run
+        with: { command: features }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_truncated: false }
+          matches: { $.stdout_text: "(?ms).*^browser$.*^cli$.*^init$.*^redis$.*" }
+
+  - id: SELF-003
+    name: proctor validate passes the sample's configuration
+    steps:
+      - id: validate
+        do: cli.run
+        with: { command: validate-sample }
+        expect:
+          equal: { $.exit_code: 0 }
+          contains: { $.stdout_text: "RESULT: PASSED" }
+
+  - id: SELF-004
+    name: proctor run without --binding says which file it needs
+    steps:
+      - id: run
+        do: cli.run
+        with: { command: run-without-binding }
+        expect:
+          equal: { $.exit_code: 3, $.stdout_text: "" }
+          contains:
+            $.stderr_text: "--binding is required in local mode: the file that says where the application runs"
+
+  - id: SELF-005
+    name: proctor init below the repository's root refuses and writes nothing
+    steps:
+      - id: before
+        do: cli.run
+        with: { command: git-status, args: [examples] }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_truncated: false }
+        save: { before: $.stdout_text }
+      - id: init
+        do: cli.run
+        with: { command: init-in-subfolder }
+        expect:
+          equal: { $.exit_code: 3, $.stdout_text: "" }
+          contains: { $.stderr_text: "is inside the Git repository at" }
+      - id: after
+        do: cli.run
+        with: { command: git-status, args: [examples] }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_text: "${before}" }
+
+  - id: SELF-006
+    name: proctor init at the root refuses, since proctor/ exists, and writes nothing
+    steps:
+      - id: before
+        do: cli.run
+        with: { command: git-status, args: [proctor] }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_truncated: false }
+        save: { before: $.stdout_text }
+      - id: init
+        do: cli.run
+        with: { command: init-at-root }
+        expect:
+          equal: { $.exit_code: 3, $.stdout_text: "" }
+          contains: { $.stderr_text: "already exist, and init never overwrites a file" }
+      - id: after
+        do: cli.run
+        with: { command: git-status, args: [proctor] }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_text: "${before}" }

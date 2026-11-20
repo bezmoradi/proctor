@@ -37,7 +37,7 @@ func newLogsNormalizeCmd(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "normalize <file>",
 		Short: "Print a log file's lines as an approved log shows them: only app_logs.approved.fields, scrubbed, to stdout only",
 		Example: `  proctor logs normalize incident.log --field request_id=8f2c > incident.normalized.log
-  diff incident.normalized.log "$TMPDIR/proctor-received/demo/0a1b2c3d4e5f/users/REP-001.log"`,
+  diff incident.normalized.log "$TMPDIR/proctor-received/demo/0a1b2c3d4e5f/users/RPT-001.log"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return exitWith(normalizeLog(o, args[0], stdout, stderr))

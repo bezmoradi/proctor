@@ -137,17 +137,19 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 	if !ok {
 		output = os.Stderr
 	}
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir()}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir(), ProtectedRoot: rep.ProtectedRoot}
 	plan := mutate.Plan{
 		RepoDir: repo.Dir(), Files: files, Mutants: mutants,
 		Up: filepath.Join(repo.Dir(), filepath.FromSlash(up)), Down: filepath.Join(repo.Dir(), filepath.FromSlash(down)),
 		UpTimeout: o.upTimeout, DownTimeout: o.downTimeout, KeepGoing: o.keepGoing, Output: output, Log: stderr,
-		Scenarios: func(ctx context.Context) (*runner.Outcome, error) {
+		Scenarios: func(ctx context.Context, copyDir string) (*runner.Outcome, error) {
 			b, err := readBinding(m.Binding)
 			if err != nil {
 				return nil, err
 			}
-			rn, err := runner.New(rep.Config, specs, b, opt)
+			mutantOpt := opt
+			mutantOpt.Checkout = copyDir
+			rn, err := runner.New(rep.Config, specs, b, mutantOpt)
 			if err != nil {
 				return nil, err
 			}

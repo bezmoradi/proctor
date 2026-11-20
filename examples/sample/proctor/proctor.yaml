@@ -12,8 +12,8 @@ drivers:
   kafka:
     program: examples/sample/proctor/drivers/kafka/bin/proctor-driver-kafka
     sha256:
-      linux/amd64: 278b47e6e5bba745343255679bca80777cce67dee896ea7a414622955ffa3ace
-      darwin/arm64: 86e917210412b2351c89d9d92dc77f12001515866f7ec116449222f396f66aba
+      linux/amd64: ad7051d1e1c170e833e7633d5b545541e80e952f9000ca53a090a37fe0940474
+      darwin/arm64: a2cea70d4afb53be88b0279ab3cc837ee2b90a243c785f2d9dcd155521583ba8
     operations: { events: observe }
     policy:
       topics: { users: sample-users }

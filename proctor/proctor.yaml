@@ -1,0 +1,41 @@
+version: 2
+project: proctor
+manifest: manifest.yaml
+protected_paths: [examples/sample/proctor/]
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        version:
+          program: proctor
+          args: [version]
+          kind: observe
+        features:
+          program: proctor
+          args: [version, --features]
+          kind: observe
+        validate-sample:
+          program: proctor
+          args: [validate, -c, examples/sample/proctor/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        run-without-binding:
+          program: proctor
+          args: [run]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        init-in-subfolder:
+          program: proctor
+          args: [init]
+          kind: observe
+          dir: examples
+        init-at-root:
+          program: proctor
+          args: [init]
+          kind: observe
+        git-status:
+          program: git
+          args: [status, --porcelain, --untracked-files=all, --]
+          kind: observe
+          extra_args: 1

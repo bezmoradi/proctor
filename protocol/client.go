@@ -46,6 +46,7 @@ func Start(ctx context.Context, path string, args []string, env []string) (*Clie
 	cmd := exec.Command(path, args...)
 	cmd.Env = append([]string{}, env...)
 	cmd.WaitDelay = closeGrace
+	ownGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -207,7 +208,7 @@ func (c *Client) fail(format string, args ...any) error {
 func (c *Client) kill() {
 	c.stopOnce.Do(func() { close(c.stop) })
 	_ = c.stdin.Close()
-	_ = c.cmd.Process.Kill()
+	killGroup(c.cmd)
 }
 
 func (c *Client) exitDetail() string {
