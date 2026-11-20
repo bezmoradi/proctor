@@ -16,8 +16,10 @@ import (
 )
 
 type Mark struct {
-	Offset int64
-	info   os.FileInfo
+	Offset  int64
+	info    os.FileInfo
+	seq     uint64
+	refused uint64
 }
 
 type Window struct {

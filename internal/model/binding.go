@@ -12,6 +12,7 @@ type Binding struct {
 
 type BindingAppLogs struct {
 	File string `yaml:"file"`
+	OTel string `yaml:"otel"`
 }
 
 type BindingIdentity struct {

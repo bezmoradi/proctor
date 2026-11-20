@@ -325,7 +325,27 @@ func matchesAll(subs []subCheck, el any) bool {
 
 const notPresent = "not present in the fact"
 
-func (r *Runner) judge(c check, fact any, red []string) Assertion {
+func excludeInList(a *Assertion, target, want string, list []any) {
+	if len(list) == 0 {
+		a.Result, a.vacuous = Fail, true
+		a.Message = fmt.Sprintf("%s is an empty list, so excludes can't be judged: no element could hold the text. Assert that the list has elements too, or that it is empty with length", target)
+		return
+	}
+	for i, el := range list {
+		text, isText := el.(string)
+		if !isText {
+			a.Result, a.Message = Fail, fmt.Sprintf("element [%d] is not text", i)
+			return
+		}
+		if at := strings.Index(text, want); at >= 0 {
+			a.Actual = text
+			a.Result, a.Message = Fail, fmt.Sprintf("element [%d] contains the excluded text at byte %d of %d", i, at, len(text))
+			return
+		}
+	}
+}
+
+func (r *Runner) judge(c check, fact any, red []string, op string) Assertion {
 	a := Assertion{Kind: c.kind, Target: c.target, Claim: c.claim, Result: Pass}
 	elem := c.target + "[0]"
 	fail := func(msg string) { a.Result, a.Message = Fail, msg }
@@ -344,9 +364,13 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 		fail(fmt.Sprintf("%s was cut at %d bytes (body_truncated: true): the driver keeps only the start of a longer body, so %s can't judge the text after the cut; assert on a smaller response", c.target, kept, c.kind))
 		return r.redactAssertion(a, c, elem, red)
 	}
-	if list, why, over := overflowed(c, fact); over {
+	if list, why, over := overflowed(c, fact, op); over {
 		a.Expected, a.Present, a.Overflow, a.vacuous = c.want, ok, true, true
-		fail(fmt.Sprintf("the driver left frames out of %s (%s: true%s), so %s on %s can't be judged: a frame left out could change it. On a stream that overflowed only any, present and checks on a frame that is there are judged; assert on a shorter stream", list, overflowMarkName, why, c.kind, c.target))
+		if isStream(fact) {
+			fail(fmt.Sprintf("the driver left frames out of %s (%s: true%s), so %s on %s can't be judged: a frame left out could change it. On a stream that overflowed only any, present and checks on a frame that is there are judged; assert on a shorter stream", list, overflowMarkName, why, c.kind, c.target))
+		} else {
+			fail(fmt.Sprintf("the driver left records out of %s (%s: true%s), so %s on %s can't be judged: a record left out could change it. When records were left out only any, present and checks on a record that is there are judged; narrow the read so fewer records match", list, overflowMarkName, why, c.kind, c.target))
+		}
 		return r.redactAssertion(a, c, elem, red)
 	}
 	switch c.kind {
@@ -377,9 +401,13 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 		want := c.want.(string)
 		a.Expected = want
 		text, isText := got.(string)
+		list, isList := got.([]any)
 		switch {
 		case !ok:
 			fail(notPresent)
+		case c.kind == "excludes" && isList:
+			a.Present, a.Actual = true, list
+			excludeInList(&a, c.target, want, list)
 		case !isText:
 			a.Present, a.Actual = true, got
 			fail("not text")
@@ -576,11 +604,18 @@ const (
 	overflowMarkName = "overflow"
 	overflowWhyName  = "overflow_reason"
 	countFieldName   = "count"
+	closedFieldName  = "closed"
 )
 
 var overflowJudged = map[string]bool{"any": true, "present": true}
 
-func overflowed(c check, fact any) (string, string, bool) {
+func isStream(fact any) bool {
+	obj, _ := fact.(map[string]any)
+	_, has := obj[closedFieldName]
+	return has
+}
+
+func overflowed(c check, fact any, op string) (string, string, bool) {
 	segs := c.path.Segments()
 	obj, _ := fact.(map[string]any)
 	if len(segs) == 0 || segs[0].IsIndex || obj[overflowMarkName] != true {
@@ -592,7 +627,9 @@ func overflowed(c check, fact any) (string, string, bool) {
 		return "", "", false
 	}
 	at := expr.Child("$", name)
-	if !isList {
+	if _, own := obj[op].([]any); !isList && own {
+		at = expr.Child("$", op)
+	} else if !isList {
 		for _, sibling := range sortedKeys(obj) {
 			if _, ok := obj[sibling].([]any); ok {
 				at = expr.Child("$", sibling)
@@ -698,7 +735,7 @@ func (r *Runner) redactAssertion(a Assertion, c check, elem string, red []string
 			if a.Actual != nil {
 				a.Actual = redacted
 			}
-		case sensitivePath(c.target):
+		case r.sensitiveTarget(c.target):
 			if a.Expected != nil {
 				a.Expected = redacted
 			}
@@ -781,8 +818,37 @@ func (r *Runner) listedAt(p redactPath, red []string) bool {
 	return r.listedPath(p.canonical, red) || r.listedPath(p.dotted, red)
 }
 
-func (p redactPath) sensitive() bool {
-	return sensitivePath(p.canonical) || sensitivePath(p.dotted)
+func (r *Runner) sensitiveAt(p redactPath) bool {
+	return sensitivePath(p.canonical) || sensitivePath(p.dotted) || r.headerKeyPath(p.canonical)
+}
+
+func (r *Runner) sensitiveTarget(p string) bool {
+	return sensitivePath(p) || r.headerKeyPath(p)
+}
+
+func (r *Runner) headerKeyPath(p string) bool {
+	parsed, err := expr.ParsePath(p)
+	if err != nil {
+		return false
+	}
+	for _, seg := range parsed.Segments() {
+		if !seg.IsIndex && dottedHeader(seg.Name, r.headers) {
+			return true
+		}
+	}
+	return false
+}
+
+func dottedHeader(name string, headers map[string]bool) bool {
+	if !strings.Contains(name, ".") {
+		return false
+	}
+	for _, part := range strings.Split(strings.ToLower(name), ".") {
+		if credentialHeaders[part] || headers[part] {
+			return true
+		}
+	}
+	return false
 }
 
 func newRedactPath(path string) redactPath {
@@ -814,7 +880,7 @@ func (r *Runner) redactAt(path redactPath, v any, red []string) any {
 	}
 	switch x := v.(type) {
 	case string:
-		if path.sensitive() {
+		if r.sensitiveAt(path) {
 			return redacted
 		}
 	case map[string]any:
@@ -846,7 +912,7 @@ func (r *Runner) scrubAt(path redactPath, v any, red []string) {
 	}
 	switch x := v.(type) {
 	case string:
-		if path.sensitive() {
+		if r.sensitiveAt(path) {
 			r.scrub.add(x)
 		}
 	case map[string]any:
@@ -914,13 +980,10 @@ func (r *Runner) headerPath(p string) bool {
 }
 
 func (r *Runner) scrubHeaders(v any) {
-	if len(r.headers) == 0 {
-		return
-	}
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
-			if r.headers[strings.ToLower(k)] {
+			if r.headers[strings.ToLower(k)] || dottedHeader(k, r.headers) {
 				for _, s := range textLeaves(e) {
 					r.scrub.add(s)
 				}

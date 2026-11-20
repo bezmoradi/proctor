@@ -117,6 +117,25 @@ type AppLogs struct {
 	LevelNumbers map[string]string `yaml:"level_numbers"`
 	Unparsed     string            `yaml:"unparsed"`
 	Approved     *ApprovedLogs     `yaml:"approved"`
+	FlushWait    string            `yaml:"flush_wait" json:"FlushWait,omitempty"`
+}
+
+const (
+	DefaultFlushWaitFile = 300 * time.Millisecond
+	DefaultFlushWaitOTel = 1500 * time.Millisecond
+	MaxFlushWait         = 10 * time.Second
+)
+
+func (a *AppLogs) FlushWaitFor(otel bool) time.Duration {
+	if a != nil && a.FlushWait != "" {
+		if d, err := time.ParseDuration(a.FlushWait); err == nil && d > 0 && d <= MaxFlushWait {
+			return d
+		}
+	}
+	if otel {
+		return DefaultFlushWaitOTel
+	}
+	return DefaultFlushWaitFile
 }
 
 const (

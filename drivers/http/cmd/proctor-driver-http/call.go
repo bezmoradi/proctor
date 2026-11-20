@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +22,10 @@ import (
 )
 
 const (
-	hidden   = "[hidden]"
-	redacted = "[redacted]"
+	hidden      = "[hidden]"
+	redacted    = "[redacted]"
+	traceHeader = "traceparent"
+	traceIDPath = "$.trace_id"
 )
 
 type requestArgs struct {
@@ -34,6 +38,7 @@ type requestArgs struct {
 	BodyBase64 any            `json:"body_base64"`
 	BodyFill   any            `json:"body_fill"`
 	BodyFile   any            `json:"body_file"`
+	Trace      *bool          `json:"trace"`
 }
 
 type outgoing struct {
@@ -41,6 +46,7 @@ type outgoing struct {
 	target string
 	body   []byte
 	raw    *rawBody
+	trace  string
 }
 
 func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.CallResult, error) {
@@ -86,8 +92,12 @@ func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.Call
 	if len(body) > maxBodyBytes {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseResponseTooLarge, "%s %s -> %d: the response body is larger than %d bytes", a.Method, out.target, resp.StatusCode, maxBodyBytes)
 	}
+	f := fact(resp, body)
+	if out.trace != "" {
+		f["trace_id"] = out.trace
+	}
 	return protocol.CallResult{
-		Fact: fact(resp, body),
+		Fact: f,
 		Evidence: protocol.Evidence{
 			Summary:         fmt.Sprintf("%s %s -> %d", a.Method, out.target, resp.StatusCode),
 			RequestExcerpt:  requestExcerpt(out),
@@ -198,6 +208,19 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 		}
 		req.Header.Set(name, val)
 	}
+	if a.Trace != nil && *a.Trace {
+		for name := range a.Headers {
+			if strings.EqualFold(name, traceHeader) {
+				return out, fmt.Errorf("header %s can't be set together with trace: true, which sends its own", name)
+			}
+		}
+		parent, traceID, err := newTraceparent()
+		if err != nil {
+			return out, err
+		}
+		req.Header.Set(traceHeader, parent)
+		out.trace = traceID
+	}
 	req.Header.Set("User-Agent", d.userAgent)
 	if cred != nil {
 		var auth string
@@ -219,6 +242,29 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 	}
 	out.req = req
 	return out, nil
+}
+
+func newTraceparent() (string, string, error) {
+	b := make([]byte, 24)
+	for {
+		if _, err := rand.Read(b); err != nil {
+			return "", "", fmt.Errorf("trace: no random trace id: %v", err)
+		}
+		if !allZero(b[:16]) && !allZero(b[16:]) {
+			break
+		}
+	}
+	traceID := hex.EncodeToString(b[:16])
+	return "00-" + traceID + "-" + hex.EncodeToString(b[16:]) + "-01", traceID, nil
+}
+
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func text(v any) (string, error) {

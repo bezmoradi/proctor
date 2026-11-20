@@ -1,0 +1,8 @@
+[default.extend-identifiers]
+ue = "ue"
+ba = "ba"
+lits = "lits"
+wheres = "wheres"
+
+[default.extend-words]
+unparseable = "unparseable"

@@ -112,7 +112,18 @@ func (f *factPaths) check(root schema.Shape, matcher, target string) (schema.Sha
 		f.add(at, "%s: the fact of %s can't hold this path (%s), so %s %s", target, f.do, why, matcher, consequence(matcher))
 		return schema.Shape{}, false
 	}
+	if matcher == "excludes" && !sh.Open() && !sh.Allows("string") && sh.Allows("array") {
+		if item := sh.Item(); !item.Open() && !item.Allows("string") {
+			f.add(at, "%s: excludes needs text or a list of texts, but the fact of %s holds a list of %s there", target, f.do, item.TypeText())
+			return schema.Shape{}, false
+		}
+		return sh, true
+	}
 	if need := factPathNeeds[matcher]; need != "" && !sh.Open() && !sh.Allows(need) {
+		if matcher == "excludes" {
+			f.add(at, "%s: excludes needs text or a list of texts, but the fact of %s holds %s there", target, f.do, sh.TypeText())
+			return schema.Shape{}, false
+		}
 		f.add(at, "%s: %s needs %s, but the fact of %s holds %s there", target, matcher, needText[need], f.do, sh.TypeText())
 		return schema.Shape{}, false
 	}

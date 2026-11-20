@@ -62,6 +62,9 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		src = cs
 	}
 	r := integrity.Load(src, c.config)
+	if inGit {
+		r.CheckTrackedWorkTree(repo.Index)
+	}
 	if r.Config != nil && r.Config.Mutation != nil {
 		if inGit {
 			checkMutation(r, repoDir, src, true)

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +28,7 @@ type runOptions struct {
 	common
 	binding, commit, base, prHead, report string
 	received, kind, kindSource, earlier   string
+	programs                              string
 	authoritative, noProgress             bool
 	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
@@ -57,6 +60,7 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	f.BoolVar(&o.noProgress, "no-progress", false, "don't write a line to stderr as each scenario finishes")
 	addChangeKind(cmd, &o.kind, &o.kindSource)
 	f.StringVar(&o.earlier, "earlier-reports", "", "with --authoritative: folder, outside the repository, holding the JSON reports of this workflow run's earlier attempts; the report and job summary name each earlier attempt that recorded a behavioral FAIL for the same tested commit and input hashes, and each attempt without such a report as unknown, without changing the result (REP-10)")
+	f.StringVar(&o.programs, "driver-programs", "", "with --authoritative: folder to read repository drivers' programs from, at their program paths, instead of the checkout; the reference workflow builds the base commit's drivers there")
 	f.StringVar(&o.received, "received", "", "folder, outside the repository and new or empty, for the received transcripts and logs of scenarios with transcript: true or approved_log: true (default: a new folder under $TMPDIR/proctor-received/<project>/)")
 	return cmd
 }
@@ -86,9 +90,9 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		return runAuthoritative(ctx, authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
 			received: o.received, callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress,
 			kind: o.kind, kindSource: o.kindSource, kindGiven: o.set("change-kind"), kindSourceGiven: o.set("change-kind-source"),
-			earlier: o.earlier, earlierGiven: o.set("earlier-reports")}, stdout, stderr)
+			earlier: o.earlier, earlierGiven: o.set("earlier-reports"), programs: o.programs}, stdout, stderr)
 	}
-	for _, name := range []string{"commit", "base", "pr-head", "change-kind", "change-kind-source", "earlier-reports"} {
+	for _, name := range []string{"commit", "base", "pr-head", "change-kind", "change-kind-source", "earlier-reports", "driver-programs"} {
 		if o.set(name) {
 			return refuse("proctor run: ", "--"+name+" is only for --authoritative")
 		}
@@ -104,6 +108,7 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		return emitLocal(o.report, c.json, stdout, stderr, render)
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
+	rep.CheckTrackedWorkTree(repo.Index)
 	if code := rep.ExitCode(); code != exitOK {
 		dc := &driverCheck{stopped: stoppedOutcome(rep, code, false, nil)}
 		return emit(func(w io.Writer, asJSON bool) int { return write(w, asJSON, "RUN", rep, dc, code, resultName(code)) })
@@ -284,15 +289,59 @@ func specFiles(rep *integrity.Report) []runner.SpecFile {
 }
 
 func describeSteps(ctx context.Context, rep *integrity.Report, b *model.Binding, opt runner.Options) (map[model.StepRef]model.StepInfo, []runner.DriverInfo, *runner.SetupError) {
+	held := holdRepositoryDrivers(rep, &opt)
 	d, drivers, err := runner.Describe(ctx, rep.Config, specFiles(rep), b, opt)
 	if err != nil {
-		return nil, nil, asSetupError(err)
+		return nil, nil, withHeld(asSetupError(err), held, rep)
 	}
 	rep.ApplyStepInfo(d.Steps, d.Entries)
 	if drivers == nil {
 		drivers = []runner.DriverInfo{}
 	}
+	if len(held) > 0 {
+		return nil, drivers, withHeld(nil, held, rep)
+	}
 	return d.Steps, drivers, nil
+}
+
+func holdRepositoryDrivers(rep *integrity.Report, opt *runner.Options) []string {
+	if rep.Config == nil || !rep.DriverPathFindings() {
+		return nil
+	}
+	hold := map[string]string{}
+	for name, dc := range rep.Config.Drivers {
+		if dc.Program != "" {
+			hold[name] = runner.ReasonTrustViolation
+		}
+	}
+	if len(hold) == 0 {
+		return nil
+	}
+	rep.Config = runner.WithoutDrivers(rep.Config, hold)
+	withheld := map[string]string{}
+	for name, reason := range opt.Withheld {
+		withheld[name] = reason
+	}
+	for name, reason := range hold {
+		withheld[name] = reason
+	}
+	opt.Withheld = withheld
+	return slices.Sorted(maps.Keys(hold))
+}
+
+func withHeld(se *runner.SetupError, held []string, rep *integrity.Report) *runner.SetupError {
+	if len(held) == 0 {
+		return se
+	}
+	out := &runner.SetupError{ExitCode: rep.ExitCode()}
+	for _, name := range held {
+		out.Msgs = append(out.Msgs, fmt.Sprintf("driver %s wasn't started, because the configuration's INT-12 or INT-21 findings stand; fix them first", name))
+	}
+	if se != nil {
+		out.ExitCode = max(out.ExitCode, se.ExitCode)
+		out.Msgs = append(out.Msgs, se.Msgs...)
+	}
+	return out
 }
 
 func asSetupError(err error) *runner.SetupError {

@@ -5,10 +5,14 @@ use (
 	./drivers/docker
 	./drivers/dynamodb
 	./drivers/http
+	./drivers/otel
 	./drivers/postgres
 	./drivers/ses
 	./drivers/sqs
+	./drivers/stub
 	./drivers/ws
 	./protocol
+	./simulators/http
+	./simulators/otel
 	./simulators/ses
 )

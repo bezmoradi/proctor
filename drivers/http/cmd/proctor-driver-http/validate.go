@@ -134,6 +134,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	}
 	v.onlyInBodyOrHeaders("$.expect", []any{ex.Equal, ex.Length, ex.Unordered, ex.Any, ex.None, ex.Contains, ex.Count, ex.Matches, ex.Excludes, ex.Differs})
 	v.checkClaims(ex)
+	v.checkTrace(args, headers, ex, p.Save)
 	v.checkStatus(ex, p)
 	if method == "HEAD" {
 		v.checkHead(ex, p.Save)
@@ -164,6 +165,36 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		v.add("HTTP-09", "$.expect.length", "asserts a list length on a request with no query parameters; the list may include records the scenario didn't create (filter the request, or waive HTTP-09 with the reason it can't)")
 	}
 	return v.r, nil
+}
+
+func (v *validation) checkTrace(args, headers map[string]any, ex expectation, save map[string]string) {
+	on, _ := args["trace"].(bool)
+	if s, isText := args["trace"].(string); isText && refRE.MatchString(s) {
+		v.add("EXE-01", "$.with.trace", "trace must be true or false, not a reference")
+	}
+	if on {
+		for _, name := range sortedKeys(headers) {
+			if strings.EqualFold(name, traceHeader) {
+				v.add("EXE-01", "$.with.headers", "header %q can't be set together with trace: true, which sends a fresh traceparent of its own; drop one of them", name)
+			}
+		}
+		return
+	}
+	for _, p := range ex.paths() {
+		if tracePath(p) {
+			v.add("EXE-03", "$.expect", "%s is in the fact only when the request sets trace: true", p)
+		}
+	}
+	for _, name := range sortedKeys(save) {
+		if tracePath(save[name]) {
+			v.add("EXE-03", "$.save."+name, "%s is in the fact only when the request sets trace: true", save[name])
+		}
+	}
+}
+
+func tracePath(p string) bool {
+	segs, err := jsonpath.Parse(p)
+	return err == nil && len(segs) > 0 && !segs[0].IsIndex && jsonpath.String(segs[:1]) == traceIDPath
 }
 
 func runScoped(names []string) bool {

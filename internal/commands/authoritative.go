@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +31,8 @@ type authOptions struct {
 	c                             common
 	binding, commit, base, prHead string
 	report, received, repoDir     string
+	programs                      string
+	withheld                      map[string]string
 	callTimeout, readyTimeout     time.Duration
 	progress                      func(runner.Progress)
 	kind, kindSource              string
@@ -39,6 +44,11 @@ type authOptions struct {
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 const protectedPathKey = "protected_paths:"
+
+const (
+	fromBaseNote  = "the tested commit changes this repository driver, but this run used the base commit's program, pins and operations; the change takes effect once merged"
+	notInBaseNote = "the base commit has no such repository driver, so it wasn't started and every scenario that uses it is NOT_RUN (" + runner.ReasonDriverNotInBase + "); it takes effect once merged"
+)
 
 type authReport struct {
 	Result           string                  `json:"result"`
@@ -71,6 +81,8 @@ type authTrust struct {
 	UnownedProtectedPaths      []string `json:"unowned_protected_paths"`
 	ProtectedDiffersFromPRHead *bool    `json:"protected_differs_from_pr_head"`
 	ApprovalRequired           bool     `json:"approval_required"`
+	RepositoryDriversFromBase  []string `json:"repository_drivers_from_base"`
+	RepositoryDriversNotInBase []string `json:"repository_drivers_not_in_base"`
 }
 
 type authProvenance struct {
@@ -105,6 +117,9 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		return reportRefusal(o.report, true, exitInvalid, err.Error(), stderr)
 	}
 	o.repoDir = repo.Dir()
+	if o.programs == "" {
+		o.programs = o.repoDir
+	}
 	ar := newAuthReport()
 	violate := func(rule, format string, args ...any) {
 		ar.Violations = append(ar.Violations, rule+": "+fmt.Sprintf(format, args...))
@@ -120,6 +135,9 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		invalid("binding: %v", err)
 	} else if inside {
 		invalid("MODE-01: the binding %s is inside the repository checkout; in authoritative mode it must come from outside it", o.binding)
+	}
+	if fi, err := os.Stat(o.programs); err != nil || !fi.IsDir() {
+		invalid("--driver-programs %s isn't a folder", o.programs)
 	}
 	if o.earlierGiven && o.earlier == "" {
 		invalid("REP-10: --earlier-reports needs a folder")
@@ -180,6 +198,10 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		for k, v := range rep.ProtectedPathHashes {
 			ar.Provenance.SHA256[protectedPathKey+k] = v
 		}
+	}
+
+	if rep != nil && rep.Config != nil {
+		o.withheld = driversFromBase(repo, base, tested, rep, ar, o.c.config, violate)
 	}
 
 	var b model.Binding
@@ -287,7 +309,7 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		ar.Trust.UnownedProtectedPaths = unowned(repo, base, tested, rep)
 	}
 	if rep != nil && rep.Config != nil {
-		ar.Violations = append(ar.Violations, runner.ResolveDrivers(rep.Config, runner.Options{Authoritative: true, RepoDir: o.repoDir})...)
+		ar.Violations = append(ar.Violations, runner.ResolveDrivers(rep.Config, runner.Options{Authoritative: true, RepoDir: o.programs, Withheld: o.withheld})...)
 	}
 
 	code := exitOK
@@ -353,6 +375,92 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 	return code
 }
 
+func driversFromBase(repo *gitrepo.Repo, base, tested string, rep *integrity.Report, ar *authReport, config string, violate func(rule, format string, args ...any)) map[string]string {
+	cfg := rep.Config
+	var names []string
+	for _, name := range sortedNames(cfg.Drivers) {
+		if cfg.Drivers[name].Program != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	var baseCfg *model.Config
+	var baseTree, tree map[string]gitrepo.Entry
+	var baseEntries []gitrepo.Entry
+	if base != "" {
+		cs, err := integrity.NewCommitSource(repo, base)
+		if err == nil {
+			baseCfg = integrity.LoadConfig(cs, config).Config
+			baseTree, err = repo.Tree(base)
+		}
+		if err == nil {
+			tree, err = repo.Tree(tested)
+		}
+		if err != nil {
+			violate("INT-08", "reading the repository drivers of the base commit: %v", err)
+			baseCfg = nil
+		}
+		for _, e := range baseTree {
+			baseEntries = append(baseEntries, e)
+		}
+	}
+	eff := *cfg
+	eff.Drivers = maps.Clone(cfg.Drivers)
+	withheld := map[string]string{}
+	for _, name := range names {
+		d := cfg.Drivers[name]
+		var was model.DriverConfig
+		if baseCfg != nil {
+			was = baseCfg.Drivers[name]
+		}
+		if was.Program == "" {
+			delete(eff.Drivers, name)
+			withheld[name] = runner.ReasonDriverNotInBase
+			ar.Trust.RepositoryDriversNotInBase = append(ar.Trust.RepositoryDriversNotInBase, name)
+			continue
+		}
+		if what, found := integrity.TrackedProgram(was.Program, baseEntries, "the base commit"); found {
+			violate("INT-21", "%s: driver %q: %s; build it in the job from the reviewed source instead", was.Program, name, what)
+		}
+		if was.Program != d.Program || !maps.Equal(was.SHA256, d.SHA256) || !maps.Equal(was.Operations, d.Operations) ||
+			folderChanged(baseTree, tree, driverSource(was.Program)) || folderChanged(baseTree, tree, driverSource(d.Program)) {
+			ar.Trust.RepositoryDriversFromBase = append(ar.Trust.RepositoryDriversFromBase, name)
+		}
+		d.Program, d.SHA256, d.Operations = was.Program, was.SHA256, was.Operations
+		eff.Drivers[name] = d
+	}
+	rep.Config = &eff
+	return withheld
+}
+
+func driverSource(program string) string {
+	dir := path.Dir(path.Dir(program))
+	if dir == "." {
+		return ""
+	}
+	return dir + "/"
+}
+
+func folderChanged(base, head map[string]gitrepo.Entry, prefix string) bool {
+	for p, e := range head {
+		if was, ok := base[p]; strings.HasPrefix(p, prefix) && (!ok || was.OID != e.OID || was.Mode != e.Mode) {
+			return true
+		}
+	}
+	for p := range base {
+		if _, ok := head[p]; strings.HasPrefix(p, prefix) && !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedNames[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
+}
+
 func checkChangeKind(repo *gitrepo.Repo, ar *authReport, ch *protdiff.Result, config string, violate func(rule, format string, args ...any)) {
 	k := ar.ChangeKind
 	if k == nil {
@@ -377,14 +485,15 @@ func changeKindText(k *protdiff.KindCheck) string {
 func newAuthReport() *authReport {
 	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{},
 		EarlierAttempts: notCheckedEarlier("the run stopped before it read any earlier report")}
-	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{}}
+	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{},
+		RepositoryDriversFromBase: []string{}, RepositoryDriversNotInBase: []string{}}
 	ar.Provenance = authProvenance{ProctorVersion: Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		CIRunID: os.Getenv("GITHUB_RUN_ID"), CIRunAttempt: os.Getenv("GITHUB_RUN_ATTEMPT"), Repository: os.Getenv("GITHUB_REPOSITORY")}
 	return ar
 }
 
 func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress, RepoDir: o.repoDir}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress, RepoDir: o.programs, Withheld: o.withheld}
 	refused := func(se *runner.SetupError) int {
 		if se.ExitCode == exitIntegrity {
 			ar.Violations = append(ar.Violations, se.Msgs...)
@@ -568,6 +677,12 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 	fmt.Fprintf(w, "Change kind:     %s\n", changeKindText(ar.ChangeKind))
 	writeEarlier(w, ar.EarlierAttempts)
 	writeDrivers(w, ar.Drivers)
+	for _, n := range ar.Trust.RepositoryDriversFromBase {
+		fmt.Fprintf(w, "FROM BASE          driver %s: %s\n", safe(n), fromBaseNote)
+	}
+	for _, n := range ar.Trust.RepositoryDriversNotInBase {
+		fmt.Fprintf(w, "NOT IN BASE        driver %s: %s\n", safe(n), notInBaseNote)
+	}
 	if ar.ProtectedChanges != nil && rep != nil {
 		for _, wk := range ar.ProtectedChanges.Weakenings {
 			line := fmt.Sprintf("WEAKENING          %s %s: %s", safe(wk.Kind), safe(weakeningPlace(wk, rep.ConfigPath)), safe(wk.Detail))
@@ -648,6 +763,15 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 			}
 			fmt.Fprintf(w, "| %s | %s | %s | %s | %s |\n", md(d.Name), code(programOf(d)), md(orDash(d.Version)), md(d.Origin), md(orDash(strings.Join(proofs, ", "))))
 		}
+		fmt.Fprintln(w)
+	}
+	for _, n := range ar.Trust.RepositoryDriversFromBase {
+		fmt.Fprintf(w, "- driver %s: %s\n", code(n), md(fromBaseNote))
+	}
+	for _, n := range ar.Trust.RepositoryDriversNotInBase {
+		fmt.Fprintf(w, "- driver %s: %s\n", code(n), md(notInBaseNote))
+	}
+	if len(ar.Trust.RepositoryDriversFromBase)+len(ar.Trust.RepositoryDriversNotInBase) > 0 {
 		fmt.Fprintln(w)
 	}
 	if ar.Trust.WorkflowChanged == true {

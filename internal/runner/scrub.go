@@ -13,6 +13,34 @@ const minScrubbed = 4
 
 type scrubber struct {
 	values []string
+	known  []knownValue
+}
+
+type knownValue struct {
+	value, what string
+}
+
+func (s *scrubber) know(v, what string) {
+	s.add(v)
+	if len(v) < minScrubbed {
+		return
+	}
+	for _, k := range s.known {
+		if k.value == v {
+			return
+		}
+	}
+	s.known = append(s.known, knownValue{value: v, what: what})
+	sort.SliceStable(s.known, func(i, j int) bool { return len(s.known[i].value) > len(s.known[j].value) })
+}
+
+func (s *scrubber) leaked(t string) (string, bool) {
+	for _, k := range s.known {
+		if strings.Contains(t, k.value) {
+			return k.what, true
+		}
+	}
+	return "", false
 }
 
 func (s *scrubber) add(v string) {

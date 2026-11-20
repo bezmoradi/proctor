@@ -111,21 +111,30 @@ jobs:
               ;;
           esac
           echo "base=$base" >> "$GITHUB_OUTPUT"
-      - name: Build repository drivers
+      - name: Build repository drivers from the base
+        env:
+          BASE: ${{ steps.base.outputs.base }}
         run: |
-          for dir in proctor/drivers/*/; do
+          dest="$RUNNER_TEMP/base-drivers"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          if [ -n "$(git ls-tree --full-tree "$BASE" -- proctor/drivers)" ]; then
+            git archive --format=tar "$BASE" -- proctor/drivers/ | tar -x -C "$dest" --no-same-owner
+          fi
+          for dir in "$dest"/proctor/drivers/*/; do
+            [ -d "$dir" ] || continue
             dir=${dir%/}
             name=${dir##*/}
             [ -d "$dir/cmd/proctor-driver-$name" ] || continue
             if ! printf '%s' "$name" | grep -qE '^[a-z][a-z0-9_-]*$'; then
-              echo "::error::$dir: a repository driver's folder name must match ^[a-z][a-z0-9_-]*$."
+              echo "::error::proctor/drivers/$name at the base: a repository driver's folder name must match ^[a-z][a-z0-9_-]*$."
               exit 1
             fi
             mod=readonly
             [ ! -f "$dir/vendor/modules.txt" ] || mod=vendor
             (cd "$dir" && env -i PATH="$PATH" HOME="$HOME" GOWORK=off GOTOOLCHAIN=go1.27.1 CGO_ENABLED=0 GOFLAGS="-mod=$mod" \
               GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o "bin/proctor-driver-$name" "./cmd/proctor-driver-$name")
-            echo "built $dir/bin/proctor-driver-$name with sha256 $(sha256sum "$dir/bin/proctor-driver-$name" | cut -d' ' -f1)"
+            echo "built proctor/drivers/$name/bin/proctor-driver-$name from $BASE with sha256 $(sha256sum "$dir/bin/proctor-driver-$name" | cut -d' ' -f1)"
           done
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -236,7 +245,7 @@ jobs:
           fi
           mkdir -p "$RUNNER_TEMP/earlier-reports"
           "$bin/proctor" run --authoritative --config proctor/proctor.yaml \
-            --binding "$binding" --earlier-reports "$RUNNER_TEMP/earlier-reports" \
+            --binding "$binding" --earlier-reports "$RUNNER_TEMP/earlier-reports" --driver-programs "$RUNNER_TEMP/base-drivers" \
             --report "$RUNNER_TEMP/report-$GITHUB_RUN_ATTEMPT.json" "$@"
       - name: Upload the report
         if: always()

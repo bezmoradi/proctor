@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"proctor/internal/gitrepo"
@@ -49,6 +50,40 @@ func ProtectedFolder(dir, root string, extra []string) bool {
 		}
 	}
 	return false
+}
+
+func TrackedProgram(prog string, entries []gitrepo.Entry, where string) (string, bool) {
+	sorted := slices.SortedFunc(slices.Values(entries), func(a, b gitrepo.Entry) int { return strings.Compare(a.Path, b.Path) })
+	want := asciiFold(prog)
+	dir := path.Dir(want)
+	above := map[string]bool{}
+	for d := dir; d != "." && d != "/"; d = path.Dir(d) {
+		above[d] = true
+	}
+	for _, e := range sorted {
+		p := asciiFold(e.Path)
+		switch {
+		case e.Mode == "160000" && (above[p] || p == want):
+			return fmt.Sprintf("%s has a submodule at %s, which is the program's folder or a folder above it", where, e.Path), true
+		case p == want && e.Path == prog:
+			return fmt.Sprintf("%s tracks %s, the program's path", where, e.Path), true
+		case p == want:
+			return fmt.Sprintf("%s tracks %s, which is the program's path on a case-insensitive filesystem", where, e.Path), true
+		case dir != "." && strings.HasPrefix(p, dir+"/"):
+			return fmt.Sprintf("%s tracks %s, inside the program's folder %s (paths compared ignoring case), which must hold only the built program", where, e.Path, path.Dir(prog)), true
+		}
+	}
+	return "", false
+}
+
+func asciiFold(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 func checkRelPath(p string) error {

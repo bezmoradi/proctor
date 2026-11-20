@@ -163,6 +163,30 @@ func (r *Repo) Tree(commit string) (map[string]Entry, error) {
 	return entries, nil
 }
 
+func (r *Repo) Index() ([]Entry, error) {
+	out, err := r.git(nil, "ls-files", "-z", "--stage")
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, rec := range bytes.Split(out, []byte{0}) {
+		if len(rec) == 0 {
+			continue
+		}
+		meta, p, ok := bytes.Cut(rec, []byte{'\t'})
+		f := strings.Fields(string(meta))
+		if !ok || len(f) != 3 {
+			return nil, fmt.Errorf("unexpected ls-files record %q", rec)
+		}
+		typ := "blob"
+		if f[0] == "160000" {
+			typ = "commit"
+		}
+		entries = append(entries, Entry{Mode: f[0], Type: typ, OID: f[1], Path: string(p)})
+	}
+	return entries, nil
+}
+
 func (r *Repo) Blob(oid string) ([]byte, error) {
 	if !oidPattern.MatchString(oid) {
 		return nil, fmt.Errorf("invalid blob id %q", oid)

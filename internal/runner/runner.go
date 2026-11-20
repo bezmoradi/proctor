@@ -43,6 +43,8 @@ const (
 	ReasonInternal            = "internal"
 	ReasonConfigurationError  = "configuration_error"
 	ReasonNotStarted          = "not_started"
+	ReasonSecretInTelemetry   = "secret_in_telemetry"
+	ReasonDriverNotInBase     = "driver_not_in_base"
 )
 
 const (
@@ -84,7 +86,6 @@ const (
 	defaultExcerpt      = 4096
 	callMargin          = time.Second
 	readyPause          = 250 * time.Millisecond
-	logFlushWait        = 300 * time.Millisecond
 	logLinesShown       = 50
 	stderrKeep          = 64 << 10
 )
@@ -356,6 +357,7 @@ type Options struct {
 	Authoritative bool
 	DriverDir     string
 	RepoDir       string
+	Withheld      map[string]string
 	Described     map[model.StepRef]model.StepInfo
 	Progress      func(Progress)
 	RunID         string
@@ -434,6 +436,8 @@ type Runner struct {
 	logs     applogs.Source
 	logRules applogs.Rules
 	logLoose bool
+	logOTel  bool
+	logWait  time.Duration
 }
 
 func defaultNote(tl *model.TimeLimits) string {
@@ -477,13 +481,22 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 		return nil, err
 	}
 	r.sess = sess
+	if sess.scans() {
+		r.knowBound()
+	}
 	if cfg.AppLogs != nil && b.AppLogs != nil {
-		src := applogs.File{Path: b.AppLogs.File}
+		var src applogs.Source = applogs.File{Path: b.AppLogs.File}
+		what := "the application's log"
+		if b.AppLogs.OTel != "" {
+			src, r.logOTel = applogs.OTel{Endpoint: b.AppLogs.OTel}, true
+			what = "the logs the application exports to " + b.AppLogs.OTel
+		}
 		if _, err := src.Mark(); err != nil {
 			sess.close()
-			return nil, &SetupError{ExitCode: ExitError, Msgs: []string{r.scrub.clean(fmt.Sprintf("app_logs: cannot read the application's log: %v", err))}}
+			return nil, &SetupError{ExitCode: ExitError, Msgs: []string{r.scrub.clean(fmt.Sprintf("app_logs: cannot read %s: %v", what, err))}}
 		}
 		r.logs = src
+		r.logWait = cfg.AppLogs.FlushWaitFor(r.logOTel)
 		r.logRules = applogs.Rules{Format: cfg.AppLogs.FormatName(), Levels: cfg.AppLogs.EffectiveLevels(), LevelField: cfg.AppLogs.LevelKey(),
 			MessageField: cfg.AppLogs.MessageKey(), Numbers: cfg.AppLogs.NumberLevels()}
 		r.logLoose = cfg.AppLogs.UnparsedAllowed()
@@ -583,7 +596,7 @@ func (r *Runner) loadCredentials(probs *problems) {
 		default:
 			owner[prefix+tok] = who
 			r.creds[key] = protocol.Credential{Identity: identity, Variant: variant, Scheme: scheme, Value: tok}
-			r.scrub.add(tok)
+			r.scrub.know(tok, "the credential of "+who)
 		}
 	}
 	idents, variants := r.usedIdentities()
@@ -649,7 +662,45 @@ func (r *Runner) loadCredentials(probs *problems) {
 			continue
 		}
 		r.secrets["secret."+name] = v
-		r.scrub.add(v)
+		r.scrub.know(v, fmt.Sprintf("secret %q", name))
+	}
+}
+
+func (r *Runner) knowBound() {
+	lookup := func(env string) string {
+		if env == "" {
+			return ""
+		}
+		v, ok := r.opt.LookupEnv(env)
+		if !ok || strings.ContainsAny(v, "\r\n") {
+			return ""
+		}
+		return v
+	}
+	for _, name := range sortedKeys(r.b.Identities) {
+		if _, ok := r.cfg.Identities[name]; !ok {
+			continue
+		}
+		bi := r.b.Identities[name]
+		if v := lookup(bi.TokenEnv); v != "" {
+			r.scrub.know(v, fmt.Sprintf("the credential of identity %q", name))
+		}
+		for _, vn := range sortedKeys(bi.Variants) {
+			who := fmt.Sprintf("the credential of identity %q variant %q", name, vn)
+			for _, env := range []string{bi.Variants[vn].TokenEnv, bi.Variants[vn].HeaderEnv} {
+				if v := lookup(env); v != "" {
+					r.scrub.know(v, who)
+				}
+			}
+		}
+	}
+	for _, name := range sortedKeys(r.b.Secrets) {
+		if !contains(r.cfg.Secrets, name) {
+			continue
+		}
+		if v := lookup(r.b.Secrets[name].Env); v != "" {
+			r.scrub.know(v, fmt.Sprintf("secret %q", name))
+		}
 	}
 }
 
@@ -809,6 +860,8 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 					res = notRunScenario(p, sc, stopAll)
 				case ctx.Err() != nil:
 					res = notRunScenario(p, sc, ReasonAborted)
+				case r.withheld(sc) != "":
+					res = notRunScenario(p, sc, r.withheld(sc))
 				case sc.Requires == model.RequiresDisposableEnvironment && !r.b.Disposable:
 					res = notRunScenario(p, sc, ReasonNotDisposable)
 				case sc.Case != nil:
@@ -867,6 +920,15 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 	r.scrubOutcome(out)
 	out.Summary.IntegrityViolations = append([]string{}, out.Violations...)
 	return out
+}
+
+func (r *Runner) withheld(sc model.Scenario) string {
+	for _, st := range allSteps(sc) {
+		if name, _, ok := model.SplitDo(st.Do); ok && r.opt.Withheld[name] != "" {
+			return r.opt.Withheld[name]
+		}
+	}
+	return ""
 }
 
 func (o *Outcome) add(p string, sc model.Scenario, res ScenarioResult) {

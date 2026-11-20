@@ -998,6 +998,18 @@ func compareAppLogs(b, h *model.AppLogs) []Weakening {
 	if b.FormatName() != h.FormatName() {
 		weaken("app_log_field_changed", "app_logs.format %s became %s; lines are now read as another format, and may no longer be seen as errors", b.FormatName(), h.FormatName())
 	}
+	var shorter []string
+	for _, src := range []struct {
+		name string
+		otel bool
+	}{{"app_logs.file", false}, {"app_logs.otel", true}} {
+		if was, now := b.FlushWaitFor(src.otel), h.FlushWaitFor(src.otel); now < was {
+			shorter = append(shorter, fmt.Sprintf("%s instead of %s with %s", now, was, src.name))
+		}
+	}
+	if len(shorter) > 0 {
+		weaken("app_log_flush_shorter", "app_logs.flush_wait %s became %s: a scenario now waits %s in the binding for the application's last log lines, so an error written after that is no longer seen", flushText(b), flushText(h), strings.Join(shorter, ", and "))
+	}
 	if !b.UnparsedAllowed() && h.UnparsedAllowed() {
 		weaken("app_log_unparsed_allowed", "app_logs.unparsed became allow; a line that doesn't read as %s is now skipped instead of making the scenario ERROR, so an error written in another format passes", h.FormatName())
 	}
@@ -1014,6 +1026,13 @@ func compareAppLogs(b, h *model.AppLogs) []Weakening {
 		}
 	}
 	return out
+}
+
+func flushText(a *model.AppLogs) string {
+	if a.FlushWait == "" {
+		return "(unset)"
+	}
+	return a.FlushWait
 }
 
 func compareExpectLogs(scenario string, b, h []model.LogExpectation) []Weakening {

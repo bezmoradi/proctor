@@ -105,6 +105,7 @@ func approve(o approveOptions, ids []string, stdin io.Reader, stdout, stderr io.
 		return refuse("%v", err)
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, o.config)
+	rep.CheckTrackedWorkTree(repo.Index)
 	if rep.Config == nil || rep.ExitCode() != exitOK {
 		for _, f := range rep.Findings {
 			fmt.Fprintf(stderr, "proctor approve: %s %s\n", safe(f.Rule), safe(strings.TrimPrefix(f.Path+": ", ": ")+f.Message))

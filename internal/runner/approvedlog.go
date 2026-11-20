@@ -32,7 +32,7 @@ func SensitiveField(red *model.Redaction) func(string) bool {
 	headers := red.HeaderNames()
 	return func(name string) bool {
 		lower := strings.ToLower(name)
-		return sensitiveName(name) || credentialHeaders[lower] || headers[lower]
+		return sensitiveName(name) || credentialHeaders[lower] || headers[lower] || dottedHeader(name, headers)
 	}
 }
 
@@ -51,7 +51,7 @@ func (r *Runner) keepLogVars(res *ScenarioResult, sc model.Scenario, vars expr.V
 func newLogRecord(al *AppLogResult) *logRecord {
 	switch {
 	case al == nil:
-		return &logRecord{cause: "app_logs isn't set up for this run (proctor.yaml app_logs and the binding's app_logs.file), so there is no log to compare"}
+		return &logRecord{cause: "app_logs isn't set up for this run (proctor.yaml app_logs and the binding's app_logs.file or app_logs.otel), so there is no log to compare"}
 	case !al.kept:
 		return &logRecord{cause: "the application's log couldn't be read (" + al.Message + "), so there is no log to compare"}
 	}

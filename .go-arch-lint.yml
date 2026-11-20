@@ -1,0 +1,69 @@
+version: 3
+workdir: .
+
+allow:
+  depOnAnyVendor: false
+  deepScan: false
+
+exclude:
+  - drivers
+  - examples
+  - protocol
+  - simulators
+
+vendors:
+  cobra: { in: github.com/spf13/cobra }
+  yaml: { in: go.yaml.in/yaml/v3 }
+  protocol: { in: github.com/bezmoradi/proctor/protocol }
+  protocol-jsonpath: { in: github.com/bezmoradi/proctor/protocol/jsonpath }
+  protocol-schema: { in: github.com/bezmoradi/proctor/protocol/schema }
+
+components:
+  expr: { in: internal/expr }
+  strictyaml: { in: internal/strictyaml }
+  gitrepo: { in: internal/gitrepo }
+  github: { in: internal/github }
+  model: { in: internal/model }
+  transcript: { in: internal/transcript }
+  applogs: { in: internal/applogs }
+  integrity: { in: internal/integrity }
+  runner: { in: internal/runner }
+  protdiff: { in: internal/protdiff }
+  mutgen: { in: internal/mutgen }
+  mutate: { in: internal/mutate }
+  mutreport: { in: internal/mutreport }
+  commands: { in: internal/commands }
+  cmd: { in: cmd/proctor }
+
+deps:
+  expr:
+    canUse: [protocol-jsonpath]
+  strictyaml:
+    canUse: [yaml]
+  model:
+    mayDependOn: [expr]
+    canUse: [yaml]
+  transcript:
+    mayDependOn: [expr, model]
+  applogs:
+    mayDependOn: [expr, model, transcript]
+  integrity:
+    mayDependOn: [applogs, expr, gitrepo, model, strictyaml, transcript]
+    canUse: [protocol-schema, yaml]
+  runner:
+    mayDependOn: [applogs, expr, integrity, model, transcript]
+    canUse: [protocol, protocol-schema]
+  protdiff:
+    mayDependOn: [expr, gitrepo, integrity, model, strictyaml, transcript]
+    canUse: [yaml]
+  mutgen:
+    mayDependOn: [model]
+  mutate:
+    mayDependOn: [model, runner]
+  mutreport:
+    mayDependOn: [model, mutate, mutgen]
+  commands:
+    mayDependOn: [applogs, expr, github, gitrepo, integrity, model, mutate, mutgen, mutreport, protdiff, runner, strictyaml, transcript]
+    canUse: [cobra, yaml]
+  cmd:
+    mayDependOn: [commands]

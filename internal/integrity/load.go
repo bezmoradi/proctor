@@ -14,6 +14,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"proctor/internal/expr"
+	"proctor/internal/gitrepo"
 	"proctor/internal/model"
 	"proctor/internal/strictyaml"
 )
@@ -315,15 +316,54 @@ func (r *Report) validateProgram(c *model.Config, name string, d model.DriverCon
 }
 
 func (r *Report) checkTrackedPrograms(c *model.Config, cs *CommitSource) {
+	entries := make([]gitrepo.Entry, 0, len(cs.tree))
+	for _, e := range cs.tree {
+		entries = append(entries, e)
+	}
 	for _, name := range sortedKeys(c.Drivers) {
 		prog := c.Drivers[name].Program
 		if prog == "" || checkRelPath(prog) != nil {
 			continue
 		}
-		if _, tracked := cs.tree[prog]; tracked {
-			r.add(Violation, "INT-21", prog, "driver %q: the commit tracks the program; build it in the job from the reviewed source instead, so remove it with git rm --cached and ignore it", name)
+		if what, found := TrackedProgram(prog, entries, "the commit"); found {
+			r.add(Violation, "INT-21", prog, "driver %q: %s; build it in the job from the reviewed source instead, so remove it with git rm --cached and ignore it", name, what)
 		}
 	}
+}
+
+func (r *Report) CheckTrackedWorkTree(index func() ([]gitrepo.Entry, error)) {
+	if r.Config == nil {
+		return
+	}
+	var entries []gitrepo.Entry
+	var err error
+	read := false
+	for _, name := range sortedKeys(r.Config.Drivers) {
+		prog := r.Config.Drivers[name].Program
+		if prog == "" || checkRelPath(prog) != nil {
+			continue
+		}
+		if !read {
+			entries, err = index()
+			read = true
+		}
+		if err != nil {
+			r.add(Violation, "INT-21", prog, "driver %q: cannot tell whether Git tracks the program, so it isn't started: %v", name, err)
+			continue
+		}
+		if what, found := TrackedProgram(prog, entries, "the index"); found {
+			r.add(Violation, "INT-21", prog, "driver %q: %s; build it from the reviewed source instead, so remove it with git rm --cached and ignore it", name, what)
+		}
+	}
+}
+
+func (r *Report) DriverPathFindings() bool {
+	for _, f := range r.Findings {
+		if f.Rule == "INT-12" || f.Rule == "INT-21" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Report) validateIdentityCheck(c *model.Config) {
@@ -411,6 +451,15 @@ func (r *Report) validateAppLogs(c *model.Config) {
 	case "", model.AppLogUnparsedStrict, model.AppLogUnparsedAllow:
 	default:
 		r.add(Invalid, "EXE-10", p, "app_logs.unparsed %q isn't strict or allow", a.Unparsed)
+	}
+	if a.FlushWait != "" {
+		d, err := time.ParseDuration(a.FlushWait)
+		switch {
+		case err != nil || d <= 0:
+			r.add(Invalid, "EXE-10", p, "app_logs.flush_wait %q isn't a positive duration, such as 300ms or 1.5s", a.FlushWait)
+		case d > model.MaxFlushWait:
+			r.add(Invalid, "EXE-10", p, "app_logs.flush_wait %s is longer than %s, the most a scenario waits for the application's last log lines", d, model.MaxFlushWait)
+		}
 	}
 	if a.LevelNumbers != nil && len(a.LevelNumbers) == 0 {
 		r.add(Invalid, "EXE-10", p, "app_logs.level_numbers lists no numbers; leave it out if the log's levels are names")

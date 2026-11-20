@@ -113,7 +113,7 @@ func (r *Runner) redactTranscript(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
-			if credentialHeaders[strings.ToLower(k)] || r.headers[strings.ToLower(k)] {
+			if credentialHeaders[strings.ToLower(k)] || r.headers[strings.ToLower(k)] || dottedHeader(k, r.headers) {
 				out[k] = redacted
 				continue
 			}

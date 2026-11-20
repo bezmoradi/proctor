@@ -103,6 +103,7 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 	}
 	src := integrity.WorkTreeSource{Root: repo.Dir()}
 	rep := integrity.Load(src, o.config)
+	rep.CheckTrackedWorkTree(repo.Index)
 	if rep.Config != nil && rep.Config.Mutation == nil {
 		return refuse(o.config + " has no mutation key, so there are no mutants to run; see MUT-01")
 	}

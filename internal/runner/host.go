@@ -19,6 +19,7 @@ import (
 
 	"github.com/bezmoradi/proctor/protocol"
 	"github.com/bezmoradi/proctor/protocol/schema"
+	"proctor/internal/applogs"
 	"proctor/internal/expr"
 	"proctor/internal/integrity"
 	"proctor/internal/model"
@@ -211,7 +212,7 @@ func ResolveDrivers(cfg *model.Config, opt Options) []string {
 	}
 	for _, name := range sortedKeys(cfg.Drivers) {
 		dc := cfg.Drivers[name]
-		if dc.Program == "" {
+		if dc.Program == "" || opt.Withheld[name] != "" {
 			continue
 		}
 		var probs problems
@@ -223,6 +224,20 @@ func ResolveDrivers(cfg *model.Config, opt Options) []string {
 		}
 	}
 	return out
+}
+
+func WithoutDrivers(cfg *model.Config, names map[string]string) *model.Config {
+	if cfg == nil || len(names) == 0 {
+		return cfg
+	}
+	out := *cfg
+	out.Drivers = map[string]model.DriverConfig{}
+	for name, dc := range cfg.Drivers {
+		if names[name] == "" {
+			out.Drivers[name] = dc
+		}
+	}
+	return &out
 }
 
 func driverEnv() []string {
@@ -266,7 +281,7 @@ func resolveConnection(name string, conn map[string]any, lookup func(string) (st
 				continue
 			}
 			secrets[key] = v
-			s.add(v)
+			s.know(v, fmt.Sprintf("the value of binding drivers.%s.%s", name, k))
 		}
 	}
 	return out, secrets
@@ -292,6 +307,9 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 	}
 	for _, name := range sortedKeys(cfg.Drivers) {
 		dc := cfg.Drivers[name]
+		if opt.Withheld[name] != "" {
+			continue
+		}
 		if dc.Program != "" {
 			if h := resolveRepoHost(name, dc, opt, &probs); h != nil {
 				sess.hosts[name] = h
@@ -329,7 +347,7 @@ func openSession(ctx context.Context, cfg *model.Config, b *model.Binding, opt O
 	secrets := map[string]protocol.Secrets{}
 	if b != nil {
 		for _, name := range sortedKeys(b.Drivers) {
-			if _, ok := cfg.Drivers[name]; !ok {
+			if _, ok := cfg.Drivers[name]; !ok && opt.Withheld[name] == "" {
 				probs.add(ExitInvalid, "binding: driver %q is not declared in proctor.yaml", name)
 			}
 		}
@@ -374,11 +392,37 @@ func checkBindingAppLogs(cfg *model.Config, b *model.Binding, probs *problems) {
 	case cfg.AppLogs == nil && b.AppLogs != nil:
 		probs.add(ExitInvalid, "binding: app_logs is set, but proctor.yaml has no app_logs, so the application's log would not be checked; remove app_logs from the binding or add it to proctor.yaml (EXE-10)")
 	case cfg.AppLogs == nil:
-	case b.AppLogs == nil || b.AppLogs.File == "":
-		probs.add(ExitInvalid, "binding: app_logs.file is required, because proctor.yaml has app_logs: give the path of the application's log file (EXE-10)")
+	case b.AppLogs == nil || (b.AppLogs.File == "" && b.AppLogs.OTel == ""):
+		probs.add(ExitInvalid, "binding: app_logs.file or app_logs.otel is required, because proctor.yaml has app_logs: give the path of the application's log file, or the endpoint of the proctor-sim-otel receiver the application exports its logs to (EXE-10)")
+	case b.AppLogs.File != "" && b.AppLogs.OTel != "":
+		probs.add(ExitInvalid, "binding: app_logs has both file and otel; give exactly one (EXE-10)")
+	case b.AppLogs.OTel != "":
+		if err := applogs.CheckOTelEndpoint(b.AppLogs.OTel); err != nil {
+			probs.add(ExitInvalid, "binding: app_logs.otel %q %v", b.AppLogs.OTel, err)
+		}
+		a := cfg.AppLogs
+		for _, f := range []struct {
+			key string
+			set bool
+		}{{"format", a.Format != ""}, {"level_field", a.LevelField != ""}, {"message_field", a.MessageField != ""}, {"level_numbers", a.LevelNumbers != nil}} {
+			if f.set {
+				probs.add(ExitInvalid, "binding: app_logs.otel reads records whose severity and body the receiver gives, so proctor.yaml app_logs.%s can't be set with it; remove it (EXE-10)", f.key)
+			}
+		}
 	case !filepath.IsAbs(b.AppLogs.File):
 		probs.add(ExitInvalid, "binding: app_logs.file %q must be an absolute path", b.AppLogs.File)
 	}
+}
+
+func (sess *session) scans() bool {
+	for _, h := range sess.hosts {
+		for _, op := range h.ops {
+			if len(op.Scan) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (sess *session) ordered() []*host {
@@ -533,8 +577,8 @@ func checkHello(h *host) []string {
 		default:
 			msgs = append(msgs, fmt.Sprintf("%s: unknown credential %q", where, op.Credential))
 		}
-		if op.Accumulates && (op.Kind != protocol.KindObserve || !op.UsesHandle) {
-			msgs = append(msgs, fmt.Sprintf("%s: accumulates is only for an operation of kind observe that uses a handle", where))
+		if op.Accumulates && op.Kind != protocol.KindObserve {
+			msgs = append(msgs, fmt.Sprintf("%s: accumulates is only for an operation of kind observe", where))
 		}
 		for what, sch := range map[string]any{"args_schema": op.ArgsSchema, "fact_schema": op.FactSchema} {
 			if sch == nil {
@@ -563,7 +607,7 @@ func checkHello(h *host) []string {
 		if op.Escape != nil {
 			op.Escape = escape
 		}
-		for what, list := range map[string][]string{"redact": op.Redact, "data": op.Data, "files": op.Files} {
+		for what, list := range map[string][]string{"redact": op.Redact, "data": op.Data, "files": op.Files, "scan": op.Scan} {
 			for i, p := range list {
 				c, ok := expr.Canonical(p)
 				if !ok {

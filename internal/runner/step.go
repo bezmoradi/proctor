@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -100,7 +101,14 @@ type sampleResult struct {
 	asserts []Assertion
 	pass    bool
 	vacuous bool
+	leaks   []leak
 }
+
+type leak struct {
+	path, what string
+}
+
+const leaksShown = 20
 
 func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars expr.Vars, hs *handleSet) StepResult {
 	errorf := func(cause, format string, args ...any) StepResult {
@@ -195,6 +203,9 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		}
 		last = s
 		r.record(&sr, s.ev)
+		if len(s.leaks) > 0 {
+			break
+		}
 		if t.settled(s.pass) || (s.vacuous && t.mode == modeNever) || k >= lastDue {
 			break
 		}
@@ -216,10 +227,14 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		case <-timer.C:
 		}
 	}
+	if len(last.leaks) > 0 {
+		r.keepFact(&sr, last.fact, op.Redact, t)
+		return leakFailure(sr, last.leaks, n, t)
+	}
 	elapsed := time.Since(start).Round(time.Millisecond)
 	vacuity := ""
 	if t.mode == modeNever && last.vacuous {
-		vacuity = vacuityOf(checks, last)
+		vacuity = vacuityOf(checks, last, op.Name)
 	}
 	r.keepFact(&sr, last.fact, op.Redact, t)
 	sr.Result = Pass
@@ -292,7 +307,62 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	return sr
 }
 
-func vacuityOf(checks []check, s sampleResult) string {
+func leakFailure(sr StepResult, leaks []leak, n int, t timing) StepResult {
+	first := leaks[0]
+	sr.Result, sr.Reason = Fail, ReasonSecretInTelemetry
+	sr.Message = fmt.Sprintf("%s is in the telemetry at %s (shown as %s): whoever can read the telemetry can read it", first.what, first.path, redacted)
+	if t.mode != "" {
+		sr.Message += fmt.Sprintf("; the step failed at sample %d without sampling again, since a value already sent can't be taken back", n)
+	}
+	if len(leaks) > 1 {
+		sr.Message += fmt.Sprintf("; %d places hold a known value, listed below", len(leaks))
+	}
+	for _, l := range leaks {
+		sr.Assertions = append(sr.Assertions, Assertion{Kind: "secret_scan", Target: l.path, Actual: redacted, Present: true, Result: Fail,
+			Message: l.what + " is in this text"})
+	}
+	return sr
+}
+
+func (r *Runner) scanFact(paths []string, fact any) []leak {
+	var out []leak
+	var walk func(at string, v any)
+	hit := func(at, text string) {
+		if what, found := r.scrub.leaked(text); found && len(out) < leaksShown {
+			out = append(out, leak{path: at, what: what})
+		}
+	}
+	walk = func(at string, v any) {
+		switch x := v.(type) {
+		case string:
+			hit(at, x)
+		case json.Number:
+			hit(at, x.String())
+		case map[string]any:
+			for _, k := range sortedKeys(x) {
+				child := expr.Child(at, k)
+				hit(child, k)
+				walk(child, x[k])
+			}
+		case []any:
+			for i, e := range x {
+				walk(fmt.Sprintf("%s[%d]", at, i), e)
+			}
+		}
+	}
+	for _, p := range paths {
+		parsed, err := expr.ParsePath(p)
+		if err != nil {
+			continue
+		}
+		if v, ok := parsed.Select(fact); ok {
+			walk(parsed.String(), v)
+		}
+	}
+	return out
+}
+
+func vacuityOf(checks []check, s sampleResult, op string) string {
 	var why []string
 	add := func(w string) {
 		for _, seen := range why {
@@ -312,8 +382,14 @@ func vacuityOf(checks []check, s sampleResult) string {
 			add(fmt.Sprintf("the response body isn't valid JSON (%s: %s)", invalidMarkName, text))
 		} else if _, cut := truncatedText(c, s.fact, got); cut {
 			add(fmt.Sprintf("the text of %s was cut (%s: true)", c.target, cutMarkName))
-		} else if list, _, over := overflowed(c, s.fact); over {
-			add(fmt.Sprintf("the driver left frames out of %s (%s: true)", list, overflowMarkName))
+		} else if list, _, over := overflowed(c, s.fact, op); over {
+			unit := "records"
+			if isStream(s.fact) {
+				unit = "frames"
+			}
+			add(fmt.Sprintf("the driver left %s out of %s (%s: true)", unit, list, overflowMarkName))
+		} else if got, isList := got.([]any); c.kind == "excludes" && isList && len(got) == 0 {
+			add(fmt.Sprintf("%s is an empty list, so excludes on it can't be judged", c.target))
 		} else {
 			add(fmt.Sprintf("a key of the claim on %s is in no element (EXE-11)", c.target))
 		}
@@ -390,9 +466,9 @@ func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, arg
 		r.scrubRedacted("$", res.Fact, op.Redact)
 	}
 	r.scrubHeaders(res.Fact)
-	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true}
+	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true, leaks: r.scanFact(op.Scan, res.Fact)}
 	for _, c := range checks {
-		a := r.judge(c, res.Fact, op.Redact)
+		a := r.judge(c, res.Fact, op.Redact, op.Name)
 		if a.Result != Pass {
 			s.pass = false
 		}

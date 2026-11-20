@@ -20,11 +20,17 @@ Run from the repository root; the two searches must print nothing:
 
 ```sh
 go build ./... && go vet ./... && test -z "$(gofmt -l .)"
-for m in protocol drivers/* simulators/ses; do (cd "$m" && GOWORK=off go vet ./... && GOWORK=off go build -o /dev/null ./...) || echo "FAILED $m"; done
+for m in protocol drivers/* simulators/*; do (cd "$m" && GOWORK=off go vet ./... && GOWORK=off go build -o /dev/null ./...) || echo "FAILED $m"; done
+sh scripts/check-arch.sh
+for m in . protocol drivers/* simulators/*; do (cd "$m" && GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --config "$OLDPWD/.golangci.yml" ./...) || echo "FAILED $m"; done
 grep -rnE '^\s*//' --include='*.go' . | grep -vE '//(go:|nolint)'
 find . \( -name '*_test.go' -o -name testdata \) -not -path './.git/*'
-scripts/build.sh <out-dir> && <out-dir>/proctor version
+scripts/build.sh <out-dir> && <out-dir>/proctor version && <out-dir>/proctor version --features
 ```
+
+`sh scripts/check-arch.sh` and the golangci-lint line fetch pinned tools with `go run`, so they need the Go module proxy and fail under `GOPROXY=off`. `.go-arch-lint.yml` lists which internal packages and third-party modules each package of the `proctor` module may import, and `scripts/check-arch.sh` also refuses any import from `protocol`, a driver or a simulator into another `proctor/...` module. A new package needs a component in `.go-arch-lint.yml`, and a new import an allowed edge.
+
+`.github/workflows/ci.yml` runs these checks on every pull request, every push to main and weekly, plus cross-builds for the four release platforms, govulncheck, file, spelling, shell, Markdown, link and secret checks, and actionlint and zizmor on the workflows. To merge, a pull request needs a linked issue (`pull-requests.yml`). One that changes `.github/`, `scripts/` or a lint or scanner config at the root also needs the owner's `review-override` label, added after its last push (`workflow-guard.yml`).
 
 Build into a folder under `/tmp`, not `bin/` or `~/go/bin`. `scripts/build.sh` builds the drivers' checksums into `proctor`, which refuses drivers that don't match (INT-17), so every program it builds is copied or installed together.
 

@@ -1,0 +1,7 @@
+/.github/ @bezmoradi
+/scripts/ @bezmoradi
+/.golangci.yml @bezmoradi
+/.go-arch-lint.yml @bezmoradi
+/.gitleaks.toml @bezmoradi
+/.typos.toml @bezmoradi
+/.markdownlint-cli2.jsonc @bezmoradi

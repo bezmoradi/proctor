@@ -153,6 +153,7 @@ type Operation struct {
 	Data        []string          `json:"data,omitempty"`
 	Files       []string          `json:"files,omitempty"`
 	Accumulates bool              `json:"accumulates,omitempty"`
+	Scan        []string          `json:"scan,omitempty"`
 }
 
 type FileInfo struct {

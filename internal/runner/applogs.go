@@ -43,7 +43,7 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 	}
 	select {
 	case <-ctx.Done():
-	case <-time.After(logFlushWait):
+	case <-time.After(r.logWait):
 	}
 	win, err := r.logs.Since(w.mark)
 	if err != nil {
@@ -128,6 +128,11 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 	var errs []string
 	cause := ""
 	switch {
+	case r.logOTel && res.UnparsedCount > 0 && !r.logLoose:
+		cause = CauseAppLogsUnparsed
+		errs = append(errs, fmt.Sprintf("%d of the %d log record(s) received during the scenario have no severity (no severity_number and no severity_text), so they weren't judged; the first is under first_unparsed. Give every record a severity, or set app_logs.unparsed: allow", res.UnparsedCount, len(win.Lines)))
+	case r.logOTel:
+		res.FirstUnparsed = ""
 	case nonEmpty > 0 && res.LinesParsed == 0:
 		cause = CauseAppLogsUnparsed
 		errs = append(errs, fmt.Sprintf("none of the %d line(s) written during the scenario reads as %s with a %q field, so the log wasn't checked; the first is under first_unparsed. Check app_logs.format and app_logs.level_field", nonEmpty, r.logRules.Format, r.logRules.LevelField))

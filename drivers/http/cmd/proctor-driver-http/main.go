@@ -45,6 +45,7 @@ var argsSchema = map[string]any{
 		"body_text":   map[string]any{"type": "string"},
 		"body_base64": map[string]any{"type": "string"},
 		"body_file":   map[string]any{"type": "string"},
+		"trace":       map[string]any{"type": "boolean"},
 		"body_fill": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -72,6 +73,7 @@ var factSchema = map[string]any{
 		"body_text":      map[string]any{"type": "string"},
 		"body_truncated": map[string]any{"type": "boolean"},
 		"body_invalid":   map[string]any{"type": "string"},
+		"trace_id":       map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"},
 	},
 	"required":             []string{"status", "headers", "header_lists"},
 	"additionalProperties": false,
