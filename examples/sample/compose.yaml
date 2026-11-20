@@ -57,7 +57,7 @@ services:
       retries: 30
 
   kafka:
-    image: apache/kafka:3.9.0@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
     ports:
       - "127.0.0.1:${SAMPLE_KAFKA_PORT:-19480}:9094"
     environment:
