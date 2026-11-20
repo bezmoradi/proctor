@@ -27,7 +27,7 @@ Proctor checks that an application still does what people agreed it should do, a
 
 ## Table of Contents
 
-- [Install](#install)
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [Commands](#commands)
 - [Authoritative mode](#authoritative-mode)
@@ -43,7 +43,7 @@ Proctor checks that an application still does what people agreed it should do, a
 - [Author](#author)
 - [License](#license)
 
-## Install
+## Installation
 
 ```sh
 curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install.sh | sh
@@ -53,11 +53,28 @@ The script:
 
 - runs on linux and darwin, amd64 and arm64, and stops with one line on anything else, or when `curl`, `tar`, `git`, or `sha256sum` or `shasum` is missing; it needs no Go;
 - downloads the release's archive for your platform, checks it against the SHA-256 written into the script and against the archive's own `SHA256SUMS`, and checks that its `proctor version` prints the release's version;
-- installs `proctor`, its drivers and the simulators together into one folder, `~/.local/bin` or `PROCTOR_INSTALL_DIR`, without sudo, since `proctor` refuses a driver whose checksum it doesn't hold (INT-17). Running it again replaces them and leaves other files alone; a failed download or check changes nothing in the folder.
+- installs `proctor`, its drivers and the simulators together into one folder, `~/.local/bin` by default, without sudo, since `proctor` refuses a driver whose checksum it doesn't hold (INT-17);
+- changes nothing in the folder when a download or check fails.
 
-`validate`, `integrity`, `diff` and a local `run` say when a newer release exists and print the command that updates the programs in the folder `proctor` runs from; [Privacy](#privacy) says how to turn this off.
+`latest` is the newest published release that isn't a prerelease; `releases/download/v<version>/install.sh` installs that version.
 
-`latest` is the newest release that isn't a prerelease; `releases/download/v<version>/install.sh` installs that version. To check the script before it runs, with a signed-in `gh`:
+### Install somewhere else
+
+Set `PROCTOR_INSTALL_DIR` to the folder:
+
+```sh
+curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install.sh | PROCTOR_INSTALL_DIR="$HOME/tools/proctor" sh
+```
+
+### Update
+
+Run the same command again: it replaces `proctor`, its drivers and the simulators, and leaves other files in the folder alone. `validate`, `integrity`, `diff` and a local `run` say when a newer release exists, and print the command that updates the programs in the folder `proctor` runs from.
+
+Set `PROCTOR_NO_UPDATE_CHECK=1` to turn the check off; it is also off when `CI` or `GITHUB_ACTIONS` is set, and in authoritative mode. It asks `api.github.com` for the latest release and sends only `proctor/<version>` as the User-Agent (see [Privacy](#privacy)).
+
+### Check the script first
+
+With a signed-in `gh`:
 
 ```sh
 curl -fsSLO https://github.com/bezmoradi/proctor/releases/latest/download/install.sh
@@ -65,7 +82,9 @@ gh attestation verify install.sh -R bezmoradi/proctor --signer-workflow bezmorad
 sh install.sh
 ```
 
-Or download an archive yourself: each release has one per platform and a `SHA256SUMS`. Check its checksum and its signed provenance, then the files inside:
+### Other ways to install
+
+Download an archive yourself: each release has one per platform and a `SHA256SUMS`. Check its checksum and its signed provenance, then the files inside:
 
 ```sh
 VERSION=<version> OS=linux ARCH=amd64; name="proctor-$VERSION-$OS-$ARCH"
@@ -77,13 +96,13 @@ gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
-To build from source, see [Development](#development).
+Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)).
 
-Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)). `.github/workflows/release.yml` drafts a release, with `install.sh`, when the owner pushes a `v*` tag on a commit on main; the owner then publishes it.
+To build from source, see [Development](#development).
 
 ## Quick start
 
-Needs Git. [Install](#install) Proctor, then in your application's Git repository create a `proctor/` folder with four files:
+Needs Git. [Install](#installation) Proctor, then in your application's Git repository create a `proctor/` folder with four files:
 
 ```yaml
 # proctor/proctor.yaml
@@ -213,7 +232,7 @@ Code owners and branch protection in a private repository need a paid GitHub pla
 
 The reference workflow ([`examples/github/proctor.yml`](examples/github/proctor.yml)) builds the image in one job and verifies it in another, with a pinned Proctor release archive whose checksums it checks. A third job, `verdict`, is the required check: it fails if any prerequisite failed or was skipped.
 
-Copy `examples/github/` as its README says, and pin `PROCTOR_VERSION` and `PROCTOR_SHA256` to a release you verified (see [Install](#install)). The workflow handles `merge_group` too. It starts the disposable environment from `proctor/verify/` on the base commit, never the pull request's, so merge an environment change before the change that needs it. Its binding marks the environment `disposable: true`.
+Copy `examples/github/` as its README says, and pin `PROCTOR_VERSION` and `PROCTOR_SHA256` to a release you verified (see [Other ways to install](#other-ways-to-install)). The workflow handles `merge_group` too. It starts the disposable environment from `proctor/verify/` on the base commit, never the pull request's, so merge an environment change before the change that needs it. Its binding marks the environment `disposable: true`.
 
 ### Re-runs
 
@@ -1092,6 +1111,21 @@ scripts/build.sh /tmp/proctor-bin && /tmp/proctor-bin/proctor version --features
 ```
 
 CI (`.github/workflows/ci.yml`) runs these and the rest of the checks in [CLAUDE.md](CLAUDE.md#verify) on every pull request. A pull request needs a linked issue (`Closes #<n>`) to merge. This repository doesn't include Proctor's test suite.
+
+### Releasing
+
+Only the owner (bezmoradi) can release: `.github/workflows/release.yml` refuses a tag pushed by anyone else, one not on main, and one that isn't `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-PRERELEASE`. A prerelease tag makes a prerelease, which `latest` and the update check skip.
+
+1. Set the new version: nothing to bump, the tag is the version.
+2. Tag main and push the tag:
+
+   ```sh
+   git fetch origin && git tag -a vX.Y.Z -m "proctor X.Y.Z" origin/main && git push origin vX.Y.Z
+   ```
+
+3. Watch the release workflow: `gh run watch "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"`. It builds with `scripts/release.sh`, checks the archives and `install.sh`, signs their provenance and drafts the release.
+4. Check the draft: `gh release view vX.Y.Z` lists the four archives, the notices file, `install.sh` and `SHA256SUMS`.
+5. Publish it: `gh release edit vX.Y.Z --draft=false`, or on the releases page. From then on the one-command install installs it and older versions announce it.
 
 ## Privacy
 

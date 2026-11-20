@@ -111,11 +111,10 @@ func newerVersion() string {
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&info); err != nil || info.Draft || info.Prerelease {
 		return ""
 	}
-	latest := strings.TrimPrefix(info.TagName, "v")
-	if !isNewer(latest, Version) {
+	if !strings.HasPrefix(info.TagName, "v") || !isNewer(info.TagName, Version) {
 		return ""
 	}
-	return latest
+	return strings.TrimPrefix(info.TagName, "v")
 }
 
 var versionPattern = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$`)

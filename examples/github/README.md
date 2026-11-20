@@ -5,7 +5,7 @@
 To use them:
 
 1. Copy `proctor.yml` to `.github/workflows/`, `CODEOWNERS` to `.github/`, and `verify/` to `proctor/verify/`, so `/proctor/` in CODEOWNERS covers it.
-2. Replace the owners. Set `PROCTOR_VERSION` to a release, and `PROCTOR_SHA256` to the line for `proctor-<version>-linux-amd64.tar.gz` in that release's `SHA256SUMS`, after you have verified the archive's signature (see the README's Install section).
+2. Replace the owners. Set `PROCTOR_VERSION` to a release, and `PROCTOR_SHA256` to the line for `proctor-<version>-linux-amd64.tar.gz` in that release's `SHA256SUMS`, after you have verified the archive's signature (see the README's Other ways to install section).
 3. Set `PROCTOR_IDENTITIES` to the `bearer` identities `proctor/proctor.yaml` declares, and adapt `verify/compose.verify.yaml` to the application: its dependencies, port 8080 and its issuer setting. Pin every image there by digest.
 4. Protect the target branch with the settings below.
 
