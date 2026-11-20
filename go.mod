@@ -3,9 +3,9 @@ module proctor
 go 1.27.4
 
 require (
+	github.com/bezmoradi/proctor/protocol v0.0.0
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.6
-	github.com/bezmoradi/proctor/protocol v0.0.0
 )
 
 require (
