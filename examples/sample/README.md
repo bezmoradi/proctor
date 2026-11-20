@@ -1,6 +1,6 @@
 # Sample: Proctor end to end
 
-A users API generated with [gopamin](https://github.com/bezmoradi/gopamin) (`gopamin new -n sample -t api -f http -b kafka -d postgres -l slog -o otel -a jwt`), with its tests and comments removed, and a `proctor/` folder that checks it. The API stores users in PostgreSQL, publishes an event to Kafka on every write, exports traces and logs over OTLP/HTTP, and requires a bearer token from its demo `POST /login`.
+A users API, with its tests and comments removed, and a `proctor/` folder that checks it. The API stores users in PostgreSQL, publishes an event to Kafka on every write, exports traces and logs over OTLP/HTTP, and requires a bearer token from its demo `POST /login`.
 
 | Path | Contents |
 |---|---|

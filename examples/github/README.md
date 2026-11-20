@@ -1,6 +1,6 @@
 # Reference GitHub configuration
 
-`proctor.yml` and `CODEOWNERS` are the reference workflow and code-owner file for OD-01 option B. `verify/` is an example of the disposable environment's definitions. The trust test below, from 2026-11-14, ran an earlier form of the workflow in a temporary public repository, `bezmoradi/proctor-trust-test-20261114`, with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API generated with [gopamin](https://github.com/bezmoradi/gopamin).
+`proctor.yml` and `CODEOWNERS` are the reference workflow and code-owner file for OD-01 option B. `verify/` is an example of the disposable environment's definitions. The trust test below, from 2026-11-14, ran an earlier form of the workflow in a temporary public repository with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API.
 
 To use them:
 
