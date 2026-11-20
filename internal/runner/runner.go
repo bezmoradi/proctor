@@ -357,6 +357,8 @@ type Options struct {
 	Authoritative bool
 	DriverDir     string
 	RepoDir       string
+	Checkout      string
+	ProtectedRoot string
 	Withheld      map[string]string
 	Described     map[model.StepRef]model.StepInfo
 	Progress      func(Progress)

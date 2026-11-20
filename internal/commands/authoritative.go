@@ -493,7 +493,8 @@ func newAuthReport() *authReport {
 }
 
 func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.Report, b *model.Binding) (int, *runner.Outcome) {
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress, RepoDir: o.programs, Withheld: o.withheld}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Authoritative: true, Progress: o.progress, RepoDir: o.programs, Withheld: o.withheld,
+		Checkout: o.repoDir, ProtectedRoot: rep.ProtectedRoot}
 	refused := func(se *runner.SetupError) int {
 		if se.ExitCode == exitIntegrity {
 			ar.Violations = append(ar.Violations, se.Msgs...)

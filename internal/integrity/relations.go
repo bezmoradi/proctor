@@ -97,7 +97,7 @@ func (r *Report) checkRelationEnd(c *model.Config, at string, e model.RelationEn
 func targetProblem(t string) string {
 	switch {
 	case t == "":
-		return "target is required: the target as the driver reports it (for http and ws the path with each ${...} written as {}, for dynamodb the table alias, for sqs the queue alias, for ses sent, for postgres the connection, for docker <kind>/<name> or the list operation's name)"
+		return "target is required: the target as the driver reports it (for http and ws the path with each ${...} written as {}, for dynamodb the table alias, for sqs the queue alias, for ses sent, for postgres the connection, for docker <kind>/<name> or the list operation's name, for redis key/<key or match> with each ${...} written as {}, for cli the command's targets or command/<name>, for browser page/<path> of the open)"
 	case strings.Contains(t, "${"):
 		return fmt.Sprintf("target %q has a ${...} reference; write {} where a step's target has one, since targets are compared with each reference replaced by {}", t)
 	case strings.TrimSpace(t) != t || strings.IndexFunc(t, unicode.IsControl) >= 0:

@@ -234,7 +234,7 @@ func (rs *Routes) buildRedact(r redactSpec, n *yaml.Node) error {
 		parts := strings.Split(p, ".")
 		for _, part := range parts {
 			if part == "" {
-				return errAt(orNode(item(child(n, "json_paths"), i), n), "redact.json_paths: %q must be names joined by dots, such as aaaUser.attributes.pwd", p)
+				return errAt(orNode(item(child(n, "json_paths"), i), n), "redact.json_paths: %q must be names joined by dots, such as login.credentials.password", p)
 			}
 		}
 		rs.redactPaths = append(rs.redactPaths, parts)

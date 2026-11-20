@@ -359,9 +359,9 @@ func (r *Runner) judge(c check, fact any, red []string, op string) Assertion {
 		return r.redactAssertion(a, c, elem, red)
 	}
 	got, ok := c.path.Select(fact)
-	if kept, cut := truncatedText(c, fact, got); cut {
+	if kept, mark, cut := truncatedText(c, fact, got); cut {
 		a.Expected, a.Present, a.CutAt, a.vacuous = c.want, true, kept, true
-		fail(fmt.Sprintf("%s was cut at %d bytes (body_truncated: true): the driver keeps only the start of a longer body, so %s can't judge the text after the cut; assert on a smaller response", c.target, kept, c.kind))
+		fail(fmt.Sprintf("%s was cut at %d bytes (%s: true): %s", c.target, kept, mark, cutAdvice(mark, c.kind)))
 		return r.redactAssertion(a, c, elem, red)
 	}
 	if list, why, over := overflowed(c, fact, op); over {
@@ -595,6 +595,9 @@ const (
 	statusPath      = "$.status"
 	cutTextName     = "body_text"
 	cutMarkName     = "body_truncated"
+	plainTextName   = "text"
+	cutTextSuffix   = "_text"
+	cutMarkSuffix   = "_truncated"
 	bodyName        = "body"
 	invalidMarkName = "body_invalid"
 	responseSlack   = 64 << 10
@@ -668,21 +671,43 @@ func invalidBody(c check, fact any) (string, bool) {
 
 var textMatchers = map[string]bool{"equal": true, "contains": true, "matches": true, "excludes": true, "differs": true}
 
-func truncatedText(c check, fact, got any) (int, bool) {
+func truncatedText(c check, fact, got any) (int, string, bool) {
 	text, isText := got.(string)
 	segs := c.path.Segments()
 	if !textMatchers[c.kind] || !isText || len(segs) == 0 {
-		return 0, false
+		return 0, "", false
 	}
-	if last := segs[len(segs)-1]; last.IsIndex || last.Name != cutTextName {
-		return 0, false
+	last := segs[len(segs)-1]
+	if last.IsIndex {
+		return 0, "", false
+	}
+	mark, ok := cutMarkOf(last.Name)
+	if !ok {
+		return 0, "", false
 	}
 	parent, _ := c.path.Prefix(len(segs) - 1).Select(fact)
 	obj, _ := parent.(map[string]any)
-	if obj[cutMarkName] != true {
-		return 0, false
+	if obj[mark] != true {
+		return 0, "", false
 	}
-	return len(text), true
+	return len(text), mark, true
+}
+
+func cutMarkOf(name string) (string, bool) {
+	switch {
+	case name == plainTextName:
+		return plainTextName + cutMarkSuffix, true
+	case strings.HasSuffix(name, cutTextSuffix) && len(name) > len(cutTextSuffix):
+		return strings.TrimSuffix(name, cutTextSuffix) + cutMarkSuffix, true
+	}
+	return "", false
+}
+
+func cutAdvice(mark, kind string) string {
+	if mark == cutMarkName {
+		return fmt.Sprintf("the driver keeps only the start of a longer body, so %s can't judge the text after the cut; assert on a smaller response", kind)
+	}
+	return fmt.Sprintf("the driver keeps only the start of a longer text, so %s can't judge the text after the cut; assert on a shorter text", kind)
 }
 
 func (r *Runner) responseCause(fact any, red []string) string {

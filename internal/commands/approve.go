@@ -40,7 +40,7 @@ func newApproveCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "approve [<scenario id>...]",
 		Short: "Show each received transcript's or log's difference from the approved one and, when you answer y, write it into approved/",
-		Example: `  proctor approve REP-001 REP-002
+		Example: `  proctor approve RPT-001 RPT-002
   proctor approve --all --received "$TMPDIR/proctor-received/demo/0a1b2c3d4e5f"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return exitWith(approve(o, args, stdin, stdout, stderr))

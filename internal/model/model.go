@@ -561,6 +561,7 @@ type StepInfo struct {
 	Kind                     string
 	Destructive, FixedTarget bool
 	StateCheck               bool
+	NoStateChange            bool
 	OpensHandle, UsesHandle  bool
 	Targets, Shows           []string
 	ExactTargets             []string

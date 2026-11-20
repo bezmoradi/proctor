@@ -98,7 +98,7 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		}
 	}
 	if bindingPath == "" {
-		return refuse("proctor run: ", "--binding is required in local mode")
+		return refuse("proctor run: ", "--binding is required in local mode: the file that says where the application runs, such as proctor/environments/local.yaml from proctor init, or the one your environment's start script writes")
 	}
 	repo, err := gitrepo.Open(c.repo)
 	if err != nil {
@@ -123,7 +123,8 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		se := &runner.SetupError{ExitCode: exitError, Msgs: []string{"the run was interrupted before any scenario started"}}
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, true) })
 	}
-	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir()}
+	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress, RepoDir: repo.Dir(),
+		Checkout: repo.Dir(), ProtectedRoot: rep.ProtectedRoot}
 	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })

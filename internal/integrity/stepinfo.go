@@ -389,6 +389,13 @@ func (r *Report) checkStateChecks(p, where string, ds []described, c *model.Conf
 			}
 			continue
 		}
+		if d.info.NoStateChange {
+			if st.NoStateCheck != "" {
+				driver, _, _ := model.SplitDo(st.Do)
+				r.add(Invalid, "EXE-07", p, "%s step %s: no_state_check waives a state check, but driver %s says %s changes no state, so the step needs none; remove the waiver", where, st.ID, driver, st.Do)
+			}
+			continue
+		}
 		checker := ""
 		var rejected []string
 		for _, later := range ds[i+1:] {

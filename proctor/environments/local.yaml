@@ -1,0 +1,4 @@
+environment: local
+drivers:
+  cli:
+    PROCTOR_NO_UPDATE_CHECK_env: PROCTOR_NO_UPDATE_CHECK

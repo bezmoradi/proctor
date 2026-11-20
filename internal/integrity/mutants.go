@@ -112,7 +112,7 @@ func (r *Report) checkMutants(p string, mutants []model.Mutant, c *model.Config)
 		where := fmt.Sprintf("mutants[%d]", i)
 		switch {
 		case !model.MutantID.MatchString(mu.ID):
-			r.add(Invalid, "MUT-01", p, "%s: id %q must be capital letters and digits, a hyphen and a number, such as M-01 or PAGE-001", where, mu.ID)
+			r.add(Invalid, "MUT-01", p, "%s: id %q must be capital letters and digits, a hyphen and a number, such as M-01 or USR-001", where, mu.ID)
 		case seen[mu.ID] > 0:
 			r.add(Invalid, "MUT-01", p, "%s: id %s is also used by mutants[%d]", where, mu.ID, seen[mu.ID]-1)
 		default:

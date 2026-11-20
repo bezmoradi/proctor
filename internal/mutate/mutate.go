@@ -82,7 +82,7 @@ type Plan struct {
 	KeepGoing   bool
 	Output      *os.File
 	Log         io.Writer
-	Scenarios   func(ctx context.Context) (*runner.Outcome, error)
+	Scenarios   func(ctx context.Context, dir string) (*runner.Outcome, error)
 }
 
 func Run(ctx context.Context, p Plan) (*Outcome, error) {
@@ -192,7 +192,7 @@ func (p Plan) one(ctx context.Context, src string, m *model.Mutant, out *Outcome
 	env := scriptEnv(label, dir)
 	res.Up = ptr(runScript(ctx, p.Up, p.RepoDir, []string{dir}, env, p.UpTimeout, p.Output))
 	if res.Up.ok() {
-		run, err := p.Scenarios(ctx)
+		run, err := p.Scenarios(ctx, dir)
 		judge(&res, run, err, m != nil)
 	} else {
 		res.Verdict, res.Message = Errored, "the up script "+scriptProblem(res.Up)

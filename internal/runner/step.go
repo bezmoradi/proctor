@@ -282,14 +282,14 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		}
 		a := Assertion{Kind: "save", Target: name + " = " + path.String(), Result: Pass}
 		got, ok := path.Select(last.fact)
-		kept, isCut := truncatedText(check{kind: "equal", target: path.String(), path: path}, last.fact, got)
+		kept, mark, isCut := truncatedText(check{kind: "equal", target: path.String(), path: path}, last.fact, got)
 		switch {
 		case !ok:
 			a.Result, a.Message = Fail, "nothing to save: not present in the fact"
 			sr.Result = Fail
 		case isCut:
 			a.Present, a.CutAt = true, kept
-			a.Result, a.Message = Fail, fmt.Sprintf("can't save %s: it was cut at %d bytes (body_truncated: true), so the saved value wouldn't be the whole text", path.String(), kept)
+			a.Result, a.Message = Fail, fmt.Sprintf("can't save %s: it was cut at %d bytes (%s: true), so the saved value wouldn't be the whole text", path.String(), kept, mark)
 			sr.Result = Fail
 		default:
 			a.Present = true
@@ -380,8 +380,8 @@ func vacuityOf(checks []check, s sampleResult, op string) string {
 		got, _ := c.path.Select(s.fact)
 		if text, bad := invalidBody(c, s.fact); bad {
 			add(fmt.Sprintf("the response body isn't valid JSON (%s: %s)", invalidMarkName, text))
-		} else if _, cut := truncatedText(c, s.fact, got); cut {
-			add(fmt.Sprintf("the text of %s was cut (%s: true)", c.target, cutMarkName))
+		} else if _, mark, cut := truncatedText(c, s.fact, got); cut {
+			add(fmt.Sprintf("the text of %s was cut (%s: true)", c.target, mark))
 		} else if list, _, over := overflowed(c, s.fact, op); over {
 			unit := "records"
 			if isStream(s.fact) {

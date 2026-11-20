@@ -1,0 +1,4 @@
+version: 2
+specifications:
+  - id: self
+    path: specs/self.yaml
