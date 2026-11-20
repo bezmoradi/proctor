@@ -1,0 +1,31 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/bezmoradi/proctor/examples/sample/internal/adapters/handlers/auth"
+)
+
+func main() {
+	fmt.Fprint(os.Stderr, "Password: ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		fmt.Fprintln(os.Stderr, "no password read")
+		os.Exit(1)
+	}
+	password := strings.TrimRight(line, "\r\n")
+	if password == "" {
+		fmt.Fprintln(os.Stderr, "the password must not be empty")
+		os.Exit(1)
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(hash)
+}

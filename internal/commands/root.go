@@ -94,6 +94,7 @@ Exit codes: 0 passed, 1 failed, 2 error, 3 invalid, 4 integrity violation.`,
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.CompletionOptions.HiddenDefaultCmd = true
 	root.AddCommand(
+		newInitCmd(stdout, stderr),
 		newValidateCmd(stdout, stderr),
 		newIntegrityCmd(stdout, stderr),
 		newDiffCmd(stdout, stderr),

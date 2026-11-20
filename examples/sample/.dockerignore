@@ -1,0 +1,7 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!configs/
+!internal/
+!tools/

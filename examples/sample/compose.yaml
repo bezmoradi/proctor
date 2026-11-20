@@ -1,0 +1,88 @@
+name: proctor-sample
+
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${SAMPLE_APP_PORT:-18480}:8080"
+    environment:
+      PORT: "8080"
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: sample
+      POSTGRES_USERNAME: app
+      POSTGRES_PASSWORD: ""
+      POSTGRES_SSLMODE: disable
+      KAFKA_BROKER: kafka:19092
+      KAFKA_TOPIC: sample-users
+      KAFKA_GROUP_ID: sample
+      OTEL_SERVICE_NAME: sample
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_BSP_SCHEDULE_DELAY: "200"
+      OTEL_BLRP_SCHEDULE_DELAY: "200"
+      JWT_SECRET: local-sample-only-jwt-signing-value-not-secret
+      JWT_TTL: 1h
+      JWT_ISSUER: proctor-sample
+      JWT_AUDIENCE: proctor-sample
+      AUTH_USERNAME: admin
+      AUTH_PASSWORD_HASH: pbkdf2-sha256:600000:g8nVUzBRPYdmjwgz8N3-ZA:AwnbqPrW2Q91Ui47QPlrk4JmUmxByXYiaNLWpyxJEuo
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel:
+        condition: service_started
+
+  db:
+    image: postgres:17@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
+    ports:
+      - "127.0.0.1:${SAMPLE_DB_PORT:-15480}:5432"
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: sample
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - ./migrations/000001_create_users.up.sql:/docker-entrypoint-initdb.d/01-users.sql:ro
+      - ./db/proctor-reader.sql:/docker-entrypoint-initdb.d/02-proctor-reader.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-d", "sample"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.9.0@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f
+    ports:
+      - "127.0.0.1:${SAMPLE_KAFKA_PORT:-19480}:9094"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: INTERNAL://:19092,CONTROLLER://:9093,HOST://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://127.0.0.1:${SAMPLE_KAFKA_PORT:-19480}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "kafka:19092"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  otel:
+    build:
+      context: ../../simulators/otel
+      dockerfile: ../../examples/sample/otel-sim.Dockerfile
+    ports:
+      - "127.0.0.1:${SAMPLE_OTEL_PORT:-14318}:4318"

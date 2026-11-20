@@ -40,6 +40,7 @@ var features = []string{
 	"http.stream",
 	"http.trace",
 	"http.unused_entries",
+	"init",
 	"int03.configuration_error",
 	"int03.not_started",
 	"int09.merge_base",

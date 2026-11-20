@@ -1,0 +1,163 @@
+format: "proctor-transcript/1"
+scenario: "USR-005"
+specification: "users"
+steps:
+  - do: "http.request"
+    fact:
+      body:
+        error: "Failed to read request body"
+      header_lists:
+        content-length:
+          - "40"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date_parts>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      headers:
+        content-length:
+          - "40"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      status: 400
+    id: "malformed-json"
+    identity: "admin"
+    phase: "verification"
+    with:
+      body_text: "{\"name\": \"Broken ${run.id}\""
+      headers:
+        Content-Type: "application/json"
+      method: "POST"
+      path: "/api/v1/users"
+  - do: "http.request"
+    fact:
+      body:
+        error: "Validation failed"
+        message: "name contains invalid characters"
+      header_lists:
+        content-length:
+          - "75"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date_parts>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      headers:
+        content-length:
+          - "75"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      status: 422
+    id: "invalid-name"
+    identity: "admin"
+    phase: "verification"
+    with:
+      body:
+        name: "Bell\u0007 ${run.id}"
+      method: "POST"
+      path: "/api/v1/users"
+  - do: "db.query"
+    fact:
+      row_count: 1
+      rows:
+        - "n": 0
+    id: "nothing-stored"
+    phase: "verification"
+    with:
+      args:
+        - "${run.id}"
+      connection: "app"
+      query: "SELECT count(*)::int AS n FROM users WHERE name LIKE '%' || $1"
+  - do: "http.request"
+    fact:
+      body:
+        error: "Not found"
+      header_lists:
+        content-length:
+          - "22"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date_parts>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      headers:
+        content-length:
+          - "22"
+        content-security-policy:
+          - "default-src 'none'; frame-ancestors 'none'"
+        content-type:
+          - "application/json"
+        cross-origin-opener-policy:
+          - "same-origin"
+        date: "<date>"
+        referrer-policy:
+          - "no-referrer"
+        vary:
+          - "Origin"
+        x-content-type-options:
+          - "nosniff"
+        x-frame-options:
+          - "DENY"
+      status: 404
+    id: "unknown-user"
+    identity: "admin"
+    phase: "verification"
+    with:
+      method: "GET"
+      path: "/api/v1/users/no-such-user"

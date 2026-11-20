@@ -1,0 +1,29 @@
+version: 2
+suite: auth
+scenarios:
+  - id: AUTH-001
+    name: A caller without a token is refused and changes nothing
+    steps:
+      - id: list
+        do: http.request
+        identity: anonymous
+        with: { method: GET, path: /api/v1/users }
+        expect:
+          equal:
+            $.status: 401
+            $.body.error: unauthorized
+            "$.headers.www-authenticate[0]": 'Bearer realm="proctor-sample"'
+      - id: create
+        do: http.request
+        identity: anonymous
+        with: { method: POST, path: /api/v1/users, body: { name: "Eve ${run.id}" } }
+        expect:
+          equal: { $.status: 401, $.body.error: unauthorized }
+      - id: nothing-stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT count(*)::int AS n FROM users WHERE name = $1
+          args: ["Eve ${run.id}"]
+        expect:
+          equal: { "$.rows[0].n": 0 }

@@ -102,7 +102,13 @@ To build from source, see [Development](#development).
 
 ## Quick start
 
-Needs Git. [Install](#installation) Proctor, then in your application's Git repository create a `proctor/` folder with four files:
+[Install](#installation) Proctor, then from your application's repository root:
+
+```sh
+proctor init
+```
+
+It writes a starting `proctor/` folder with four files and prints the next steps. It reads no Git and contacts nothing. It refuses (exit 3) when any of the four files exists, when `proctor/` or a folder in it is a symbolic link or not a folder, and when run below a Git repository's root; it writes nothing when it fails (exit 2). In a folder named `my-api`:
 
 ```yaml
 # proctor/proctor.yaml
@@ -119,9 +125,53 @@ identities:
 # proctor/manifest.yaml
 version: 2
 specifications:
-  - id: users
-    path: specs/users.yaml
+  - id: health
+    path: specs/health.yaml
 ```
+
+```yaml
+# proctor/specs/health.yaml
+version: 2
+suite: health
+scenarios:
+  - id: HLT-001
+    name: The application answers its health check
+    steps:
+      - id: ready
+        do: http.request
+        identity: anonymous
+        with:
+          method: GET
+          path: /readyz
+        expect:
+          equal:
+            $.status: 200
+          absent: [$.body_invalid]
+```
+
+A 2xx step must assert more than its status (EXE-03), so the starting scenario also checks that the answer isn't broken JSON. The binding tells Proctor where the application runs:
+
+```yaml
+# proctor/environments/local.yaml
+drivers:
+  http:
+    base_url: http://127.0.0.1:8080
+    user_agent: proctor-local/0
+    ready_path: /readyz
+```
+
+`--project`, `--base-url` and `--ready-path` set `project`, `base_url`, and both `ready_path` and the scenario's `path`. Then, from the repository root, with the application running:
+
+```sh
+proctor validate
+proctor run --binding proctor/environments/local.yaml
+```
+
+`validate` needs neither the application nor Git: in a folder that isn't in a Git repository it reads the files as they are and says `not a Git repository: the folder was read as it is` (`"git": false` with `--json`); with `--commit` it needs Git, and so does every other command that reads the repository. The run waits for `/readyz` (set `ready_path` to your application's health endpoint), executes every listed scenario and prints `RESULT: PASSED (exit 0, local, non-authoritative)` when they all pass. Add `--json` for the machine-readable report.
+
+To see Proctor working before you adopt it, follow [`examples/sample/README.md`](examples/sample/README.md). It starts a users API with PostgreSQL, Kafka and OpenTelemetry in Docker Compose, checks it with official drivers and a repository driver, breaks one agreed behavior to show the failing scenario, and runs the mutants. CI runs it on every pull request.
+
+Next, say what the application does. This specification creates a user and reads it back; list it in the manifest as `- { id: users, path: specs/users.yaml }`:
 
 ```yaml
 # proctor/specs/users.yaml
@@ -156,30 +206,13 @@ scenarios:
             $.body.data.name: "Ada ${run.id}"
 ```
 
-The binding tells Proctor where the application runs:
-
-```yaml
-# proctor/environments/local.yaml
-drivers:
-  http:
-    base_url: http://127.0.0.1:8080
-    user_agent: proctor-local/0
-    ready_path: /readyz
-```
-
-Then, from the repository root, with the application running:
-
-```sh
-proctor validate
-proctor run --binding proctor/environments/local.yaml
-```
-
-`validate` needs neither the application nor Git: in a folder that isn't in a Git repository it reads the files as they are and says `not a Git repository: the folder was read as it is` (`"git": false` with `--json`); with `--commit` it needs Git, and so does every other command that reads the repository. The run waits for `/readyz` (set `ready_path` to your application's health endpoint), executes every listed scenario and prints `RESULT: PASSED (exit 0, local, non-authoritative)` when they all pass. Add `--json` for the machine-readable report.
+For CI, see [`examples/github/`](examples/github/README.md).
 
 ## Commands
 
 | Command | What it does | Exit codes |
 |---|---|---|
+| `proctor init [--project NAME] [--base-url URL] [--ready-path PATH]` | Writes a starting `proctor/` folder in the current folder, never over an existing file, and prints the next steps (see [Quick start](#quick-start)). Reads no Git and contacts nothing | 0, 2 a write failed and nothing was written, 3 refused |
 | `proctor validate [--commit REV]` | Parses the configuration, manifest and specifications strictly, with each driver's own checks, and rejects specifications likely to give a misleading pass. Never contacts the application. Without `--commit` it reads the working tree, or a folder outside Git as it is (see [Quick start](#quick-start)) | 0, 2 a driver couldn't be started, 3 invalid, 4 an integrity violation such as a listed file that's missing |
 | `proctor integrity --commit REV` | Integrity checks on a commit, read from Git's object database: symlinks, submodules, LFS pointers, diff-hiding attributes, unlisted specifications, more than one CODEOWNERS | 0, 3, 4 |
 | `proctor diff --base REV --head REV [--change-kind KIND]` | Every changed protected file and scenario (`reordered` ones too), with weakenings (removed assertions, waivers, steps moved into setup) printed first; with a kind, also whether the changes match it (see [Change kind](#change-kind)) | 0, 3 an unknown kind or a folder outside Git, 4 a Git error, a base and head without exactly one merge base (INT-09), or a kind mismatch |
@@ -953,6 +986,9 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `init --project NAME` | the folder's name | letters, digits, `.`, `_` and `-`, starting with a letter or digit; the default drops other characters |
+| `init --base-url URL` | `http://127.0.0.1:8080` | the binding's `base_url`: `http://` or `https://`, with no credentials, query or fragment |
+| `init --ready-path PATH` | `/readyz` | the binding's `ready_path` and the starting scenario's `path` |
 | `integrity --commit REV` | `HEAD` | the commit to check |
 | `diff --pr-head REV` | | `--head` is then GitHub's test merge, whose first parent is the base |
 | `diff`, `run`: `--change-kind-source` | `flag` | `flag`, or `label` when the workflow read a `proctor:` label |
@@ -1099,6 +1135,7 @@ An assertion that moved to another step sending the same request is listed under
 | `.go-arch-lint.yml`, `scripts/check-arch.sh` | Which packages may import which; `internal/model`, `internal/expr`, `internal/transcript` and `internal/strictyaml` stay free of file, process and network access |
 | `examples/github/` | The reference GitHub workflow and CODEOWNERS file |
 | `examples/github/verify/` | An example disposable environment for the workflow, copied to `proctor/verify/` |
+| `examples/sample/` | A sample users API and its `proctor/` folder, with the `kafka` repository driver, run end to end in CI |
 
 ## Development
 
