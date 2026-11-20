@@ -1,6 +1,6 @@
 module proctor/drivers/ws
 
-go 1.27.1
+go 1.27.4
 
 require (
 	github.com/coder/websocket v1.8.14

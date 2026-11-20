@@ -39,13 +39,14 @@ for dir in protocol drivers/*/ simulators/*/; do
 		continue
 	fi
 	mod=$(cd "$dir" && GOWORK=off go list -m) || { failed=1; continue; }
+	: >"$tmp/deps"
 	for target in linux/amd64 darwin/arm64 windows/amd64; do
-		(cd "$dir" && GOOS=${target%/*} GOARCH=${target#*/} go list -deps -f '{{.ImportPath}}' ./...) || echo "check-arch: go list failed in $dir for $target" >&2
-	done >"$tmp/deps" 2>"$tmp/err"
-	if [ -s "$tmp/err" ]; then
-		cat "$tmp/err"
-		failed=1
-	fi
+		if ! (cd "$dir" && GOOS=${target%/*} GOARCH=${target#*/} go list -deps -f '{{.ImportPath}}' ./...) >>"$tmp/deps" 2>"$tmp/err"; then
+			cat "$tmp/err"
+			echo "check-arch: go list failed in $dir for $target"
+			failed=1
+		fi
+	done
 	LC_ALL=C sort -u "$tmp/deps" | grep -E '^proctor(/|$)' | grep -vE "^$mod(/|$)" >"$tmp/bad"
 	if [ -s "$tmp/bad" ]; then
 		sed "s|^|$dir ($mod) depends on |; s|$|, a package of another proctor module; only github.com/bezmoradi/proctor/protocol crosses modules|" "$tmp/bad"

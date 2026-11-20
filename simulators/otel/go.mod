@@ -1,6 +1,6 @@
 module proctor/simulators/otel
 
-go 1.27.1
+go 1.27.4
 
 require (
 	go.opentelemetry.io/proto/otlp v1.11.0
