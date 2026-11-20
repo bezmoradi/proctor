@@ -1,12 +1,31 @@
 # Reference GitHub configuration
 
-`proctor.yml` and `CODEOWNERS` are the reference workflow (prd.md §16.2) and code-owner file (§6.3) for OD-01 option B. They were confirmed on 2026-11-14 in a temporary public repository, `bezmoradi/proctor-trust-test-20261114`, with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API generated with [gopamin](https://github.com/bezmoradi/gopamin). The results below come from that test.
+`proctor.yml` and `CODEOWNERS` are the reference workflow and code-owner file for OD-01 option B. `verify/` is an example of the disposable environment's definitions. The trust test below, from 2026-11-14, ran an earlier form of the workflow in a temporary public repository, `bezmoradi/proctor-trust-test-20261114`, with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API generated with [gopamin](https://github.com/bezmoradi/gopamin).
 
 To use them:
 
-1. Copy `proctor.yml` to `.github/workflows/` and `CODEOWNERS` to `.github/`.
-2. Replace the owners and the two `PROCTOR_` values.
-3. Protect the target branch with the settings below.
+1. Copy `proctor.yml` to `.github/workflows/`, `CODEOWNERS` to `.github/`, and `verify/` to `proctor/verify/`, so `/proctor/` in CODEOWNERS covers it.
+2. Replace the owners. Set `PROCTOR_VERSION` to a release, and `PROCTOR_SHA256` to the line for `proctor-<version>-linux-amd64.tar.gz` in that release's `SHA256SUMS`, after you have verified the archive's signature (see the README's Install section).
+3. Set `PROCTOR_IDENTITIES` to the `bearer` identities `proctor/proctor.yaml` declares, and adapt `verify/compose.verify.yaml` to the application: its dependencies, port 8080 and its issuer setting. Pin every image there by digest.
+4. Protect the target branch with the settings below.
+
+## What the workflow does
+
+- **kind** maps the pull request's one `proctor:` label to a change kind (CHG-03). A `merge_group` run has no labels, so it passes no kind; the kind is checked on the pull request's own runs.
+- **build** builds the application image from the tested commit and outputs its digest. It's the only job that runs the pull request's code on its host, and it has only `contents: read`.
+- **verify** (`contents: read`, `id-token: write`):
+  - finds the base: for `pull_request`, the test merge's first parent, after checking that its second parent is the pull request head; for `merge_group`, the event's `base_sha`, which must be an ancestor of the tested commit (the checkout fetches full history for that).
+  - loads the image and checks its ID against the build's digest.
+  - takes `proctor/verify/` **from the base commit**, never from the pull request, and refuses anything there that isn't a regular file. An unapproved change to the environment, such as a privileged container or a host mount, never runs on this host with this job's token. A change to `proctor/verify/` takes effect once it's merged.
+  - starts the environment with `docker compose up --wait` under `env -i`, so no variable of the job, such as the OIDC request token, reaches a container. Then it checks that the running container's image is the built one.
+  - downloads the release archive, checks its SHA-256 against the pin right before use, extracts it under `$RUNNER_TEMP` (outside the checkout), checks the archive's own `SHA256SUMS`, and logs the SHA-256 of the `proctor` it runs. Its drivers sit beside it, as INT-17 requires.
+  - asks the environment's identity provider for each identity's token, masks it, and passes it to Proctor in an environment variable that the binding names. The binding (mode 0600, under `$RUNNER_TEMP`) holds variable names, never tokens, and marks the environment `disposable: true`.
+  - runs Proctor with `--pr-head` for a pull request, or `--base` for a merge group, and uploads the report, also when Proctor failed. Finally it tears the environment down and deletes the binding.
+- **verdict** is the required check. It runs with `if: always()` and no permissions, downloads this attempt's report and fails when any job didn't succeed, or when the report is missing or isn't one JSON object that is an authoritative, passing report (`result: passed`, `exit_code: 0`) for this commit, run and attempt (REP-13).
+
+A merge queue needs `merge_group` in the workflow and the `verdict` check required in the branch protection or ruleset.
+
+Because the environment comes from the base, `proctor/verify/` must be on the target branch before `verdict` is required: a pull request whose base has no `proctor/verify/compose.verify.yaml` fails. An application change that needs a new environment fails until the environment change merges, so merge the environment change first in its own pull request, and keep it working with the application version already on the base.
 
 ## Branch protection
 
@@ -55,5 +74,8 @@ The settings above were active, except where a row says so.
 
 - **An approved pull request becoming mergeable.** The test had one account, and GitHub doesn't let an author approve their own pull request. A second account in the code-owner team is needed to show `REVIEW_REQUIRED` turning into `CLEAN` after approval, and stale approvals being dismissed by a new push.
 - **Option A, a ruleset-required workflow** (AT-W-11). It needs GitHub Enterprise Cloud.
-- **Merge queues**, `merge_group` runs (§6.3), earlier attempts (REP-10 isn't built), fork pull requests (AT-W-19), and a missing or unparseable report from a workflow that still runs Proctor (AT-W-18).
+- **Merge queues**, `merge_group` runs (§6.3), fork pull requests (AT-W-19), and a missing or unparseable report from a workflow that still runs Proctor (AT-W-18). The workflow now triggers on `merge_group` and its verdict checks the report, but neither has run on GitHub.
+- **The release archive, the disposable environment and its identities** (§16.2 items 3 and 4). The test downloaded a bare `proctor` and started the image with `docker run`. The workflow now downloads the release archive with its drivers, starts `proctor/verify/compose.verify.yaml` from the base commit and gets tokens from the environment's identity provider. Its steps were run on a Mac with a stub identity provider, never on GitHub, and Compose's `up --wait` with the example definition never ran at all.
+- **Earlier attempts** (REP-10, AT-W-04). The workflow changed after this test: each attempt uploads its report as `proctor-report-<attempt>`, a re-run downloads the earlier ones with `pattern: proctor-report-*` and passes them to `--earlier-reports`, and the verify job no longer has `actions: read`. Proctor's side is tested locally with the run identity set by hand. Not yet shown on GitHub: a re-run whose download returns the earlier attempt's artifact, and a verify job that reads the build job's `image` artifact without `actions: read`.
+- **The binding's form.** The test used a binding with `target:`; current Proctor refuses that key, and the workflow now writes `drivers: { http: … }`, `identities` and `disposable: true` instead. That form hasn't run on GitHub yet.
 - **AT-W-01 and AT-W-02 in full.** The build didn't try to replace the pinned binary, and the planted scripts were shown not to run only by the executed binary's digest.

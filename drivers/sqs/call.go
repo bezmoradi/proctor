@@ -235,7 +235,7 @@ func (d *Driver) peek(ctx context.Context, raw any) (protocol.CallResult, error)
 }
 
 func (d *Driver) peekQueue(ctx context.Context, q *queue, limit int, h *holder) (protocol.CallResult, error) {
-	want, err := d.onQueue(ctx, q)
+	want, err := d.onQueue(ctx, q, true)
 	if err != nil {
 		return protocol.CallResult{}, err
 	}
@@ -311,7 +311,7 @@ func (d *Driver) peekQueue(ctx context.Context, q *queue, limit int, h *holder) 
 			quiet = 0
 		}
 	}
-	onQueue, err := d.onQueue(ctx, q)
+	onQueue, err := d.onQueue(ctx, q, false)
 	if err != nil {
 		return protocol.CallResult{}, err
 	}
@@ -419,14 +419,23 @@ func oneLine(s string) string {
 	}, s)
 }
 
-func (d *Driver) onQueue(ctx context.Context, q *queue) (int64, error) {
+func (d *Driver) onQueue(ctx context.Context, q *queue, guard bool) (int64, error) {
 	names := []types.QueueAttributeName{
 		types.QueueAttributeNameApproximateNumberOfMessages,
 		types.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
 	}
-	out, err := d.client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{QueueUrl: aws.String(q.url), AttributeNames: names})
+	ask := names
+	if guard {
+		ask = append(ask[:len(ask):len(ask)], types.QueueAttributeNameRedrivePolicy)
+	}
+	out, err := d.client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{QueueUrl: aws.String(q.url), AttributeNames: ask})
 	if err != nil {
-		return 0, d.classify(ctx, err, "peek at queue "+q.label()+": counting its messages")
+		return 0, d.classify(ctx, err, "peek at queue "+q.label()+": reading its attributes")
+	}
+	if guard {
+		if raw := strings.TrimSpace(out.Attributes[string(types.QueueAttributeNameRedrivePolicy)]); raw != "" {
+			return 0, d.redriveRefused(q, raw)
+		}
 	}
 	var total int64
 	for _, name := range names {
@@ -441,6 +450,25 @@ func (d *Driver) onQueue(ctx context.Context, q *queue) (int64, error) {
 		total += v
 	}
 	return total, nil
+}
+
+func (d *Driver) redriveRefused(q *queue, raw string) *protocol.Error {
+	var p struct {
+		Target string          `json:"deadLetterTargetArn"`
+		Count  json.RawMessage `json:"maxReceiveCount"`
+	}
+	where := "to its dead-letter queue"
+	if json.Unmarshal([]byte(raw), &p) == nil {
+		target := p.Target[strings.LastIndex(p.Target, ":")+1:]
+		count := strings.Trim(string(p.Count), `"`)
+		if checkQueueName(target) == nil {
+			where = "to its dead-letter queue " + target
+		}
+		if n, err := strconv.Atoi(count); err == nil && n > 0 {
+			where += fmt.Sprintf(" after %d receives", n)
+		}
+	}
+	return protocol.Lastingf(protocol.CauseInvalidRequest, "peek at queue %s: the queue has a redrive policy, which moves a message %s, and every receive a peek makes raises each message's ApproximateReceiveCount, so peeks could move its messages there; nothing was received. Check this queue with sqs.depth, or peek its dead-letter queue (%s)", q.label(), d.scrub(oneLine(where)), redriveRule)
 }
 
 func attributes(in map[string]types.MessageAttributeValue) map[string]any {

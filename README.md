@@ -1,22 +1,64 @@
+<h1 align="center">⚙️ Engineered, Not Vibe Coded</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Engineered-not%20vibe%20coded-blue?style=for-the-badge" alt="Engineered, not vibe coded">
+</p>
+
+## #1 STOP VIBE CODING <img src="https://img.shields.io/badge/Merged-8957e5?style=flat-square&logo=git&logoColor=white" alt="Merged">
+
+```diff
+- vibe coded: shipped because it compiled
++ engineered: designed, reviewed, documented
+```
+
+<sub>✅ Approved by human reviewers · All checks passed</sub>
+
 # Proctor
 
-Proctor checks that an application still does what people agreed it should do, and refuses to report a pass when the agreement itself was quietly changed. It exists for codebases where AI coding agents change the code, the tests and the test configuration in the same pull request.
+Proctor checks that an application still does what people agreed it should do, and refuses to report a pass when the agreement itself was quietly changed. It is for codebases where AI coding agents change the code, the tests and the test configuration in the same pull request. It is a first draft, not yet released.
 
-The expected behavior lives in YAML specifications under a protected folder. People approve changes to those files through code-owner review. A trusted CI job runs every listed scenario against the application built from the tested commit, and records what it checked. Proctor itself doesn't approve anything; GitHub's branch protection does, using Proctor's check and report as evidence.
+- The expected behavior lives in YAML specifications under a protected folder, and people approve changes to them through code-owner review.
+- A trusted CI job runs every listed scenario against the application built from the tested commit and records what it checked. Proctor approves nothing; GitHub's branch protection does, using Proctor's check and report as evidence.
+- Static integrity checks and a semantic diff of protected changes list weakenings first, with an optional [change kind](#change-kind).
+- Official drivers for HTTP (with streams and binary, large and file bodies), WebSocket, PostgreSQL (read-only), DynamoDB, SQS, SES and Docker (read-only).
+- Exact JSON assertions, text matchers, time-based checks with per-step timeouts, and tables that can cover every combination of declared dimensions.
+- The application-log check, approved transcripts, approved logs and mutation testing.
+- `proctor version --features` tells a wrapper what a build supports.
 
-**Status: first draft, pre-release.** Built so far:
+## Table of Contents
 
-- static integrity checks, and the semantic diff of protected changes, with weakenings listed first and an optional [change kind](#change-kind);
-- local mode and authoritative mode; `proctor validate` also reads a plain folder outside Git;
-- official drivers for HTTP (with declared POST reads and deletes, streamed NDJSON and server-sent events, and binary, large and file bodies), WebSocket, PostgreSQL (read-only), DynamoDB, SQS, SES and Docker (read-only: containers, networks, volumes);
-- exact JSON assertions and the text matchers `matches`, `excludes` and `differs`, with every expectation path checked against the operation's fact schema;
-- time-based checks (`eventually`, `consistently`, `never`) and per-step timeouts;
-- tables, including tables that must cover every combination of declared dimensions;
-- the application-log check (JSON or logfmt), approved transcripts and approved logs;
-- mutation testing: declared mutants, generated candidates and an HTML report;
-- `proctor version --features`, so a wrapper can check what a build supports.
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [Authoritative mode](#authoritative-mode)
+- [Specifications](#specifications)
+- [Approved transcripts](#approved-transcripts)
+- [Approved logs](#approved-logs)
+- [Mutation testing](#mutation-testing)
+- [Quick reference](#quick-reference)
+- [Repository layout](#repository-layout)
+- [Development](#development)
+- [Privacy](#privacy)
+- [Author](#author)
+- [License](#license)
 
-Temporal evidence and log-event evidence (`prd.md` §11.8 and §11.6) are specified but parked, not built; the application-log check above is separate from them. [`prd.md`](prd.md) is the product requirements document. It includes the decisions, the acceptance tests and the roadmap, with what each phase still lacks. Proctor has no license yet, so it isn't open source until one is chosen.
+## Install
+
+No release is published yet, so build from source: in Proctor's checkout, `scripts/build.sh <dir>` builds `proctor`, its drivers and the SES simulator into `<dir>` (`bin/` by default).
+
+Once releases exist, each one has an archive per platform (linux and darwin, amd64 and arm64) and a `SHA256SUMS`. Download one, check its checksum and its signed provenance, then check the files inside:
+
+```sh
+VERSION=<version> OS=linux ARCH=amd64; name="proctor-$VERSION-$OS-$ARCH"
+curl -fsSLO "https://github.com/bezmoradi/proctor/releases/download/v$VERSION/$name.tar.gz"
+curl -fsSLO "https://github.com/bezmoradi/proctor/releases/download/v$VERSION/SHA256SUMS"
+grep " $name.tar.gz\$" SHA256SUMS | shasum -a 256 -c -
+gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
+  --signer-workflow bezmoradi/proctor/.github/workflows/release.yml --source-ref "refs/tags/v$VERSION"
+tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
+```
+
+Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17). `.github/workflows/release.yml` drafts a release when the owner pushes a `v*` tag on a commit on main; the owner then publishes it.
 
 ## Quick start
 
@@ -106,7 +148,7 @@ Then, from the repository root, with the application running:
 |---|---|---|
 | `proctor validate [--commit REV]` | Parses the configuration, manifest and specifications strictly, with each driver's own checks, and rejects specifications likely to give a misleading pass. Never contacts the application. Without `--commit` it reads the working tree, or a folder outside Git as it is (see [Quick start](#quick-start)) | 0, 2 a driver couldn't be started, 3 invalid, 4 an integrity violation such as a listed file that's missing |
 | `proctor integrity --commit REV` | Integrity checks on a commit, read from Git's object database: symlinks, submodules, LFS pointers, diff-hiding attributes, unlisted specifications, more than one CODEOWNERS | 0, 3, 4 |
-| `proctor diff --base REV --head REV [--change-kind KIND]` | Every changed protected file and scenario, with weakenings (removed assertions, waivers, steps moved into setup) listed first; with a kind, also whether the changes match it (see [Change kind](#change-kind)) | 0, 3 an unknown kind or a folder outside Git, 4 a Git error or a kind mismatch |
+| `proctor diff --base REV --head REV [--change-kind KIND]` | Every changed protected file and scenario (`reordered` ones too), with weakenings (removed assertions, waivers, steps moved into setup) printed first; with a kind, also whether the changes match it (see [Change kind](#change-kind)) | 0, 3 an unknown kind or a folder outside Git, 4 a Git error, a base and head without exactly one merge base (INT-09), or a kind mismatch |
 | `proctor run --binding FILE` | Local mode: runs the working tree's specifications against a running application | 0 to 4 |
 | `proctor run --authoritative ...` | For the trusted CI job: see below | 0 to 4 |
 | `proctor approve [--received DIR] [--all \| IDS] [--yes]` | Local mode only: shows each received transcript's or log's diff from the approved one and, when you answer `y`, writes it under `proctor/approved/`. Refused in CI, without a terminal unless `--yes`, and when the specifications changed since the run. See [Approved transcripts](#approved-transcripts) and [Approved logs](#approved-logs) | 0, 2, 3 |
@@ -116,7 +158,9 @@ Then, from the repository root, with the application running:
 | `proctor mutants generate --out FILE [--coverage PROFILE] [--build-check]` | Reads the project's Go code and writes candidate mutants (ids `GEN-0001` and up) to a separate file for a person to review and merge into the mutants file; never writes the mutants file itself. See [Generating mutants](#generating-mutants) | 0, 2, 3 |
 | `proctor version [--features \| --json]` | The build's version (a build with uncommitted changes ends in `-dirty-` and a hash of them) and the features it has, so a wrapper can check for one by name | 0 |
 
-Exit codes: 0 passed, 1 a scenario failed, 2 an infrastructure error, 3 invalid input, 4 integrity violation. When several apply, 4 wins over 3, 3 over 1, and 1 over 2.
+Exit codes: 0 passed, 1 a scenario failed, 2 an infrastructure error, 3 invalid input, 4 integrity violation. When several apply, 4 wins over 3, 3 over 1, and 1 over 2. Every local `RESULT:` line, from `validate`, `integrity`, `run` and `mutate`, ends `(exit <n>, local, non-authoritative)`, a run that stops before it sends anything included.
+
+On SIGINT or SIGTERM, `run` starts no new scenario, marks the rest NOT_RUN `aborted`, writes its report with `aborted: true` and exits 2 (1 if a scenario already failed); `mutate` likewise starts no new mutant. A panic inside a scenario makes it ERROR `internal` and the run goes on; a panic anywhere else exits 2 with `reason: internal`, and the report is still written.
 
 There is no warning level. Every validation finding fails the command. A step can waive a rule only with a written reason (`no_state_check: <reason>`, or `waive: { FIX-05: <reason> }`), and `proctor diff` lists each added waiver as a weakening.
 
@@ -130,23 +174,39 @@ proctor run --authoritative --config proctor/proctor.yaml \
 In this mode Proctor:
 
 - reads every protected input from the tested commit, not the working tree;
-- takes the base from GitHub's test merge commit, after checking that its second parent is the pull request head;
+- takes the base from GitHub's test merge commit, after checking that its second parent is the pull request head, or with `--base` refuses a base that hasn't exactly one merge base with the tested commit (exit 4, INT-09);
 - lists every protected change as "approval required";
 - asks GitHub's API for CODEOWNERS errors at the base;
 - verifies the job's GitHub Actions OIDC token against GitHub's published keys;
 - reports whether the workflow that ran differs from the base branch's;
-- refuses to run unless the image the application was started from is the image built from the tested commit.
+- refuses to run unless the image the application was started from is the image built from the tested commit;
+- with `--earlier-reports DIR`, says which earlier attempts of the same workflow run failed a scenario for the same commit and inputs (see [Re-runs](#re-runs)).
 
 It always writes the JSON report and a job summary. A binding inside the checkout is refused. Nothing runs while any of these checks fails.
 
-GitHub must be configured as `prd.md` §6.3 describes:
+GitHub must be configured so that nothing merges without the check and a code owner's approval:
 
 - CODEOWNERS on the protected folder, all of `.github/`, and the CODEOWNERS file itself;
-- required code-owner review, with stale approvals dismissed and no bypass for administrators;
-- the workflow's aggregator job as the required status check, pinned to the GitHub Actions app;
-- branches up to date before merging.
+- required code-owner review with at least one required approval (with 0, GitHub doesn't enforce code-owner review), stale approvals dismissed, approval of the most recent push required, and no bypass for administrators;
+- the workflow's aggregator job as the required status check, pinned to the GitHub Actions app, so a status posted with a person's token can't satisfy it;
+- branches up to date before merging;
+- actions pinned by commit SHA, and each job's token limited to the `permissions` it needs.
 
-The reference workflow (§16.2) builds the image in one job and verifies it in another, with a verified, pinned Proctor binary. A third job, `verdict`, is the required check: it fails if any prerequisite failed or was skipped.
+Code owners and branch protection in a private repository need a paid GitHub plan. [`examples/github/README.md`](examples/github/README.md) gives these settings as a branch protection request and the results of testing them.
+
+The reference workflow ([`examples/github/proctor.yml`](examples/github/proctor.yml)) builds the image in one job and verifies it in another, with a pinned Proctor release archive whose checksums it checks. A third job, `verdict`, is the required check: it fails if any prerequisite failed or was skipped.
+
+Copy `examples/github/` as its README says, and pin `PROCTOR_VERSION` and `PROCTOR_SHA256` to a release you verified (see [Install](#install)). The workflow handles `merge_group` too. It starts the disposable environment from `proctor/verify/` on the base commit, never the pull request's, so merge an environment change before the change that needs it. Its binding marks the environment `disposable: true`.
+
+### Re-runs
+
+Anyone with write access can re-run a failed job, and a passing re-run replaces the failure in the merge check. Proctor doesn't block that, but it makes it visible. The reference workflow uploads each attempt's report as the artifact `proctor-report-<attempt>`, and on a re-run downloads the earlier ones into a folder outside the checkout and passes it with `--earlier-reports`. Proctor then lists, in the report's `earlier_attempts`, on the terminal and in the job summary:
+
+- each earlier attempt that recorded a scenario FAIL for the same run, tested commit and input hashes, with the failing scenario IDs (an ERROR or an integrity violation doesn't count);
+- each earlier attempt without such a report, as `unknown`, never as clean;
+- each file in the folder it ignored, with the reason: another run, commit or input hashes, a later attempt, a symbolic link or anything but a regular file, more than 64 MiB, or not an authoritative report.
+
+The result and exit code don't change. Proctor needs no token or API call for this. A folder inside the checkout, or the flag in local mode, exits 3.
 
 ### Change kind
 
@@ -178,7 +238,9 @@ A specification is a suite of scenarios, and a scenario a list of steps, such as
   eventually: { within: 10s, every: 500ms }
 ```
 
-`consistently` and `never` take `for` instead of `within`. A step that acts can't be sampled (TIME-11), and the window and interval are bounded by `time_limits` in `proctor.yaml`.
+`consistently` and `never` take `for` instead of `within`. A step that acts can't be sampled (TIME-11), and the window and interval are bounded by `time_limits` in `proctor.yaml`. Samples are due every `every` from the first and at the window's end, and the last one always runs; a sample that overruns due times is followed at once by one for the latest, and the missed ones are counted in the step's `samples_skipped` (TIME-08). A passing `consistently` or `never` step has a `notice` in the JSON report, and the run prints one `Note:` line counting them, because samples can't see a change between them or after the window (TIME-05).
+
+A scenario or table with `requires: disposable_environment` runs only when the binding says `disposable: true`; otherwise it is NOT_RUN `disposable_environment_required` (exit 2).
 
 Validation requires:
 
@@ -206,6 +268,8 @@ expect:
 `proctor diff` lists removing any of them as `assertion_removed` and loosening one as `assertion_weakened`: any change to a `matches` pattern (Proctor can't tell whether the new one accepts more), an `excludes` text that no remaining text rules out (`/workspace` to `/workspace/x`, or a text dropped from the list), and any change to a `differs` value.
 
 The http driver keeps the first 64 KiB of a body that isn't JSON as `$.body_text` and says whether it cut it in `$.body_truncated` (the ws driver does the same for a refused handshake's body, cut at 1 KiB). `equal`, `contains`, `matches`, `excludes` and `differs` on a cut `$.body_text` fail, naming the cut and its size (`cut_at` in the report), and so does `save` from it; under `never` they fail the step instead of counting as not holding. `present` and `absent` still work (HTTP-13).
+
+A body that claims to be JSON but isn't valid JSON, or has a duplicate key, is kept as `$.body_text` with the reason in `$.body_invalid`, and every assertion on a `$.body` path then fails, `absent` and `never` included (HTTP-10).
 
 A 2xx step must assert something besides its status (EXE-03). For a response without a body, such as a `DELETE` answering 204, assert that the body is absent with both paths, `absent: ["$.body", "$.body_text"]`: a JSON body is `$.body` and any other is `$.body_text`, so the pair fails on any body. Either path alone as the only other assertion is refused, since `absent: [$.body]` passes a text body. A 304 needs only its status, like every 3xx.
 
@@ -397,7 +461,7 @@ A second driver of the same official program that reaches the same application t
 
 With `app_logs` in `proctor.yaml` and `app_logs: { file: <absolute path> }` in the binding, any line at a failing level (ERROR, FATAL or PANIC by default) that the application writes to that file during a scenario fails it, unless the scenario lists it under `expect_logs` (EXE-10). Lines are JSON objects by default; `format: logfmt` reads `key=value` lines as Go's `slog.TextHandler` writes them, and `level_numbers: { 30: INFO, 50: ERROR, 60: FATAL }` maps numeric levels such as pino's; map every number the application writes, since an unmapped one is ERROR (`app_logs_unmapped_level`). A log line that doesn't read under the declared format is ERROR (`app_logs_unparsed`), never a pass, except a panic's stack trace; `unparsed: allow` skips such lines, and `proctor diff` reports adding it as a weakening.
 
-A database check runs one parameterized, read-only query. Before using the verification role, Proctor checks that the role can only read the objects `proctor.yaml` declares.
+A database check runs one parameterized, read-only query. Before using the verification role, Proctor checks that the role can only read the objects `proctor.yaml` declares and owns no object at all, types, domains, large objects, extensions and the other catalog objects included (DB-04).
 
 ### Cleanup
 
@@ -458,7 +522,7 @@ steps:
 
 - `http.open` acts and always sends GET, with `path`, `query` and `headers` as a request takes them, the binding's User-Agent and the identity's credential. It returns at the status and headers. `format: ndjson | sse` is optional: without it `text/event-stream` reads as SSE, `application/x-ndjson` and its siblings as NDJSON, and any other 2xx is ERROR naming the Content-Type. A non-2xx answer opens no stream; its fact has `open: false` and the body as a request's.
 - `http.frames` answers at once with every frame since the stream opened: `count`, `frames`, `closed` and `close_reason`, `overflow` and `overflow_reason`, `body_text` (the first 1 MiB as received) with `body_truncated`, and for SSE `retry`. An NDJSON frame is a line, with `text` and `json` (or `json_invalid`); blank keep-alive lines aren't frames. An SSE frame is an event, with `event`, `data` (its `data:` lines joined with a newline), `id` and `json`; comments aren't frames. Wait for frames with `eventually`, `consistently` or `never`.
-- The first 10,000 frames, 4 MiB of them and 1 MiB per frame are kept. Past a limit, or when the stream ends inside a frame, `overflow` is true and every claim on `$.frames` or `$.count` but `any` and `present` fails, naming the reason, since a frame left out could hold what `none` rules out. The same holds for `ws.messages`.
+- The first 10,000 frames, 4 MiB of them and 1 MiB per frame are kept. Past a limit, or when the stream ends inside a frame, `overflow` is true and every claim on `$.frames` or `$.count` but `any` and `present` fails, naming the reason, since a frame left out could hold what `none` rules out. The same holds for `ws.messages`, which keeps the first 10,000 frames and 16 MiB of them.
 - `eventually` on `http.frames` or `ws.messages` with only `none`, `absent`, `excludes`, a zero `count` or `length`, `equal` to false, 0 or an empty value, or `differs` from anything else is refused (TIME-14): it would pass at the first sample, before anything arrived. Use `consistently` or `never`, or add a claim that waits, such as `equal: { $.closed: true }`.
 - The stream is closed at the end of the scenario, passed, failed or errored. A value at a sensitive path in a frame (`json.api_token`) is scrubbed from the frame's `text`, `body_text` and the excerpt too.
 
@@ -484,7 +548,7 @@ drivers:
     socket: /var/run/docker.sock
 ```
 
-A fact holds a fixed projection of each object's settings (user, read-only root, capabilities, security options, limits, restart policy, networks with their addresses, mounts, labels as `{ key, value }` lists), and never its environment, command, entrypoint, healthcheck command, log options or host paths. A bind shows only as `source: docker_socket` or `host_path`; it reads `docker_socket` (and the container `docker_socket: true`) when its destination is `/var/run/docker.sock` or `/run/docker.sock`, its source is a Docker socket (Docker Desktop's `/run/host-services/docker.proxy.sock` included) or a folder that holds one, and the rule errs towards `docker_socket` (prd.md DKR-07). Each step's `request_excerpt` lists every request it sent, inspects included. The report states `proof read_only: unproven`: Docker has no read-only socket, so the driver limits itself to GET requests on a fixed list of paths, and a run needs the same trust as `docker ps`. `proctor diff` lists a scope entry added or removed as a `docker_scope_widened` or `docker_scope_narrowed` weakening, and an added driver as `driver_added`.
+A fact holds a fixed projection of each object's settings (user, read-only root, capabilities, security options, limits, restart policy, networks with their addresses, mounts, labels as `{ key, value }` lists), and never its environment, command, entrypoint, healthcheck command, log options or host paths. A bind shows only as `source: docker_socket` or `host_path`; it reads `docker_socket` (and the container `docker_socket: true`) when its destination is `/var/run/docker.sock` or `/run/docker.sock`, its source is a Docker socket (Docker Desktop's `/run/host-services/docker.proxy.sock` included) or a folder that holds one, and the rule errs towards `docker_socket`. Each step's `request_excerpt` lists every request it sent, inspects included. The report states `proof read_only: unproven`: Docker has no read-only socket, so the driver limits itself to GET requests on a fixed list of paths, and a run needs the same trust as `docker ps`. `proctor diff` lists a scope entry added or removed as a `docker_scope_widened` or `docker_scope_narrowed` weakening, and an added driver as `driver_added`.
 
 A volume mount reads `source: docker_socket` (and the container `docker_socket: true`) when it's mounted at one of those socket destinations, or when its volume is a `local` bind (`-o type=none -o o=bind -o device=…`) whose device, or the mount's `subpath`, is a socket or a folder that holds one. The driver reads the device only to decide this and never shows it. A container that mounts a volume outside the scope, or a volume whose driver isn't `local`, makes the step ERROR (`unsupported_result`): the driver can't read a volume outside the scope and doesn't know other volume drivers, so it can't tell whether the mount reaches the socket, and guessing `false` could pass a check that should fail. Compose doesn't give the anonymous volumes it creates (an image's `VOLUME`, or a bare `- /path` under `volumes:`) the project label, so give the containers your specifications read named volumes instead.
 
@@ -510,7 +574,9 @@ drivers:
       peek_hold: [dlq]
 ```
 
-A held peek hides each message it receives from every other consumer, your application's included, until about 2 s before the step's deadline and for at most 30 s, then sets every one visible again. If that fails, the step is ERROR and says how many messages stay hidden and for how long. `peek_hold` is off by default, takes only aliases from `queues`, and refuses FIFO queues, where one held message stops the rest of its group (exit 3, prd.md SQS-03). Every receive, held or not, raises a message's `ApproximateReceiveCount`, which counts towards a redrive policy's `maxReceiveCount`: a held peek raises it by 1, an unheld one once per receive, so repeated peeks of a queue with a redrive policy can move its messages to the dead-letter queue. `proctor diff` lists turning `peek_hold` on, or adding a queue to it, as a `driver_policy_changed` weakening.
+A held peek hides each message it receives from every other consumer, your application's included, until about 2 s before the step's deadline and for at most 30 s, then sets every one visible again. If that fails, the step is ERROR and says how many messages stay hidden and for how long. `peek_hold` is off by default, takes only aliases from `queues`, and refuses FIFO queues, where one held message stops the rest of its group (exit 3, rule SQS-03). `proctor diff` lists turning `peek_hold` on, or adding a queue to it, as a `driver_policy_changed` weakening.
+
+`sqs.peek` refuses a queue that has a redrive policy (rule SQS-04). Every receive, held or not, raises each message's `ApproximateReceiveCount`, which counts towards the policy's `maxReceiveCount`, so repeated peeks, for example under `eventually`, would move the queue's messages to its dead-letter queue. Before its first receive, a peek reads the queue's `RedrivePolicy`; if there is one, the step is ERROR (`invalid_request`, not retried), naming the dead-letter queue and `maxReceiveCount`, and nothing is received. Check such a queue with `sqs.depth`, and peek its dead-letter queue instead; `sqs.send` works on it as usual. `validate` can't see a redrive policy, since it doesn't contact SQS, so a `peek_hold` entry for such a queue is accepted and its peeks are refused at run time. Feature `sqs.peek_redrive_refused`.
 
 ## Approved transcripts
 
@@ -638,7 +704,7 @@ Writing mutants:
 - The baseline (the unchanged copy) must pass, or no mutant runs (exit 2). The first `up` or `down` that fails or times out (`--up-timeout`, default 45m; `--down-timeout`, default 10m) stops the run, and the rest are `not_run`; a script past its timeout is killed with its whole process group. `--keep-going` goes on after an `up` that exits non-zero, never after a failed `down`, which may have left containers or images behind.
 - Write some mutants without reading the specifications, or have someone else write them, so the score measures the specifications rather than their fit to known defects. Each full image build takes time, so use `--only` while writing them.
 
-`proctor diff` lists a removed mutant (`mutant_removed`), a changed edit or `killed_by` (`mutant_changed`) and a changed or removed `mutation` key (`mutation_changed`, `mutation_removed`) as weakenings; an added mutant isn't one. prd.md MUT-01 to MUT-05.
+`proctor diff` lists a removed mutant (`mutant_removed`), a changed edit or `killed_by` (`mutant_changed`) and a changed or removed `mutation` key (`mutation_changed`, `mutation_removed`) as weakenings; an added mutant isn't one.
 
 ### The HTML report
 
@@ -655,7 +721,7 @@ open /tmp/mutate-html/index.html
 - The pages are read from the repository the report names, as it is now. A mutant whose edit applied in the run but whose `find` is no longer in its file, or no longer at its `line`, refuses the pages (exit 2), naming the mutant, rather than drawing the wrong lines; a file that changed elsewhere gets a warning and a note on its page.
 - Each page is plain HTML that stands alone, with the stylesheet inline in one `<style>` element: no script, no other file, nothing loaded from the network, so it renders the same opened from disk. Its Content-Security-Policy is `default-src 'none'; style-src 'sha256-…'; img-src 'none'`, the hash computed from the same embedded stylesheet bytes the page holds, so only that `<style>` element applies and no `style=` attribute is used. All text, source code, titles, scenario ids and file names included, is escaped by `html/template`, and file pages are named `file-0001.html` and so on, never after their paths.
 - `--out` must be outside the repository (exit 3: the pages hold its source code), not a symbolic link, and new or empty unless `--force`, which replaces the pages' files in it and leaves its other files. Each file is written with mode 0600 and the folder, when Proctor creates it, with 0700.
-- The report must come from a Proctor with this command (feature `mutate.html`): older reports have no `provenance.repository` and no `edits` per mutant, and are refused (exit 3). prd.md MUT-07.
+- The report must come from a Proctor with this command (feature `mutate.html`): older reports have no `provenance.repository` and no `edits` per mutant, and are refused (exit 3).
 
 ### Generating mutants
 
@@ -679,10 +745,134 @@ proctor mutants generate --out /tmp/gen.yaml --index /tmp/gen.md \
 
 - Every mutant has one edit with `line` and `find`, the exact source text of the changed expression or statement, so `proctor mutate` changes exactly that spot and a stale line is an ERROR. When that text also starts elsewhere on the same line, `find` runs on to the end of the line, or starts at the line's first token, until one match starts there; a mutant whose `find` can't be made unique, is over 512 bytes, or leaves a file that doesn't parse is left out.
 - `--coverage` takes a text profile (`go tool covdata textfmt -i DIR -o FILE`, or `-coverprofile`). With it, a mutant is written only where a block that ran (count above 0) holds the changed code; package-level values count as run when any block of their package ran. Profile paths are import paths, mapped to files through each `go.mod`'s module path. Without it every line is used, with a warning. To get a profile from your scenarios, build the application with `go build -cover`, run it with `GOCOVERDIR` set, run the scenarios, and stop it with a normal exit (counters are written at `os.Exit` or when `main` returns, not on a kill).
-- `--build-check` keeps a mutant only if `go build -trimpath -o /dev/null ./...` and `go vet` of its package, run in the module that holds the file, still pass on a copy of the listed files with the mutant applied, with `GOOS`/`GOARCH` from `--goos`/`--goarch` (default `linux`/`arm64`) and `CGO_ENABLED=0`. `--jobs` (default 4) copies run at once, each reused and restored after each mutant; mutants that fail are replaced by the next ones until `--limit` is reached. The unchanged copy must build. Without the flag nothing is built, with a warning; even then, a removal that would leave a local variable or an import unused, and the removal of a `panic` in a function with results (which may then lack its final return), isn't generated.
+- `--build-check` keeps a mutant only if `go build -trimpath -o /dev/null ./...` and `go vet` of its package, run in the module that holds the file, still pass on a copy of the listed files with the mutant applied, with `GOOS`/`GOARCH` from `--goos`/`--goarch` (default `linux`/`arm64`) and `CGO_ENABLED=0`. `--jobs` (default 4) copies run at once, each reused and restored after each mutant; mutants that fail are replaced by the next ones until `--limit` is reached. The unchanged copy must build, or the command exits 2. Without the flag nothing is built, with a warning; even then, a removal that would leave a local variable or an import unused, and the removal of a `panic` in a function with results (which may then lack its final return), isn't generated.
 - Choosing is spread first: the first pass takes one mutant per function and operator (closures count as their own function, `main.func1`), then later passes fill up to `--limit` (default 300), round-robin over the functions. Order within a pass comes from `--seed` (default 1): the same files and flags give a byte-identical file.
 - Scope: the files `git ls-files -co --exclude-standard` lists, built for `--goos`/`--goarch`, minus `*_test.go`, generated files (`// Code generated … DO NOT EDIT.`), `vendor/`, `testdata/`, folders starting with `.` or `_`, and the protected inputs. `--include` and `--exclude` take path globs (`**` matches any folders; `dev/` means `dev/**`).
-- Output: `--out` (required) gets a YAML list that passes `proctor validate` when added to the mutants file, with titles such as `boundary in parseLimit (limits.go:16)`. `--index` adds a `.csv` or `.md` table of id, file:line, operator, function and coverage (`yes`, or `unknown` without a profile), and `--out-json` the same mutants as JSON. Each is written with mode 0600; the configured mutants file is always refused, and a path inside the protected inputs needs `--force`. A mutant whose file, line, find and replace already appear in the configured mutants file isn't generated again, and no two generated mutants share a file, find and replace.
+- Output: `--out` (required) gets a YAML list that passes `proctor validate` when added to the mutants file, with titles such as `boundary in parseLimit (limits.go:16)`. `--index` adds a `.csv`, `.md` or `.markdown` table of id, file:line, operator, function and coverage (`yes`, or `unknown` without a profile), and `--out-json` the same mutants as JSON. Each is written with mode 0600; the configured mutants file is always refused, and a path inside the protected inputs needs `--force`. A mutant whose file, line, find and replace already appear in the configured mutants file isn't generated again, and no two generated mutants share a file, find and replace.
+
+## Quick reference
+
+### Commands and flags
+
+- `validate`, `integrity`, `diff`, `run`, `approve`, `logs normalize`, `mutate` and `mutants generate` take `-r, --repo DIR` (default `.`) and `-c, --config FILE` (default `proctor/proctor.yaml`); all of them but `logs normalize` take `--json`. `proctor -v` prints the version; `proctor mutants` alone prints its help and exits 3.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `integrity --commit REV` | `HEAD` | the commit to check |
+| `diff --pr-head REV` | | `--head` is then GitHub's test merge, whose first parent is the base |
+| `diff`, `run`: `--change-kind-source` | `flag` | `flag`, or `label` when the workflow read a `proctor:` label |
+| `run`, `mutate`: `--ready-timeout` | `30s` | how long to wait for every driver to report its target ready |
+| `run`, `mutate`: `--no-progress` | | no progress line on stderr as each scenario finishes |
+| `run --report FILE` | | in local mode, also writes the `--json` document, with mode 0600 |
+| `run --commit REV` | `HEAD` | with `--authoritative`: the tested commit |
+| `run --base REV` | | with `--authoritative`: the base, when the head is tested directly, with exactly one merge base with the tested commit (exit 4, INT-09); give `--pr-head` or `--base`, not both and not neither (exit 3) |
+| `mutate --call-timeout` | `10s` | the limit for each driver call |
+| `mutants generate`: `--goos`, `--goarch` | `linux`, `arm64` | lower-case letters and digits only |
+| `mutate html --from FILE` | | a report of at most 512 MiB |
+
+- `approve` without `--received` takes the folder under `$TMPDIR/proctor-received/<project>/` whose `manifest.json` changed last. End of input at its prompt prints `No answer; stopping.` and exits 0.
+- `scripts/build.sh [--install] [OUTDIR]` builds into `bin/` by default; `--install` also copies every program into `$(go env GOPATH)/bin`. `proctor` holds its drivers' checksums and refuses one that doesn't match (exit 4, INT-17), so copy the programs together.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `PROCTOR_NO_UPDATE_CHECK` | any value turns off the update check (see [Privacy](#privacy)) |
+| `CI`, `GITHUB_ACTIONS` | any value turns off the update check; `approve` and `mutate` refuse to run |
+| `GITHUB_REPOSITORY`, `GITHUB_TOKEN` | authoritative mode asks GitHub for CODEOWNERS errors with them; without either, or with no CODEOWNERS file at the base, it exits 4 (INT-11), so it can't pass outside GitHub Actions |
+| `GITHUB_API_URL` | GitHub's API, default `https://api.github.com` |
+| `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | the job's OIDC token (`permissions: id-token: write`); without them `trust.workflow_identity` is `unverified` and `trust.workflow_changed` is `unknown` |
+| `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` | recorded in the report; they must match the OIDC token |
+| `GITHUB_STEP_SUMMARY` | the file the job summary is appended to |
+
+### Configuration keys
+
+| Key | Meaning |
+|---|---|
+| `protected_paths` | more paths to protect besides `proctor/`, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig` and CODEOWNERS; an entry ending in `/` is a folder |
+| `protected_owners` | authoritative mode lists each protected file whose CODEOWNERS rule at the base names none of these owners as `UNOWNED` and in `trust.unowned_protected_paths`, reported only (OD-16); without the key every protected file is listed |
+| `identities.<name>.type` | `none` or `bearer`; validation refuses any other type (exit 3); the names `run`, `secret`, `row` and `fill` are reserved |
+| `identities.<name>.variants`, `accepted_variants` | other credentials a step sends with `variant: <name>`, never in setup or cleanup; a `variants` one must expect 401 or 403 (AUTH-06), an `accepted_variants` one needn't |
+| `secrets` | names a step may use as `${secret.<name>}`, in an http body or headers only |
+| `redaction.json_paths` | paths whose values the report and transcripts show as `[redacted]` |
+| `redaction.headers` | header names, in any case, whose values assertions, saves, excerpts, transcripts and approved logs show as `[redacted]`; their values are scrubbed from the whole report. App-log lines in the report (`unexpected`, `first_unparsed`, `first_unmapped`) are redacted like the rest of it |
+| `identity_check` | `{ path, user_id, driver }`: before the first scenario, `GET <path>` with each `bearer` identity a listed scenario uses; the value at `user_id` in the body must equal the identity's `values.user_id` in the binding, or nothing runs and the run exits 3 (exit 2 when a request errors, such as a timeout); `driver` is needed only with more than one http driver (AUTH-04) |
+| `report.excerpt_bytes` | the size of each excerpt in the report, default 4096 |
+| `time_limits` | `min_interval` (default `100ms`, the shortest `every`), `max_window` (`10m`), `max_samples` (1000 per check), `max_call` (`60s`); `every` defaults to `500ms` and is at most half the window |
+| `app_logs` | also `levels` (default `ERROR`, `FATAL`, `PANIC`), `level_field` (`level`) and `message_field` (`msg`) |
+| binding `environment` | the target's name, the report's `target` |
+| binding `disposable` | `true` when the environment is thrown away after the run, which `requires: disposable_environment` needs |
+| binding `identities.<name>` | `token_env`, the variable holding a bearer token; `values`, used as `${<name>.<key>}`, where `id` and `user_id` must differ between identities (AUTH-03); `variants.<v>.token_env` or `.header_env` (the whole `Authorization` value) |
+| binding `secrets.<name>.env` | the variable holding a declared secret; an identity, variant or secret that `proctor.yaml` doesn't declare is refused (exit 3) |
+| binding `image` | authoritative mode: `built_digest` and `running_digest`, each `sha256:` and 64 lower-case hex digits, must be equal (REP-11) |
+| binding `drivers.<name>.<key>_env` | names a variable whose value the driver gets as a secret; Proctor scrubs it from its output |
+
+- An identity's or variant's variable must be set, non-empty and without a line break, and no two identities or variants may send the same credential (AUTH-03).
+- References: `${run.id}`, `${<saved>}`, `${<identity>.<key>}`, `${secret.<name>}` and `${fill(N)}` (N `x` characters, at most 16 MiB, in an http body or headers only).
+- Tables: the first column is the case id, every other column must be used by `identity`, `variant`, `with` or `expect`, `${row.<column>}` can't be in `do`, a key or the case id, a cell can't refer to another, and `${row.x}` inside longer text needs a single-value cell. `setup_from: <table id>` reuses an earlier table's setup, instead of `setup`.
+- The manifest refuses a repeated specification id or path (exit 3, INT-02), and a path that is absolute, holds `..`, a backslash or NUL, or isn't in clean form (exit 4, INT-01).
+- A protected file can't have the Git attributes `diff`, `binary`, `text`, `eol`, `crlf`, `filter`, `working-tree-encoding`, `ident`, `linguist-generated`, `export-ignore` or `export-subst` (exit 4, INT-14). `proctor/approved/` holds at most 20,000 entries.
+
+### Matchers
+
+| Matcher | Passes when the value at the path |
+|---|---|
+| `equal` | equals the expected value, with its JSON type |
+| `present`, `absent` | exists, or doesn't |
+| `keys` | is an object with exactly these keys |
+| `length` | is a list with exactly this many elements |
+| `unordered` | is a list of exactly these values, in any order |
+| `contains` | is text that contains this text |
+| `any`, `none` | is a list where some element, or no element, has every claimed value |
+| `count` | is a list where exactly `is` elements have every `where` value: `count: { $.items: { where: { state: done }, is: 2 } }` |
+
+### Drivers
+
+- `http.request`: `method` (`GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`), `path`, `query`, `headers` and a body; fact `status`, `headers`, `header_lists` (each value list split at commas), `body` or `body_text`, `body_truncated`, and `body_invalid`, why a body that looks or claims to be JSON wasn't read as JSON. Binding `base_url`, `user_agent` (required) and `ready_path`.
+- http limits: a response body over 10 MiB is ERROR `response_too_large`; redirects aren't followed, proxies are ignored and compression is off; a `HEAD` step asserts only status and headers; specifications can't set `Host`, `User-Agent`, `Authorization`, `Proxy-Authorization`, `Cookie`, `Content-Length`, `Transfer-Encoding` or `Connection`; a path with `?`, `#`, `\`, a space, a control character, `%2F`, `%5C` or a `.` or `..` segment is refused; a header name with capital letters in an expectation is refused, since facts hold them in lower case (HTTP-08); `set-cookie` is redacted.
+- `ws.connect` (with `as`): `path`, `query`, `headers`, `subprotocols`, `auth` (where the credential goes: `subprotocol`, the default, `query:<name>` or `header:<name>`) and `no_origin`; fact `connected`, `status`, `subprotocol`, `headers`, `body_text`, `body_truncated`. `ws.send` (with `on`) takes exactly one of `json` and `text`; fact `sent`. `ws.messages` (with `on`): `count`, `messages` (`type` `text` or `binary`, `text`, `json`), `closed`, `close_code`, `close_reason` and `overflow`, set after 10,000 frames or 16 MiB. Binding `base_url` (`ws`, `wss`, `http` or `https`), `origin` (sent as `Origin` unless `no_origin`) and `ready_path`; no policy.
+- `postgres.query`: `connection`, `query`, `args`; fact `row_count`, `rows`. Policy `connections: { <name>: { schemas, objects } }`, with `objects` required and names lower-case and unquoted; binding `<name>_dsn_env`. Sessions run with `application_name=proctor` and `default_transaction_read_only=on`; connect and statement timeouts are 5 s; `NaN` and `Infinity` read as text; the role check also refuses `MAINTAIN` on PostgreSQL 17 and later.
+- `dynamodb.get` (`table`, `key`, `consistent`, default true; fact `found`, `item`), `dynamodb.query` (`table`, `index`, `key` with the partition key and at most the sort key, matched by equality, `limit` 1 to 1000; fact `count`, `items`; over 1,000 matches without `limit` is ERROR) and `dynamodb.put` (`table`, `item`; fact `written`). `table` is an alias from the policy's `tables: { <alias>: <table name> }`.
+- dynamodb and sqs binding: `endpoint`, `region`, `ca_bundle` (a PEM file of at most 1 MiB, for https only), `access_key_env` and `secret_key_env` (static credentials only).
+- `sqs.send` (`queue`, `body`, `attributes`, `delay_seconds` 0 to 900, and for a FIFO queue `group_id`, required, and `dedup_id`; fact `message_id`), `sqs.peek` (`queue`, `max` 1 to 1000, default 1000; fact `count`, `truncated`, `messages` with `message_id`, `body_text`, `body`, `attributes`) and `sqs.depth` (`queue`; fact `visible`, `in_flight`, `delayed`). Policy `queues: { <alias>: <queue name> }` and `peek_hold`. A peek stops after 150 receives, or when 3 receives in a row add nothing and it holds as many messages as the queue reports (20 in a row when it holds fewer); the step's summary says why it's `truncated`.
+- `ses.sent` (`to`, matched against to, cc and bcc, and `from`, both ignoring case; fact `count`, `emails` with `message_id`, `from`, `to`, `cc`, `bcc`, `reply_to`, `subject`, `text`, `html`, `sent_at`) reads `GET <endpoint>/__proctor/sent`; a 404 isn't retried and an answer over 15 MiB is ERROR. Binding `endpoint`, `ca_bundle`; no policy. `proctor-sim-ses [--addr 127.0.0.1:18193] [--identity SENDER]` answers SESv2 `POST /v2/email/outbound-emails` and `/__proctor/sent`, and keeps the newest 10,000 emails, each with at most 50 recipients and a 40 MiB raw message.
+- `docker`: ready when `/_ping` answers `OK` and Docker accepts API 1.44; `labels` takes at most 20 keys, `has_labels` 1 to 20, and both together 39; the policy's `scope` takes at most 16 entries; more than 200 objects in scope is ERROR.
+
+### Limits and timeouts
+
+- Readiness asks each driver in turn every 250 ms, each attempt bounded by 3 s (5 s for docker and postgres), until `--ready-timeout`; a lasting problem ends the wait at once. A target that isn't ready makes every scenario NOT_RUN `environment_not_ready` (exit 2), and an `app_logs.file` that can't be read when the run starts exits 2.
+- The OIDC token must have audience `proctor` and be signed with RS256 by a key of at least 2048 bits, with 60 s of clock skew allowed; a token that doesn't verify, or names another commit, repository, run or attempt, exits 4 (MODE-03).
+
+### Reports
+
+- `run --json` and local `--report`: `result`, `exit_code`, `mode`, `trust.reason`, `provenance` (`proctor_version`, `config`, `sha256`), `run_id`, `target`, `readiness`, `violations`, `drivers[]` (`name`, `official`, `version`, `origin`, `sha256`, `proofs`, `stderr`, `stderr_dropped_bytes`), `identity_check`, `summary`, `scenarios`, `tables`, `received`, and `aborted` after an interrupt. Every local report, one that stops early included, has `trust` and `summary`.
+- `summary` adds to the counts `plain_scenarios` and `table_cases` (each `total`, `passed`, `failed`, `errors`, `not_run`), `steps`, `failed_ids` and `errored_ids` (a table case as `<table>/<case>`), `integrity_violations`, and in authoritative mode `protected_changes`.
+- A run stopped by an invalid configuration or specification (exit 3) reports every scenario and table case as NOT_RUN `configuration_error`. A scenario or case left without a result is NOT_RUN `not_started` and an integrity violation (exit 4, INT-03).
+- A table without an `id` is shown as a grid named `tables[<n>]`, which is also its `tables[].id` and its cases' `table`.
+- A step has `phase`, `result`, `reason`, `cause`, `action.summary`, `evidence` (`request_excerpt`, `response_excerpt`, `driver_duration_ms`), `duration_ms`, `samples`, `samples_skipped` (due times a slow sample overran, omitted when 0), `notice` (TIME-05), `saved` and `assertions[]` (with `cut_at` and `overflow`); a scenario has `handles[]`, a table `setup_from` and `rows[].cells`.
+- An ERROR the interrupt (Ctrl-C or SIGTERM) caused has cause `interrupted`; its reason is `aborted`, or `setup_failed` for a setup step.
+- The authoritative report adds `trust` (`workflow_identity`, `workflow_changed`: `true`, `false`, `unknown` or `not_applicable`, `codeowners_errors`, `unowned_protected_paths`, `approval_required`), `provenance` (`repository`, `tested_commit`, `parents`, `pr_head`, `base`, `image`, `environment`, `ci_run_id`, `ci_run_attempt`, `started_at`, `ended_at`), `protected_changes`, `change_kind`, `earlier_attempts` and `errors`. Its `provenance.sha256` also holds a `protected_paths:<path>` key for each file only `protected_paths` protects (INT-16).
+- `validate --json` and `integrity --json`: `result`, `exit_code`, `mode` and `report`; `validate` adds `drivers`, `errors`, and outside Git `git: false` with `note`. `diff --json`: `result`, `exit_code`, `protected_changes`, `weakenings`, `change_kind` and `diff` (`files`, `scenarios`, `weakenings`, `driver_changes`, `expectation_changes`, `assertion_moves`).
+- `mutate --report`: `selected`, `trust`, `provenance`, `baseline`, `mutants[]` (`verdict`, `killed_by`, `failed_scenarios`, `run_result`) and `counts`.
+
+### proctor diff kinds
+
+| Kind | Weakening |
+|---|---|
+| `scenario_removed`, `table_row_removed`, `step_removed`, `setup_step_removed` | removed, with the number of `assertions_lost` (a setup step that became cleanup counts as removed) |
+| `step_moved_to_setup` | a verification step became setup |
+| `driver_changed`, `driver_origin_changed` | a step's `do` names another driver; a driver's `official` program changed |
+| `variant_accepted`, `variant_removed` | a variant added to `accepted_variants`; a step no longer uses its variant |
+| `state_check_waived`, `state_check_waiver_changed` | `no_state_check` added or changed |
+| `time_check_changed`, `wait_longer`, `window_shorter`, `sampling_sparser` | a time check was added, removed or changed kind, waits longer, watches for less time or samples less often |
+| `max_window_longer`, `max_samples_higher`, `min_interval_shorter` | a `time_limits` value loosened |
+| `redaction_removed` | a `redaction.json_paths` or `redaction.headers` entry removed |
+| `identity_check_removed`, `identity_check_changed` | the identity check was removed, or its driver, path or `user_id` changed; `identity_check_added` is listed with the other changes |
+| `app_logs_removed`, `app_log_level_removed`, `app_log_field_changed`, `app_log_unparsed_allowed` | the app-log check loosened |
+| `log_error_allowed`, `log_count_removed`, `log_count_raised` | `expect_logs` allows more |
+| `not_analysed` | one side doesn't parse, so read the file diff |
+
+An assertion that moved to another step sending the same request is listed under `Moved assertions (not lost)` as `assertion_moved` (`assertion_moves` with `--json`), not as a weakening. A scenario whose place among the others changed is listed as `reordered`, not as a weakening.
 
 ## Repository layout
 
@@ -690,8 +880,12 @@ proctor mutants generate --out /tmp/gen.yaml --index /tmp/gen.md \
 |---|---|
 | `cmd/proctor`, `internal/` | The CLI |
 | `drivers/<name>/` | The official drivers, one Go module each (`docker`, `dynamodb`, `http`, `postgres`, `ses`, `sqs`, `ws`) |
+| `protocol/` | The protocol between `proctor` and its drivers |
+| `simulators/ses/` | `proctor-sim-ses`, a local SES stand-in for the ses driver |
+| `scripts/build.sh` | Builds `proctor`, its drivers and the simulator |
+| `scripts/release.sh`, `.github/workflows/release.yml` | Builds the release archives; drafts a release from a `v*` tag on main |
 | `examples/github/` | The reference GitHub workflow and CODEOWNERS file |
-| `prd.md` | Requirements, decisions, acceptance tests and roadmap |
+| `examples/github/verify/` | An example disposable environment for the workflow, copied to `proctor/verify/` |
 
 ## Development
 
@@ -702,3 +896,20 @@ go build ./...
 ```
 
 This repository doesn't include Proctor's test suite.
+
+## Privacy
+
+Proctor runs on your own machine or CI runner. Its author runs no server for it and receives none of your data, and it sends no telemetry.
+
+- **What it reads:** your repository's working tree or Git objects, the binding, the environment variables the binding names, the application's log file when `app_logs` is set, and the answers of the targets your specifications check.
+- **Where it writes:** reports to stdout and the `--report` file (mode 0600); received transcripts and logs to a new 0700 folder under `$TMPDIR/proctor-received/<project>/`, or `--received`; approved files under `proctor/approved/` only when you answer `y` to `proctor approve`; mutant copies under `$TMPDIR`; and the files you name for `mutate html` and `mutants generate`. A run scrubs the credentials, secrets and redacted values it knows from what it writes.
+- **What leaves the machine:** `validate`, `integrity`, `diff` and a local `run` ask `https://api.github.com/repos/bezmoradi/proctor/releases/latest` for the latest release, sending only `proctor/<version>` as the User-Agent; set `PROCTOR_NO_UPDATE_CHECK=1` to turn it off (it is off when `CI` or `GITHUB_ACTIONS` is set, and in authoritative mode). In authoritative mode it verifies the job's OIDC token against GitHub's published keys and asks GitHub's API for CODEOWNERS errors with `GITHUB_TOKEN`. Drivers reach only the targets in the binding. `mutate` runs your `up` and `down` scripts, and `mutants generate --build-check` runs your `go` toolchain, which may download modules as your Go settings allow.
+- **Stopping it:** delete the reports, the `proctor-received` folders and any `mutate` leftovers its report lists; Proctor keeps no other state.
+
+## Author
+
+This project is maintained by [Bez Moradi](https://github.com/bezmoradi).
+
+## License
+
+Proctor is licensed under [MIT](LICENSE).

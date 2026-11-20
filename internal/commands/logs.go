@@ -101,7 +101,7 @@ func normalizeLog(o normalizeOptions, file string, stdout, stderr io.Writer) int
 			lines = append(lines, strings.TrimSuffix(l, "\r"))
 		}
 	}
-	col := rules.Collect(lines, settings.Fields, runner.SensitiveField, filters)
+	col := rules.Collect(lines, settings.Fields, runner.SensitiveField(cfg.Redaction), filters)
 	out := applogs.Render(col, applogs.Scrub{Clean: func(s string) string { return s }, Rules: scrub, Message: rules.MessageField, Sorted: settings.Sorted()})
 	if _, err := stdout.Write(out); err != nil {
 		return refuse(exitError, "writing to stdout: %v", err)

@@ -22,7 +22,9 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 var driverName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-var identityTypes = map[string]bool{"none": true, "bearer": true, "basic": true, "oauth2_client_credentials": true}
+var headerName = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+var identityTypes = map[string]bool{"none": true, "bearer": true}
 
 var parkedDrivers = map[string]bool{"temporal": true, "logs": true}
 
@@ -197,7 +199,7 @@ func (r *Report) validateConfig(c *model.Config) {
 		}
 		id := c.Identities[name]
 		if !identityTypes[id.Type] {
-			r.add(Invalid, "AUTH-01", p, "identity %q has unsupported type %q", name, id.Type)
+			r.add(Invalid, "AUTH-01", p, "identity %q has type %q, which isn't supported: use none or bearer", name, id.Type)
 		}
 		if id.Type == "none" && len(id.Variants) > 0 {
 			r.add(Invalid, "AUTH-06", p, "identity %q has type none, so it has no credential to vary", name)
@@ -233,12 +235,73 @@ func (r *Report) validateConfig(c *model.Config) {
 				r.add(Invalid, "REP-06", p, "redaction.json_paths[%d]: %v", i, err)
 			}
 		}
+		seenHeader := map[string]int{}
+		for i, h := range c.Redaction.Headers {
+			if !headerName.MatchString(h) {
+				r.add(Invalid, "REP-06", p, "redaction.headers[%d]: %q is not a header name (one or more letters, digits and !#$%%&'*+-.^_`|~)", i, h)
+				continue
+			}
+			if j, dup := seenHeader[strings.ToLower(h)]; dup {
+				r.add(Invalid, "REP-06", p, "redaction.headers[%d]: %q repeats redaction.headers[%d]; header names ignore letter case", i, h, j)
+				continue
+			}
+			seenHeader[strings.ToLower(h)] = i
+		}
 	}
 	r.validateTimeLimits(c)
 	r.validateAppLogs(c)
 	r.validateApprovedLogs(c)
 	r.validateTranscripts(c)
 	r.validateRelations(c)
+	r.validateIdentityCheck(c)
+}
+
+func (r *Report) validateIdentityCheck(c *model.Config) {
+	ic := c.IdentityCheck
+	if ic == nil {
+		return
+	}
+	p := r.ConfigPath
+	if _, err := c.IdentityCheckDriver(); err != nil {
+		r.add(Invalid, "AUTH-04", p, "%v", err)
+	}
+	switch {
+	case ic.Path == "":
+		r.add(Invalid, "AUTH-04", p, "identity_check.path is required: the path that answers with the calling user, such as /api/me")
+	case strings.Contains(ic.Path, "${"):
+		r.add(Invalid, "AUTH-04", p, "identity_check.path %q can't use ${...}: the check runs before any scenario, with nothing to insert", ic.Path)
+	default:
+		if err := identityCheckPath(ic.Path); err != nil {
+			r.add(Invalid, "AUTH-04", p, "identity_check.path: %v", err)
+		}
+	}
+	if ic.UserID == "" {
+		r.add(Invalid, "AUTH-04", p, "identity_check.user_id is required: the path in the response body that holds the user's ID, such as $.id")
+	} else if _, err := expr.ParsePath(ic.UserID); err != nil {
+		r.add(Invalid, "AUTH-04", p, "identity_check.user_id: %v", err)
+	}
+}
+
+func identityCheckPath(p string) error {
+	switch {
+	case !strings.HasPrefix(p, "/"):
+		return fmt.Errorf("%q must start with /", p)
+	case strings.HasPrefix(p, "//"):
+		return fmt.Errorf("%q starts with //, which names a host", p)
+	case strings.ContainsAny(p, "?#\\"):
+		return fmt.Errorf("%q contains ?, # or \\; the check sends no query", p)
+	}
+	for _, c := range p {
+		if c <= ' ' || c == 0x7f {
+			return fmt.Errorf("%q contains a space or control character", p)
+		}
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("%q contains a . or .. segment", p)
+		}
+	}
+	return nil
 }
 
 func (r *Report) validateAppLogs(c *model.Config) {
@@ -318,6 +381,9 @@ func (r *Report) checkNullAppLogs(data []byte) {
 		}
 		if m.Content[i].Value == "transcripts" && m.Content[i+1].ShortTag() == "!!null" {
 			r.add(Invalid, "TRN-03", r.ConfigPath, "line %d: transcripts has no value; give max_bytes or scrub, or remove the key for the defaults", m.Content[i].Line)
+		}
+		if m.Content[i].Value == "identity_check" && m.Content[i+1].ShortTag() == "!!null" {
+			r.add(Invalid, "AUTH-04", r.ConfigPath, "line %d: identity_check has no value; give path and user_id, or remove the key", m.Content[i].Line)
 		}
 		if m.Content[i].Value == "mutation" && m.Content[i+1].ShortTag() == "!!null" {
 			r.add(Invalid, "MUT-01", r.ConfigPath, "line %d: mutation has no value; give mutants, up, down and binding, or remove the key", m.Content[i].Line)

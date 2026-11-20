@@ -111,6 +111,34 @@ func (r *Repo) Parents(commit string) ([]string, error) {
 	return parents, nil
 }
 
+func (r *Repo) MergeBases(a, b string) ([]string, error) {
+	if !oidPattern.MatchString(a) || !oidPattern.MatchString(b) {
+		return nil, fmt.Errorf("merge base of %q and %q: both must be full commit IDs", a, b)
+	}
+	cmd := exec.Command("git", "-C", r.dir, "merge-base", "--all", "--end-of-options", a, b)
+	cmd.Env = cleanEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return nil, fmt.Errorf("git merge-base: %s", msg)
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 && stdout.Len() == 0 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("git merge-base: %v", err)
+	}
+	bases := strings.Fields(stdout.String())
+	for _, o := range bases {
+		if !oidPattern.MatchString(o) {
+			return nil, fmt.Errorf("git merge-base printed unexpected value %q", o)
+		}
+	}
+	return bases, nil
+}
+
 func (r *Repo) Tree(commit string) (map[string]Entry, error) {
 	out, err := r.git(nil, "ls-tree", "-r", "-z", "--full-tree", commit)
 	if err != nil {

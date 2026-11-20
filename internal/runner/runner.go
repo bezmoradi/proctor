@@ -39,6 +39,10 @@ const (
 	ReasonCleanupFailed       = "cleanup_failed"
 	ReasonCleanupUnguarded    = "cleanup_unguarded"
 	ReasonHandleNotOpen       = "handle_not_open"
+	ReasonNotDisposable       = "disposable_environment_required"
+	ReasonInternal            = "internal"
+	ReasonConfigurationError  = "configuration_error"
+	ReasonNotStarted          = "not_started"
 )
 
 const (
@@ -55,6 +59,8 @@ const (
 	CauseAppLogsUnreadable  = "app_logs_unreadable"
 	CauseAppLogsUnparsed    = "app_logs_unparsed"
 	CauseAppLogsUnmapped    = "app_logs_unmapped_level"
+	CauseInterrupted        = "interrupted"
+	CauseInternal           = "internal"
 )
 
 const (
@@ -116,21 +122,23 @@ type Evidence struct {
 }
 
 type StepResult struct {
-	ID         string      `json:"id"`
-	Case       string      `json:"case,omitempty"`
-	Phase      string      `json:"phase"`
-	Result     Result      `json:"result"`
-	Reason     string      `json:"reason,omitempty"`
-	Cause      string      `json:"cause,omitempty"`
-	Message    string      `json:"message,omitempty"`
-	Driver     string      `json:"driver,omitempty"`
-	Origin     string      `json:"origin,omitempty"`
-	Action     *Action     `json:"action,omitempty"`
-	Evidence   *Evidence   `json:"evidence,omitempty"`
-	DurationMS float64     `json:"duration_ms,omitempty"`
-	Samples    int         `json:"samples,omitempty"`
-	Assertions []Assertion `json:"assertions,omitempty"`
-	Saved      []string    `json:"saved,omitempty"`
+	ID             string      `json:"id"`
+	Case           string      `json:"case,omitempty"`
+	Phase          string      `json:"phase"`
+	Result         Result      `json:"result"`
+	Reason         string      `json:"reason,omitempty"`
+	Cause          string      `json:"cause,omitempty"`
+	Message        string      `json:"message,omitempty"`
+	Driver         string      `json:"driver,omitempty"`
+	Origin         string      `json:"origin,omitempty"`
+	Action         *Action     `json:"action,omitempty"`
+	Evidence       *Evidence   `json:"evidence,omitempty"`
+	DurationMS     float64     `json:"duration_ms,omitempty"`
+	Samples        int         `json:"samples,omitempty"`
+	SamplesSkipped int         `json:"samples_skipped,omitempty"`
+	Notice         string      `json:"notice,omitempty"`
+	Assertions     []Assertion `json:"assertions,omitempty"`
+	Saved          []string    `json:"saved,omitempty"`
 
 	AfterSkippedAct bool `json:"after_skipped_act,omitempty"`
 
@@ -145,6 +153,7 @@ type ScenarioResult struct {
 	Result  Result         `json:"result"`
 	Reason  string         `json:"reason,omitempty"`
 	Cause   string         `json:"cause,omitempty"`
+	Message string         `json:"message,omitempty"`
 	Steps   []StepResult   `json:"steps"`
 	Handles []HandleRecord `json:"handles,omitempty"`
 	AppLogs *AppLogResult  `json:"app_logs,omitempty"`
@@ -229,6 +238,36 @@ type Summary struct {
 	Errors     int `json:"errors"`
 	NotRun     int `json:"not_run"`
 	Assertions int `json:"assertions"`
+
+	PlainScenarios      Counts   `json:"plain_scenarios"`
+	TableCases          Counts   `json:"table_cases"`
+	Steps               Counts   `json:"steps"`
+	FailedIDs           []string `json:"failed_ids"`
+	ErroredIDs          []string `json:"errored_ids"`
+	IntegrityViolations []string `json:"integrity_violations"`
+	ProtectedChanges    *int     `json:"protected_changes,omitempty"`
+}
+
+type Counts struct {
+	Total  int `json:"total"`
+	Passed int `json:"passed"`
+	Failed int `json:"failed"`
+	Errors int `json:"errors"`
+	NotRun int `json:"not_run"`
+}
+
+func (c *Counts) add(r Result) {
+	c.Total++
+	switch r {
+	case Pass:
+		c.Passed++
+	case Fail:
+		c.Failed++
+	case Error:
+		c.Errors++
+	default:
+		c.NotRun++
+	}
 }
 
 type Proof struct {
@@ -250,9 +289,11 @@ type DriverInfo struct {
 
 type Outcome struct {
 	RunID      string           `json:"run_id"`
+	Aborted    bool             `json:"aborted,omitempty"`
 	Target     string           `json:"target"`
 	Readiness  string           `json:"readiness,omitempty"`
 	Violations []string         `json:"violations,omitempty"`
+	Identity   *IdentityCheck   `json:"identity_check,omitempty"`
 	Drivers    []DriverInfo     `json:"drivers,omitempty"`
 	Scenarios  []ScenarioResult `json:"scenarios"`
 	Tables     []TableResult    `json:"tables,omitempty"`
@@ -376,6 +417,7 @@ type Runner struct {
 	secrets  map[string]string
 	values   map[string]string
 	redactJS map[string]bool
+	headers  map[string]bool
 	excerpt  int
 	scrub    *scrubber
 	info     map[model.StepRef]model.StepInfo
@@ -404,6 +446,7 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 	}
 	r := &Runner{cfg: cfg, specs: specs, b: b, opt: opt, creds: map[string]protocol.Credential{}, secrets: map[string]string{},
 		values: map[string]string{}, redactJS: map[string]bool{}, excerpt: defaultExcerpt, scrub: &scrubber{}}
+	r.headers = cfg.Redaction.HeaderNames()
 	if cfg.Redaction != nil {
 		for _, p := range cfg.Redaction.JSONPaths {
 			r.redactJS[p] = true
@@ -545,13 +588,20 @@ func (r *Runner) loadCredentials(probs *problems) {
 		case "none":
 		case "bearer":
 			bi := b.Identities[name]
+			if ic := cfg.IdentityCheck; ic != nil {
+				v, ok := bi.Values[model.IdentityCheckValue]
+				switch {
+				case !ok:
+					bad("binding: identity %q has no value %s, which identity_check compares with the user ID that %s answers (AUTH-04); add it under the identity's values", name, model.IdentityCheckValue, ic.Path)
+				case strings.TrimSpace(v) == "":
+					bad("binding: identity %q: value %s, which identity_check compares with the user ID that %s answers, is empty (AUTH-04)", name, model.IdentityCheckValue, ic.Path)
+				}
+			}
 			if bi.TokenEnv == "" {
 				bad("binding: identity %q (bearer) needs token_env", name)
 				continue
 			}
 			load(fmt.Sprintf("identity %q", name), credKey(name, ""), bi.TokenEnv, protocol.SchemeBearer, "Bearer ", name, "")
-		default:
-			bad("identity %q: type %q is not supported yet (use none or bearer)", name, it.Type)
 		}
 	}
 	for _, iv := range variants {
@@ -713,6 +763,16 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			out.Violations = v
 		}
 	}
+	if r.cfg.IdentityCheck != nil {
+		if stopAll != "" {
+			out.Identity = r.identityCheckNotRun(stopAll)
+		} else {
+			out.Identity = r.checkIdentities(ctx)
+			if res := out.Identity.Result; res == Fail || res == Error {
+				stopAll = ReasonIdentityCheckFailed
+			}
+		}
+	}
 	groups := map[string]*tableGroup{}
 	total, n := 0, 0
 	for _, f := range r.specs {
@@ -734,40 +794,37 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				tableLabel = sc.Case.Label()
 			}
 			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel})
-			var res ScenarioResult
-			switch {
-			case stopAll != "":
-				res = notRunScenario(p, sc, stopAll)
-			case ctx.Err() != nil:
-				res = notRunScenario(p, sc, ReasonAborted)
-			case sc.Case != nil:
-				key := p + "\x00" + sc.Case.GroupKey
-				if groups[key] == nil {
-					groups[key] = &tableGroup{}
+			res := guarded(p, sc, func() (res ScenarioResult) {
+				switch {
+				case stopAll != "":
+					res = notRunScenario(p, sc, stopAll)
+				case ctx.Err() != nil:
+					res = notRunScenario(p, sc, ReasonAborted)
+				case sc.Requires == model.RequiresDisposableEnvironment && !r.b.Disposable:
+					res = notRunScenario(p, sc, ReasonNotDisposable)
+				case sc.Case != nil:
+					key := p + "\x00" + sc.Case.GroupKey
+					if groups[key] == nil {
+						groups[key] = &tableGroup{}
+					}
+					if table == nil && r.logs != nil {
+						table = &tableWindow{w: r.openLogs()}
+					}
+					res = r.tableCase(ctx, p, sc, out.RunID, groups[key])
+				default:
+					w := r.openLogs()
+					res = r.scenario(ctx, p, sc, out.RunID)
+					if w != nil {
+						res.AppLogs = r.closeLogs(ctx, w, sc.ExpectLogs, sc.ApprovedLogWanted())
+						applyLogs(res.AppLogs, &res.Result, &res.Reason, &res.Cause)
+					}
+					if sc.ApprovedLogWanted() {
+						res.logRec = newLogRecord(res.AppLogs)
+					}
 				}
-				if table == nil && r.logs != nil {
-					table = &tableWindow{w: r.openLogs()}
-				}
-				res = r.tableCase(ctx, p, sc, out.RunID, groups[key])
-			default:
-				w := r.openLogs()
-				res = r.scenario(ctx, p, sc, out.RunID)
-				if w != nil {
-					res.AppLogs = r.closeLogs(ctx, w, sc.ExpectLogs, sc.ApprovedLogWanted())
-					applyLogs(res.AppLogs, &res.Result, &res.Reason, &res.Cause)
-				}
-				if sc.ApprovedLogWanted() {
-					res.logRec = newLogRecord(res.AppLogs)
-				}
-			}
-			if sc.Case != nil {
-				res.Table, res.tableKey = sc.Case.Table, sc.Case.Key
-				for i := range res.Steps {
-					res.Steps[i].Case = sc.ID
-				}
-				out.addTableRow(p, sc, res)
-			}
-			out.Scenarios = append(out.Scenarios, res)
+				return res
+			})
+			out.add(p, sc, res)
 			done := Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel, Done: true, Result: res.Result, Cleanup: res.Cleanup, Elapsed: time.Since(began)}
 			if table == nil {
 				r.progress(done)
@@ -790,13 +847,70 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			table = nil
 		}
 	}
+	out.Aborted = ctx.Err() != nil
 	r.sess.close()
 	out.Drivers = r.sess.infos()
+	out.checkStarted(r.specs)
 	own := ownResults(out)
 	r.applyTranscripts(out)
 	r.applyApprovedLogs(out, own)
 	out.finish()
 	r.scrubOutcome(out)
+	out.Summary.IntegrityViolations = append([]string{}, out.Violations...)
+	return out
+}
+
+func (o *Outcome) add(p string, sc model.Scenario, res ScenarioResult) {
+	if sc.Case != nil {
+		res.Table, res.tableKey = sc.Case.Label(), sc.Case.Key
+		for i := range res.Steps {
+			res.Steps[i].Case = sc.ID
+		}
+		o.addTableRow(p, sc, res)
+	}
+	o.Scenarios = append(o.Scenarios, res)
+}
+
+func resultKey(spec, table, id string) string { return spec + "\x00" + table + "\x00" + id }
+
+func (o *Outcome) checkStarted(specs []SpecFile) {
+	have := map[string]int{}
+	for _, res := range o.Scenarios {
+		have[resultKey(res.Spec, res.tableKey, res.ID)]++
+	}
+	for _, f := range specs {
+		if f.Spec == nil {
+			continue
+		}
+		for _, sc := range f.Spec.Scenarios {
+			what, table := "scenario "+sc.ID, ""
+			if sc.Case != nil {
+				what, table = "table "+sc.Case.Label()+" case "+sc.ID, sc.Case.Key
+			}
+			if k := resultKey(f.Path, table, sc.ID); have[k] > 0 {
+				have[k]--
+				continue
+			}
+			o.add(f.Path, sc, notRunScenario(f.Path, sc, ReasonNotStarted))
+			o.Violations = append(o.Violations, fmt.Sprintf("INT-03: %s: %s has no result: it never started, so it is NOT_RUN with reason %s", f.Path, what, ReasonNotStarted))
+		}
+	}
+}
+
+func NotStarted(specs []SpecFile, reason string, violations []string) *Outcome {
+	out := &Outcome{Scenarios: []ScenarioResult{}, Violations: violations}
+	if reason != "" {
+		for _, f := range specs {
+			if f.Spec == nil {
+				continue
+			}
+			for _, sc := range f.Spec.Scenarios {
+				out.add(f.Path, sc, notRunScenario(f.Path, sc, reason))
+			}
+		}
+	}
+	out.summarize()
+	out.Summary.IntegrityViolations = append([]string{}, violations...)
 	return out
 }
 
@@ -942,7 +1056,7 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 				res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseSetup, Result: NotRun, Reason: ReasonSetupFailed})
 				continue
 			}
-			sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseSetup}, keep), g.vars, hs)
+			sr := interrupted(r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseSetup}, keep), g.vars, hs))
 			if sr.Result != Pass {
 				sr.Result, sr.Reason = Error, ReasonSetupFailed
 				g.ok, g.cause = false, sr.Cause
@@ -978,12 +1092,12 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 		if ctx.Err() != nil {
 			stop = ReasonAborted
 			if !failed {
-				res.Result, res.Reason = Error, ReasonAborted
+				res.Result, res.Reason, res.Cause = Error, ReasonAborted, CauseInterrupted
 			}
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: PhaseVerification, Result: NotRun, Reason: stop})
 			continue
 		}
-		sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseVerification}, keep), vars, hs)
+		sr := interrupted(r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: PhaseVerification}, keep), vars, hs))
 		switch sr.Result {
 		case Fail:
 			noteFailure(&res, &sr, skippedAct)
@@ -991,6 +1105,9 @@ func (r *Runner) tableCaseSteps(ctx context.Context, p string, sc model.Scenario
 		case Error:
 			if !failed {
 				res.Result, res.Cause = Error, sr.Cause
+				if sr.Reason == ReasonAborted {
+					res.Reason = ReasonAborted
+				}
 			}
 			stop = ReasonEarlierStepErrored
 		}
@@ -1020,12 +1137,12 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 		if ctx.Err() != nil {
 			stop = ReasonAborted
 			if !failed {
-				res.Result, res.Reason = Error, ReasonAborted
+				res.Result, res.Reason, res.Cause = Error, ReasonAborted, CauseInterrupted
 			}
 			res.Steps = append(res.Steps, StepResult{ID: st.ID, Phase: phase, Result: NotRun, Reason: stop})
 			return
 		}
-		sr := r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: phase}, keep), vars, hs)
+		sr := interrupted(r.step(ctx, st, recording(StepResult{ID: st.ID, Phase: phase}, keep), vars, hs))
 		switch {
 		case phase == PhaseSetup && sr.Result != Pass:
 			sr.Result, sr.Reason = Error, ReasonSetupFailed
@@ -1037,6 +1154,9 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 		case sr.Result == Error:
 			if !failed {
 				res.Result, res.Cause = Error, sr.Cause
+				if sr.Reason == ReasonAborted {
+					res.Reason = ReasonAborted
+				}
 			}
 			stop = ReasonEarlierStepErrored
 		}
@@ -1096,6 +1216,23 @@ func missingSaved(st model.Step, vars expr.Vars) (string, string) {
 	return ReasonMissingSavedValue, strings.Join(missing, ", ") + " weren't saved, because an earlier step failed or didn't run"
 }
 
+func interrupted(sr StepResult) StepResult {
+	if sr.Result == Error && sr.Reason == ReasonAborted {
+		sr.Cause = CauseInterrupted
+	}
+	return sr
+}
+
+func guarded(p string, sc model.Scenario, f func() ScenarioResult) (res ScenarioResult) {
+	defer func() {
+		if v := recover(); v != nil {
+			res = ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: Error, Reason: ReasonInternal, Cause: CauseInternal,
+				Message: "Proctor failed internally (a panic, recovered): " + fmt.Sprint(v), Steps: []StepResult{}}
+		}
+	}()
+	return f()
+}
+
 func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
 	res := ScenarioResult{ID: sc.ID, Name: sc.Name, Spec: p, Result: NotRun, Reason: reason}
 	for _, st := range sc.Setup {
@@ -1135,7 +1272,7 @@ func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *
 		case reason != "":
 			sr.Result, sr.Reason, sr.Message = NotRun, reason, msg
 		default:
-			sr = r.step(ctx, st, recording(sr, keep), vars, hs)
+			sr = interrupted(r.step(ctx, st, recording(sr, keep), vars, hs))
 		}
 		if sr.Result != Pass {
 			clean = false
@@ -1151,7 +1288,7 @@ func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *
 	switch {
 	case res.Result != Pass || res.Cleanup == Pass:
 	case ctx.Err() != nil:
-		res.Result, res.Reason, res.Cause = Error, ReasonAborted, ""
+		res.Result, res.Reason, res.Cause = Error, ReasonAborted, CauseInterrupted
 	default:
 		res.Result, res.Reason, res.Cause = Error, ReasonCleanupFailed, cause
 	}
@@ -1181,7 +1318,7 @@ func (o *Outcome) addTableRow(p string, sc model.Scenario, res ScenarioResult) {
 		}
 	}
 	if t == nil {
-		o.Tables = append(o.Tables, TableResult{ID: sc.Case.Table, Name: sc.Name, Spec: p, SetupFrom: sc.Case.SetupFrom,
+		o.Tables = append(o.Tables, TableResult{ID: sc.Case.Label(), Name: sc.Name, Spec: p, SetupFrom: sc.Case.SetupFrom,
 			Columns: sc.Case.Columns, Result: Pass, key: sc.Case.Key})
 		t = &o.Tables[len(o.Tables)-1]
 	}
@@ -1196,8 +1333,9 @@ func (o *Outcome) addTableRow(p string, sc model.Scenario, res ScenarioResult) {
 	}
 }
 
-func (o *Outcome) finish() {
+func (o *Outcome) summarize() {
 	s := &o.Summary
+	s.FailedIDs, s.ErroredIDs, s.IntegrityViolations = []string{}, []string{}, []string{}
 	for _, sc := range o.Scenarios {
 		s.Scenarios++
 		switch sc.Result {
@@ -1210,16 +1348,37 @@ func (o *Outcome) finish() {
 		default:
 			s.NotRun++
 		}
+		id := sc.ID
+		if sc.Table != "" {
+			id = sc.Table + "/" + sc.ID
+			s.TableCases.add(sc.Result)
+		} else {
+			s.PlainScenarios.add(sc.Result)
+		}
+		switch sc.Result {
+		case Fail:
+			s.FailedIDs = append(s.FailedIDs, id)
+		case Error:
+			s.ErroredIDs = append(s.ErroredIDs, id)
+		}
 		for _, st := range sc.Steps {
 			s.Assertions += len(st.Assertions)
+			s.Steps.add(st.Result)
 		}
 	}
+}
+
+func (o *Outcome) finish() {
+	o.summarize()
+	s := &o.Summary
 	switch {
 	case len(o.Violations) > 0:
 		o.ExitCode, o.Result = ExitIntegrity, "integrity_violation"
+	case o.Identity != nil && o.Identity.Result == Fail:
+		o.ExitCode, o.Result = ExitInvalid, "invalid"
 	case s.Failed > 0:
 		o.ExitCode, o.Result = 1, "failed"
-	case s.Errors > 0 || s.NotRun > 0 || s.Scenarios == 0:
+	case s.Errors > 0 || s.NotRun > 0 || s.Scenarios == 0 || o.Aborted:
 		o.ExitCode, o.Result = ExitError, "error"
 	default:
 		o.ExitCode, o.Result = 0, "passed"

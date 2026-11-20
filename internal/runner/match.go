@@ -333,6 +333,11 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 		fail(c.perr.Error())
 		return a
 	}
+	if why, bad := invalidBody(c, fact); bad {
+		a.Expected, a.vacuous = c.want, true
+		fail(fmt.Sprintf("the response body isn't valid JSON (body_invalid: %s), so %s on %s can't be judged (HTTP-10); its text is in $.%s", why, c.kind, c.target, cutTextName))
+		return r.redactAssertion(a, c, elem, red)
+	}
 	got, ok := c.path.Select(fact)
 	if kept, cut := truncatedText(c, fact, got); cut {
 		a.Expected, a.Present, a.CutAt, a.vacuous = c.want, true, kept, true
@@ -559,10 +564,12 @@ func (r *Runner) judge(c check, fact any, red []string) Assertion {
 }
 
 const (
-	statusPath    = "$.status"
-	cutTextName   = "body_text"
-	cutMarkName   = "body_truncated"
-	responseSlack = 64 << 10
+	statusPath      = "$.status"
+	cutTextName     = "body_text"
+	cutMarkName     = "body_truncated"
+	bodyName        = "body"
+	invalidMarkName = "body_invalid"
+	responseSlack   = 64 << 10
 )
 
 const (
@@ -606,6 +613,20 @@ func overflowed(c check, fact any) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+func invalidBody(c check, fact any) (string, bool) {
+	segs := c.path.Segments()
+	if len(segs) == 0 || segs[0].IsIndex || segs[0].Name != bodyName {
+		return "", false
+	}
+	obj, _ := fact.(map[string]any)
+	why, has := obj[invalidMarkName]
+	if !has {
+		return "", false
+	}
+	text, _ := why.(string)
+	return text, true
 }
 
 var textMatchers = map[string]bool{"equal": true, "contains": true, "matches": true, "excludes": true, "differs": true}
@@ -860,6 +881,9 @@ func textLeaves(v any) []string {
 }
 
 func (r *Runner) listedPath(p string, red []string) bool {
+	if r.headerPath(p) {
+		return true
+	}
 	for q := range r.redactJS {
 		if pathUnder(p, q) {
 			return true
@@ -871,6 +895,61 @@ func (r *Runner) listedPath(p string, red []string) bool {
 		}
 	}
 	return false
+}
+
+func (r *Runner) headerPath(p string) bool {
+	if len(r.headers) == 0 {
+		return false
+	}
+	parsed, err := expr.ParsePath(p)
+	if err != nil {
+		return false
+	}
+	for _, seg := range parsed.Segments() {
+		if !seg.IsIndex && r.headers[strings.ToLower(seg.Name)] {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) scrubHeaders(v any) {
+	if len(r.headers) == 0 {
+		return
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			if r.headers[strings.ToLower(k)] {
+				for _, s := range textLeaves(e) {
+					r.scrub.add(s)
+				}
+				continue
+			}
+			r.scrubHeaders(e)
+		}
+	case []any:
+		for _, e := range x {
+			r.scrubHeaders(e)
+		}
+	}
+}
+
+func (r *Runner) redactExcerpt(text string) string {
+	if len(r.headers) == 0 || text == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if line == "" {
+			break
+		}
+		name, _, ok := strings.Cut(line, ": ")
+		if ok && r.headers[strings.ToLower(name)] {
+			lines[i] = name + ": " + redacted
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func pathUnder(p, root string) bool {

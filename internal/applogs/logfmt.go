@@ -26,9 +26,30 @@ func (r Rules) logfmtEntry(line string) (Entry, bool) {
 	return e, true
 }
 
+type logfmtPair struct {
+	key        string
+	value      logfmtValue
+	start, end int
+}
+
 func parseLogfmt(line string) (map[string]logfmtValue, bool) {
+	pairs, ok := scanLogfmt(line)
+	if !ok {
+		return nil, false
+	}
 	fields := map[string]logfmtValue{}
-	s := strings.TrimRight(line, " ")
+	for _, p := range pairs {
+		if _, dup := fields[p.key]; !dup {
+			fields[p.key] = p.value
+		}
+	}
+	return fields, true
+}
+
+func scanLogfmt(line string) ([]logfmtPair, bool) {
+	var pairs []logfmtPair
+	base := strings.TrimRight(line, " ")
+	s := base
 	for {
 		s = strings.TrimLeft(s, " ")
 		if s == "" {
@@ -38,16 +59,15 @@ func parseLogfmt(line string) (map[string]logfmtValue, bool) {
 		if !ok || key.text == "" || !strings.HasPrefix(rest, "=") {
 			return nil, false
 		}
+		start := len(base) - len(rest) + 1
 		value, rest, ok := logfmtToken(rest[1:], true)
 		if !ok || (rest != "" && rest[0] != ' ') {
 			return nil, false
 		}
-		if _, dup := fields[key.text]; !dup {
-			fields[key.text] = value
-		}
+		pairs = append(pairs, logfmtPair{key: key.text, value: value, start: start, end: len(base) - len(rest)})
 		s = rest
 	}
-	return fields, len(fields) > 0
+	return pairs, len(pairs) > 0
 }
 
 func logfmtToken(s string, value bool) (logfmtValue, string, bool) {

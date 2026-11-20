@@ -28,6 +28,7 @@ type Table struct {
 	Waive        map[string]Waiver `yaml:"waive"`
 	Cleanup      []Step            `yaml:"cleanup,omitempty"`
 	ExpectLogs   []LogExpectation  `yaml:"expect_logs,omitempty"`
+	Requires     Requirement       `yaml:"requires,omitempty"`
 	Covers       yaml.Node         `yaml:"covers,omitempty"`
 	Transcript   yaml.Node         `yaml:"transcript,omitempty"`
 	ApprovedLog  yaml.Node         `yaml:"approved_log,omitempty"`
@@ -244,6 +245,7 @@ func (s *Spec) ExpandTables(decode func([]byte, any) error) []Problem {
 				Steps:       []Step{step},
 				Cleanup:     t.Cleanup,
 				ExpectLogs:  t.ExpectLogs,
+				Requires:    t.Requires,
 				Transcript:  t.Transcript,
 				ApprovedLog: t.ApprovedLog,
 				Case: &TableCase{Table: t.ID, Key: key, Group: g.label, GroupKey: g.key, RunScope: g.scope, SetupFrom: t.SetupFrom,

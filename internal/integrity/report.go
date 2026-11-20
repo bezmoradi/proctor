@@ -57,6 +57,8 @@ type Report struct {
 
 	SpecIDs map[string]string `json:"-"`
 
+	ProtectedPathHashes map[string]string `json:"-"`
+
 	listed map[string]bool
 	limits limits
 }

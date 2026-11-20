@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -59,7 +57,14 @@ func newMutateCmd(stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-func mutateRun(o mutateOptions, stdout, stderr io.Writer) int {
+func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
+	ctx, stop := interruptContext()
+	defer stop()
+	defer func() {
+		if v := recover(); v != nil {
+			code = reportInternal(v, o.report, false, o.json, stdout, stderr)
+		}
+	}()
 	refuse := func(msg string) int {
 		fmt.Fprintln(stderr, "proctor mutate: "+safe(msg))
 		return reportRefusal(o.report, false, exitInvalid, msg, stderr)
@@ -108,13 +113,11 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) int {
 	if rep.Config != nil {
 		checkMutation(rep, repo.Dir(), src, false)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	dc := &driverCheck{}
 	if rep.Config != nil {
 		_, dc.drivers, dc.setup = describeSteps(ctx, rep, nil, runner.Options{})
 	}
-	code := rep.ExitCode()
+	code = rep.ExitCode()
 	if dc.setup != nil && dc.setup.ExitCode > code {
 		code = dc.setup.ExitCode
 	}
@@ -162,8 +165,12 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "proctor mutate: "+safe(err.Error()))
 		return reportRefusal(o.report, false, exitError, err.Error(), stderr)
 	}
+	aborted := ctx.Err() != nil
+	if aborted && out.ExitCode == exitOK {
+		out.ExitCode = exitError
+	}
 	doc := mutateDoc{
-		Result: resultName(out.ExitCode), ExitCode: out.ExitCode, Mode: "local", Command: "mutate",
+		Result: resultName(out.ExitCode), ExitCode: out.ExitCode, Mode: "local", Command: "mutate", Aborted: aborted,
 		Trust: map[string]any{"authoritative": false, "reason": "local mode reads the working tree; the result is not evidence for a commit"},
 		Provenance: mutateProvenance{ProctorVersion: Version, Repository: repo.Dir(), Config: rep.ConfigPath, Mutants: rep.MutantsPath, SHA256: rep.Hashes,
 			StartedAt: began.Format(time.RFC3339Nano), EndedAt: ended.Format(time.RFC3339Nano), DurationMS: ended.Sub(began).Milliseconds()},
@@ -178,6 +185,7 @@ type mutateDoc struct {
 	ExitCode   int              `json:"exit_code"`
 	Mode       string           `json:"mode"`
 	Command    string           `json:"command"`
+	Aborted    bool             `json:"aborted,omitempty"`
 	Trust      map[string]any   `json:"trust"`
 	Provenance mutateProvenance `json:"provenance"`
 	Selected   mutateSelection  `json:"selected"`
@@ -218,6 +226,9 @@ func writeMutate(w io.Writer, asJSON bool, doc mutateDoc) int {
 	}
 	if doc.Stopped != "" {
 		fmt.Fprintf(w, "\nStopped: %s\n", safe(doc.Stopped))
+	}
+	if doc.Aborted {
+		fmt.Fprintln(w, "\nABORTED  the run was interrupted (SIGINT or SIGTERM); no mutant started after it")
 	}
 	for _, l := range doc.Leftovers {
 		fmt.Fprintf(w, "Not removed: %s\n", safe(l))

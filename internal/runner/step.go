@@ -20,6 +20,8 @@ const (
 	modeNever        = "never"
 )
 
+const SamplingNotice = "passed on samples: a change between samples, or after the window, can't be seen (TIME-05)"
+
 type timing struct {
 	mode   string
 	window time.Duration
@@ -63,14 +65,32 @@ func timingOf(st model.Step) (timing, error) {
 	return t, err
 }
 
-func (t timing) done(pass bool, elapsed time.Duration) bool {
+func (t timing) settled(pass bool) bool {
 	switch t.mode {
 	case modeEventually, modeNever:
-		return pass || elapsed >= t.window
+		return pass
 	case modeConsistently:
-		return !pass || elapsed >= t.window
+		return !pass
 	}
 	return true
+}
+
+func (t timing) lastDue() int {
+	if t.mode == "" {
+		return 0
+	}
+	k := int(t.window / t.every)
+	if t.window%t.every != 0 {
+		k++
+	}
+	return k
+}
+
+func (t timing) due(k int) time.Duration {
+	if d := time.Duration(k) * t.every; d < t.window {
+		return d
+	}
+	return t.window
 }
 
 type sampleResult struct {
@@ -115,6 +135,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	if err != nil {
 		return errorf(CauseInvalidRequest, "with: %v", err)
 	}
+	r.scrubHeaders(args)
 	r.keepWith(&sr, args)
 	files, err := r.files(op, st.With)
 	if err != nil {
@@ -149,7 +170,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	}
 	start := time.Now()
 	var last sampleResult
-	n := 0
+	n, k, skipped, lastDue := 0, 0, 0, t.lastDue()
 	for {
 		s, perr := r.sample(ctx, h, op, args, files, cred, handle, checks, callTimeout)
 		if s.handle != "" {
@@ -174,15 +195,17 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		}
 		last = s
 		r.record(&sr, s.ev)
-		elapsed := time.Since(start)
-		if t.done(s.pass, elapsed) || (s.vacuous && t.mode == modeNever) {
+		if t.settled(s.pass) || (s.vacuous && t.mode == modeNever) || k >= lastDue {
 			break
 		}
-		wait := t.every
-		if rem := t.window - elapsed; rem < wait {
-			wait = rem
+		next, elapsed := k+1, time.Since(start)
+		for next < lastDue && t.due(next+1) <= elapsed {
+			next++
 		}
-		timer := time.NewTimer(wait)
+		skipped += next - k - 1
+		sr.SamplesSkipped = skipped
+		k = next
+		timer := time.NewTimer(max(t.due(k)-time.Since(start), 0))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -194,6 +217,10 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		}
 	}
 	elapsed := time.Since(start).Round(time.Millisecond)
+	vacuity := ""
+	if t.mode == modeNever && last.vacuous {
+		vacuity = vacuityOf(checks, last)
+	}
 	r.keepFact(&sr, last.fact, op.Redact, t)
 	sr.Result = Pass
 	if t.mode == modeNever {
@@ -214,7 +241,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		switch {
 		case last.vacuous:
 			sr.Result = Fail
-			sr.Message = fmt.Sprintf("at sample %d a claim can't fail, its text was cut or its list left frames out, so never can't tell whether the expectations held", n)
+			sr.Message = fmt.Sprintf("at sample %d a claim can't be judged, because %s, so never can't tell whether the expectations held", n, vacuity)
 		case last.pass:
 			sr.Result = Fail
 			sr.Message = fmt.Sprintf("the expectations all held at sample %d, after %s; never requires that they don't for %s", n, elapsed, t.window)
@@ -259,8 +286,39 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	}
 	if sr.Result != Pass {
 		sr.Cause = CauseUnexpectedResponse
+	} else if t.mode == modeConsistently || t.mode == modeNever {
+		sr.Notice = SamplingNotice
 	}
 	return sr
+}
+
+func vacuityOf(checks []check, s sampleResult) string {
+	var why []string
+	add := func(w string) {
+		for _, seen := range why {
+			if seen == w {
+				return
+			}
+		}
+		why = append(why, w)
+	}
+	for i, a := range s.asserts {
+		if !a.vacuous || i >= len(checks) {
+			continue
+		}
+		c := checks[i]
+		got, _ := c.path.Select(s.fact)
+		if text, bad := invalidBody(c, s.fact); bad {
+			add(fmt.Sprintf("the response body isn't valid JSON (%s: %s)", invalidMarkName, text))
+		} else if _, cut := truncatedText(c, s.fact, got); cut {
+			add(fmt.Sprintf("the text of %s was cut (%s: true)", c.target, cutMarkName))
+		} else if list, _, over := overflowed(c, s.fact); over {
+			add(fmt.Sprintf("the driver left frames out of %s (%s: true)", list, overflowMarkName))
+		} else {
+			add(fmt.Sprintf("a key of the claim on %s is in no element (EXE-11)", c.target))
+		}
+	}
+	return strings.Join(why, " and ")
 }
 
 func (r *Runner) record(sr *StepResult, ev protocol.Evidence) {
@@ -269,7 +327,7 @@ func (r *Runner) record(sr *StepResult, ev protocol.Evidence) {
 		sr.Evidence = nil
 		return
 	}
-	sr.Evidence = &Evidence{RequestExcerpt: ev.RequestExcerpt, ResponseExcerpt: ev.ResponseExcerpt, DriverDurationMS: ev.DurationMS}
+	sr.Evidence = &Evidence{RequestExcerpt: r.redactExcerpt(ev.RequestExcerpt), ResponseExcerpt: r.redactExcerpt(ev.ResponseExcerpt), DriverDurationMS: ev.DurationMS}
 }
 
 func (r *Runner) callTimeoutOf(st model.Step) (time.Duration, error) {
@@ -331,6 +389,7 @@ func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, arg
 	if op.Accumulates {
 		r.scrubRedacted("$", res.Fact, op.Redact)
 	}
+	r.scrubHeaders(res.Fact)
 	s := sampleResult{handle: res.Handle, fact: res.Fact, ev: res.Evidence, pass: true}
 	for _, c := range checks {
 		a := r.judge(c, res.Fact, op.Redact)

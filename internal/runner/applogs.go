@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,13 +74,14 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 		case applogs.LineUnparsed:
 			res.UnparsedCount++
 			if res.FirstUnparsed == "" {
-				res.FirstUnparsed = line
+				res.FirstUnparsed, _ = r.redactLogLine(line)
 			}
 		}
 		if rd.Unmapped != "" {
 			res.UnmappedCount++
 			if res.FirstUnmapped == "" {
-				res.UnmappedLevel, res.FirstUnmapped = rd.Unmapped, line
+				res.UnmappedLevel = rd.Unmapped
+				res.FirstUnmapped, _ = r.redactLogLine(line)
 			}
 		}
 		if !rd.Failing {
@@ -91,7 +94,8 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 		}
 		res.UnexpectedCount++
 		if len(res.Unexpected) < logLinesShown {
-			res.Unexpected = append(res.Unexpected, AppLogLine{Level: c.Level, Message: c.Message, Time: c.Time, Line: c.Line})
+			shown, found := r.redactLogLine(c.Line)
+			res.Unexpected = append(res.Unexpected, AppLogLine{Level: c.Level, Message: hideFound(c.Message, found), Time: hideFound(c.Time, found), Line: shown})
 		}
 	}
 	unseen := 0
@@ -147,6 +151,28 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 		res.Result, res.Cause, res.Message = Error, cause, strings.Join(errs, "; ")
 	}
 	return res
+}
+
+func (r *Runner) redactLogLine(line string) (string, []string) {
+	field := SensitiveField(r.cfg.Redaction)
+	out, found := applogs.RedactLine(line, func(path, name string) bool {
+		return (name != "" && field(name)) || r.listedPath(path, nil)
+	})
+	return hideFound(out, found), found
+}
+
+func hideFound(text string, found []string) string {
+	found = slices.Clone(found)
+	sort.Slice(found, func(i, j int) bool { return len(found[i]) > len(found[j]) })
+	for _, v := range found {
+		switch {
+		case text == v:
+			return redacted
+		case len(v) >= minScrubbed:
+			text = strings.ReplaceAll(text, v, redacted)
+		}
+	}
+	return text
 }
 
 func applyLogs(al *AppLogResult, result *Result, reason, cause *string) {

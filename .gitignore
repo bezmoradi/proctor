@@ -2,7 +2,6 @@
 .env
 __pycache__/
 /dist/
-/prd.md
 /.claude/
 /drivers/*/proctor-driver-*
 /simulators/*/proctor-sim-*

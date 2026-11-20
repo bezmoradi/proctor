@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -176,7 +177,7 @@ func generateRun(o generateOptions, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "proctor mutants generate: "+safe(err.Error()))
-		if strings.HasPrefix(err.Error(), "--") {
+		if strings.HasPrefix(err.Error(), "--") && !errors.Is(err, mutgen.ErrUnchangedBuild) {
 			return exitInvalid
 		}
 		return exitError

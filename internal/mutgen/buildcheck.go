@@ -16,6 +16,8 @@ import (
 	"sync"
 )
 
+var ErrUnchangedBuild = errors.New("the unchanged copy doesn't build")
+
 type checker struct {
 	o       Options
 	env     []string
@@ -59,7 +61,7 @@ func newChecker(ctx context.Context, o Options) (*checker, error) {
 	for i, dir := range k.copies {
 		wg.Go(func() {
 			if out, err := k.goCmd(ctx, dir, "build", "-trimpath", "-o", os.DevNull, "./..."); err != nil {
-				errs[i] = fmt.Errorf("--build-check: the unchanged copy doesn't build with GOOS=%s GOARCH=%s CGO_ENABLED=0 (go build ./...): %v\n%s", o.GOOS, o.GOARCH, err, tail(out))
+				errs[i] = fmt.Errorf("--build-check: %w with GOOS=%s GOARCH=%s CGO_ENABLED=0 (go build ./...): %v\n%s", ErrUnchangedBuild, o.GOOS, o.GOARCH, err, tail(out))
 			}
 		})
 	}

@@ -28,8 +28,12 @@ type logRecord struct {
 	vars   []*scenarioRecord
 }
 
-func SensitiveField(name string) bool {
-	return sensitiveName(name) || credentialHeaders[strings.ToLower(name)]
+func SensitiveField(red *model.Redaction) func(string) bool {
+	headers := red.HeaderNames()
+	return func(name string) bool {
+		lower := strings.ToLower(name)
+		return sensitiveName(name) || credentialHeaders[lower] || headers[lower]
+	}
 }
 
 func (r *Runner) keepLogVars(res *ScenarioResult, sc model.Scenario, vars expr.Vars) {
@@ -182,7 +186,7 @@ func (r *Runner) compareLog(a *model.Approval, owner string, rec *logRecord, set
 	if len(rec.vars) == 0 {
 		subs = r.placeholders(&scenarioRecord{vars: expr.Vars{}})
 	}
-	col := r.logRules.Collect(rec.window, settings.Fields, SensitiveField, nil)
+	col := r.logRules.Collect(rec.window, settings.Fields, SensitiveField(r.cfg.Redaction), nil)
 	data := applogs.Render(col, applogs.Scrub{Clean: r.scrub.clean, Subs: transcript.OrderSubs(subs), Rules: rules,
 		Message: r.logRules.MessageField, Sorted: settings.Sorted()})
 	r.judgeApproved(logKind, a, owner, data, settings.Limit(), lr, fail)

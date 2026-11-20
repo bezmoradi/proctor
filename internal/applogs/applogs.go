@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"proctor/internal/expr"
 )
 
 type Mark struct {
@@ -235,4 +237,133 @@ func text(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
+}
+
+type Hit func(path, name string) bool
+
+func RedactLine(line string, hit Hit) (string, []string) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "{") {
+		dec := json.NewDecoder(strings.NewReader(trimmed))
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err == nil && !dec.More() {
+			var found []string
+			if out, changed := redactRaw(raw, "$", hit, &found); changed {
+				return string(out), found
+			}
+			return line, nil
+		}
+	}
+	pairs, ok := scanLogfmt(line)
+	if !ok {
+		return line, nil
+	}
+	var b strings.Builder
+	var found []string
+	at := 0
+	for _, p := range pairs {
+		if !hit(expr.Child("$", p.key), p.key) {
+			continue
+		}
+		if !numberText.MatchString(p.value.text) {
+			found = append(found, p.value.text)
+		}
+		b.WriteString(line[at:p.start])
+		b.WriteString(Redacted)
+		at = p.end
+	}
+	if at == 0 {
+		return line, nil
+	}
+	b.WriteString(line[at:])
+	return b.String(), found
+}
+
+func redactRaw(raw json.RawMessage, path string, hit Hit, found *[]string) (json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return raw, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if _, err := dec.Token(); err != nil {
+		return raw, false
+	}
+	var parts [][]byte
+	changed := false
+	for i := 0; dec.More(); i++ {
+		var key []byte
+		child := fmt.Sprintf("%s[%d]", path, i)
+		name := ""
+		if trimmed[0] == '{' {
+			tok, err := dec.Token()
+			k, isKey := tok.(string)
+			if err != nil || !isKey {
+				return raw, false
+			}
+			key, name, child = encodeKey(k), k, expr.Child(path, k)
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return raw, false
+		}
+		if hit(child, name) {
+			*found = append(*found, rawLeaves(v)...)
+			v, changed = json.RawMessage(`"`+Redacted+`"`), true
+		} else if out, c := redactRaw(v, child, hit, found); c {
+			v, changed = out, true
+		}
+		if key != nil {
+			parts = append(parts, append(append(key, ':'), v...))
+		} else {
+			parts = append(parts, v)
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	open, end := byte('{'), byte('}')
+	if trimmed[0] == '[' {
+		open, end = '[', ']'
+	}
+	out := append([]byte{open}, bytes.Join(parts, []byte(","))...)
+	return append(out, end), true
+}
+
+func encodeKey(k string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(k); err != nil {
+		return []byte(strconv.Quote(k))
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+}
+
+func rawLeaves(raw json.RawMessage) []string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
+	return leaves(v)
+}
+
+func leaves(v any) []string {
+	switch x := v.(type) {
+	case string:
+		return []string{x}
+	case map[string]any:
+		var out []string
+		for _, e := range x {
+			out = append(out, leaves(e)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, e := range x {
+			out = append(out, leaves(e)...)
+		}
+		return out
+	}
+	return nil
 }

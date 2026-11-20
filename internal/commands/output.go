@@ -30,6 +30,20 @@ type driverCheck struct {
 	drivers    []runner.DriverInfo
 	setup      *runner.SetupError
 	outsideGit bool
+	stopped    *runner.Outcome
+}
+
+const localMode = "local, non-authoritative"
+
+var localTrust = map[string]any{"authoritative": false, "reason": "local mode reads the working tree; the result is not evidence for a commit"}
+
+func addStopped(doc map[string]any, out *runner.Outcome) {
+	doc["trust"] = localTrust
+	doc["summary"] = out.Summary
+	doc["scenarios"] = out.Scenarios
+	if len(out.Tables) > 0 {
+		doc["tables"] = out.Tables
+	}
 }
 
 const outsideGitNote = "not a Git repository: the folder was read as it is"
@@ -55,6 +69,9 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driv
 		if dc.outsideGit {
 			doc["git"] = false
 			doc["note"] = outsideGitNote
+		}
+		if dc.stopped != nil {
+			addStopped(doc, dc.stopped)
 		}
 		_ = enc.Encode(doc)
 		return code
@@ -92,7 +109,7 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driv
 	if dc.setup != nil {
 		fmt.Fprintln(w, "\nThe drivers didn't check the steps, so the specifications are only partly validated.")
 	}
-	fmt.Fprintf(w, "\nRESULT: %s (exit %d)\n", strings.ToUpper(result), code)
+	fmt.Fprintf(w, "\nRESULT: %s (exit %d, %s)\n", strings.ToUpper(result), code, localMode)
 	return code
 }
 
@@ -136,6 +153,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	if out.Readiness != "" {
 		fmt.Fprintf(w, "Readiness:       %s\n", safe(out.Readiness))
 	}
+	writeIdentityCheck(w, out.Identity)
 	fmt.Fprintf(w, "Run ID:          %s\n", safe(out.RunID))
 	if out.Received != "" {
 		fmt.Fprintf(w, "Received:        %s\n", safe(out.Received))
@@ -147,8 +165,23 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	for _, v := range out.Violations {
 		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
 	}
-	if len(out.Violations) > 0 {
+	if len(out.Violations) > 0 && !anyStarted(out) {
 		fmt.Fprintln(w, "No scenario was run.")
+	}
+	if ic := out.Identity; ic != nil && (ic.Result == runner.Fail || ic.Result == runner.Error) {
+		for _, e := range ic.Identities {
+			if e.Result == runner.Fail || e.Result == runner.Error {
+				label := "INVALID "
+				if e.Result == runner.Error {
+					label = "ERROR   "
+				}
+				fmt.Fprintf(w, "%s identity check: identity %q: %s (%s)\n", label, safe(e.Identity), safe(e.Message), safe(e.Cause))
+			}
+		}
+		if ic.Message != "" && len(ic.Identities) == 0 {
+			fmt.Fprintf(w, "INVALID  identity check: %s\n", safe(ic.Message))
+		}
+		fmt.Fprintln(w, "No scenario was run (AUTH-04).")
 	}
 	printed := map[string]bool{}
 	for _, sc := range out.Scenarios {
@@ -167,6 +200,9 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 			line += "  (" + safe(sc.Cause) + ")"
 		}
 		fmt.Fprintln(w, line+cleanupNote(sc))
+		if sc.Message != "" {
+			fmt.Fprintf(w, "           %s\n", safe(sc.Message))
+		}
 		if sc.Result != runner.Pass {
 			writeSteps(w, sc)
 		}
@@ -175,10 +211,62 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		writeHandles(w, sc)
 		writeAppLogs(w, sc.AppLogs)
 	}
+	writeSamplingNote(w, out)
 	s := out.Summary
+	if out.Aborted {
+		fmt.Fprintln(w, "\n"+abortedNote)
+	}
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
 		s.Scenarios, s.Passed, s.Failed, s.Errors, s.NotRun, s.Assertions)
 	fmt.Fprintf(w, "RESULT: %s (exit %d, %s)\n", strings.ToUpper(out.Result), out.ExitCode, mode)
+}
+
+func anyStarted(out *runner.Outcome) bool {
+	for _, sc := range out.Scenarios {
+		if sc.Result != runner.NotRun {
+			return true
+		}
+	}
+	return false
+}
+
+const abortedNote = "ABORTED  the run was interrupted (SIGINT or SIGTERM); no scenario started after it"
+
+func writeIdentityCheck(w io.Writer, ic *runner.IdentityCheck) {
+	if ic == nil {
+		return
+	}
+	line := fmt.Sprintf("GET %s via %s, user_id %s: %s", safe(ic.Path), safe(ic.Driver), safe(ic.UserID), ic.Result)
+	if ic.Reason != "" {
+		line += " (" + safe(ic.Reason) + ")"
+	}
+	var parts []string
+	for _, e := range ic.Identities {
+		p := safe(e.Identity) + " " + string(e.Result)
+		if e.Result == runner.NotRun && e.Cause != "" {
+			p += " " + safe(e.Cause)
+		}
+		parts = append(parts, p)
+	}
+	if len(parts) > 0 {
+		line += "; " + strings.Join(parts, ", ")
+	}
+	fmt.Fprintf(w, "Identity check:  %s\n", line)
+}
+
+func writeSamplingNote(w io.Writer, out *runner.Outcome) {
+	n := 0
+	for _, sc := range out.Scenarios {
+		for _, st := range sc.Steps {
+			if st.Notice != "" {
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nNote: %d consistently/never check%s passed on samples; a change between samples, or after a window, can't be seen (TIME-05)\n", n, plural(n))
 }
 
 func cleanupNote(sc runner.ScenarioResult) string {

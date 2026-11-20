@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,8 +31,48 @@ type Config struct {
 	Dimensions      string                  `yaml:"dimensions"`
 	Transcripts     *Transcripts            `yaml:"transcripts"`
 	Relations       []Relation              `yaml:"relations"`
+	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
 
 	files ProtectedFiles
+}
+
+type IdentityCheck struct {
+	Driver string `yaml:"driver"`
+	Path   string `yaml:"path"`
+	UserID string `yaml:"user_id"`
+}
+
+const IdentityCheckValue = "user_id"
+
+func (c *Config) IdentityCheckDriver() (string, error) {
+	ic := c.IdentityCheck
+	if ic == nil {
+		return "", nil
+	}
+	if ic.Driver != "" {
+		d, ok := c.Drivers[ic.Driver]
+		switch {
+		case !ok:
+			return "", fmt.Errorf("identity_check.driver %q isn't a driver in proctor.yaml", ic.Driver)
+		case d.Official != "http":
+			return "", fmt.Errorf("identity_check.driver %q has official %q; the identity check is an http request, so name a driver with official: http", ic.Driver, d.Official)
+		}
+		return ic.Driver, nil
+	}
+	var found []string
+	for name, d := range c.Drivers {
+		if d.Official == "http" {
+			found = append(found, name)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", fmt.Errorf("identity_check needs an http driver, and proctor.yaml declares none with official: http")
+	case 1:
+		return found[0], nil
+	}
+	slices.Sort(found)
+	return "", fmt.Errorf("identity_check: proctor.yaml declares more than one http driver (%s); name the one to call with identity_check.driver", strings.Join(found, ", "))
 }
 
 type Relation struct {
@@ -213,6 +254,18 @@ func (t *TimeLimits) MaxCallLimit() (time.Duration, error) {
 
 type Redaction struct {
 	JSONPaths []string `yaml:"json_paths"`
+	Headers   []string `yaml:"headers"`
+}
+
+func (r *Redaction) HeaderNames() map[string]bool {
+	out := map[string]bool{}
+	if r == nil {
+		return out
+	}
+	for _, h := range r.Headers {
+		out[strings.ToLower(h)] = true
+	}
+	return out
 }
 
 type ReportPolicy struct {
@@ -244,6 +297,7 @@ type Scenario struct {
 	Steps       []Step           `yaml:"steps"`
 	Cleanup     []Step           `yaml:"cleanup"`
 	ExpectLogs  []LogExpectation `yaml:"expect_logs"`
+	Requires    Requirement      `yaml:"requires,omitempty"`
 	Transcript  yaml.Node        `yaml:"transcript,omitempty"`
 	ApprovedLog yaml.Node        `yaml:"approved_log,omitempty"`
 

@@ -108,6 +108,27 @@ func BaseForTestMerge(repo *gitrepo.Repo, merge, prHead string) (string, error) 
 	return repo.ResolveCommit(parents[0])
 }
 
+func CheckMergeBase(repo *gitrepo.Repo, base, head string) error {
+	b, err := repo.ResolveCommit(base)
+	if err != nil {
+		return err
+	}
+	h, err := repo.ResolveCommit(head)
+	if err != nil {
+		return err
+	}
+	bases, err := repo.MergeBases(b, h)
+	switch {
+	case err != nil:
+		return err
+	case len(bases) == 0:
+		return fmt.Errorf("base %s and head %s have no merge base (unrelated histories, or a shallow clone without their common history), so the base can't be confirmed", b, h)
+	case len(bases) > 1:
+		return fmt.Errorf("base %s and head %s have %d merge bases (%s), so the base for change detection isn't unique; merge the base branch into the head, or test GitHub's test merge with --pr-head", b, h, len(bases), strings.Join(bases, ", "))
+	}
+	return nil
+}
+
 func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error) {
 	b, err := repo.ResolveCommit(base)
 	if err != nil {
@@ -191,6 +212,9 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 		res.Weakenings = append(res.Weakenings, ws...)
 		res.Drivers = append(res.Drivers, ds...)
 		res.Weakenings = append(res.Weakenings, compareConfig(bc, hc)...)
+		iw, ic := compareIdentityCheck(bc, hc)
+		res.Weakenings = append(res.Weakenings, iw...)
+		res.Drivers = append(res.Drivers, ic...)
 		mw, err := compareMutation(repo, bt, ht, bc, hc, configPath)
 		if err != nil {
 			return nil, err
@@ -208,21 +232,23 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 		res.Weakenings = append(res.Weakenings, ws...)
 		res.Drivers = append(res.Drivers, ds...)
 		res.Weakenings = append(res.Weakenings, compareRelations(&model.Config{}, hc)...)
+		_, ic := compareIdentityCheck(&model.Config{}, hc)
+		res.Drivers = append(res.Drivers, ic...)
 	case bFound && hFound && (bt[configPath].OID != ht[configPath].OID || bt[configPath].Mode != ht[configPath].Mode):
 		res.Weakenings = append(res.Weakenings, Weakening{Kind: "not_analysed",
 			Detail: configPath + " changed but one side doesn't decode as a version 2 configuration, so its drivers weren't compared; read the file diff"})
 	}
 
-	bs, bUnparsed, err := scenarios(repo, bt, root, configPath, mutantsPath(bc, configPath))
+	bs, bOrder, bUnparsed, err := scenarios(repo, bt, root, configPath, mutantsPath(bc, configPath))
 	if err != nil {
 		return nil, err
 	}
-	hs, hUnparsed, err := scenarios(repo, ht, root, configPath, mutantsPath(hc, configPath))
+	hs, hOrder, hUnparsed, err := scenarios(repo, ht, root, configPath, mutantsPath(hc, configPath))
 	if err != nil {
 		return nil, err
 	}
 	res.Unparsed = dedupe(append(bUnparsed, hUnparsed...))
-	res.Scenarios = compareScenarios(bs, hs)
+	res.Scenarios = append(compareScenarios(bs, hs), compareOrder(bOrder, hOrder)...)
 	logTables := map[string]bool{}
 	transcriptTables := map[string]bool{}
 	logOptTables := map[string]bool{}
@@ -288,8 +314,9 @@ type scenarioVersion struct {
 	typed *model.Scenario
 }
 
-func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath, mutants string) (map[string]scenarioVersion, []string, error) {
+func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPath, mutants string) (map[string]scenarioVersion, map[string][]string, []string, error) {
 	out := map[string]scenarioVersion{}
+	order := map[string][]string{}
 	var unparsed []string
 	for _, p := range sortedKeys(tree) {
 		e := tree[p]
@@ -298,7 +325,7 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 		}
 		data, err := repo.Blob(e.OID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		doc, err := strictyaml.Parse(data)
 		if err != nil {
@@ -317,9 +344,10 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 			}
 			canon, err := yaml.Marshal(stripPositions(sc))
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			out[idNode.Value] = scenarioVersion{file: p, canon: canon}
+			order[p] = append(order[p], idNode.Value)
 		}
 		var spec model.Spec
 		if strictyaml.Decode(data, &spec) == nil {
@@ -341,7 +369,43 @@ func scenarios(repo *gitrepo.Repo, tree map[string]gitrepo.Entry, root, configPa
 			}
 		}
 	}
-	return out, unparsed, nil
+	return out, order, unparsed, nil
+}
+
+func compareOrder(base, head map[string][]string) []ScenarioChange {
+	var out []ScenarioChange
+	for _, file := range sortedKeys(head) {
+		b, ok := base[file]
+		if !ok {
+			continue
+		}
+		bSeq, hSeq := commonOrder(b, head[file]), commonOrder(head[file], b)
+		pos := map[string]int{}
+		for i, id := range bSeq {
+			pos[id] = i
+		}
+		for i, id := range hSeq {
+			if pos[id] != i {
+				out = append(out, ScenarioChange{Change: "reordered", ID: id, File: file})
+			}
+		}
+	}
+	return out
+}
+
+func commonOrder(ids, other []string) []string {
+	keep, seen := map[string]bool{}, map[string]bool{}
+	for _, id := range other {
+		keep[id] = true
+	}
+	var out []string
+	for _, id := range ids {
+		if keep[id] && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func scenarioFile(p string, e gitrepo.Entry, root, configPath, mutants string) bool {
@@ -782,9 +846,54 @@ func compareConfig(b, h *model.Config) []Weakening {
 			weaken("redaction_removed", "redaction.json_paths entry %s was removed; that value is no longer redacted in the evidence", jp)
 		}
 	}
+	headHeaders := h.Redaction.HeaderNames()
+	if b.Redaction != nil {
+		for _, name := range b.Redaction.Headers {
+			if !headHeaders[strings.ToLower(name)] {
+				weaken("redaction_removed", "redaction.headers entry %s was removed; that header's value is no longer redacted in the evidence", name)
+			}
+		}
+	}
 	out = append(out, compareAppLogs(b.AppLogs, h.AppLogs)...)
 	out = append(out, compareRelations(b, h)...)
 	return out
+}
+
+func identityCheckText(c *model.Config) string {
+	ic := c.IdentityCheck
+	driver, err := c.IdentityCheckDriver()
+	if err != nil || driver == "" {
+		driver = orNone(ic.Driver)
+	}
+	return fmt.Sprintf("{ driver: %s, path: %q, user_id: %s }", driver, ic.Path, ic.UserID)
+}
+
+func identityCheckDriver(c *model.Config) string {
+	if d, err := c.IdentityCheckDriver(); err == nil {
+		return d
+	}
+	return c.IdentityCheck.Driver
+}
+
+func compareIdentityCheck(b, h *model.Config) ([]Weakening, []DriverChange) {
+	switch {
+	case b.IdentityCheck == nil && h.IdentityCheck == nil:
+		return nil, nil
+	case h.IdentityCheck == nil:
+		return []Weakening{{Driver: identityCheckDriver(b), Kind: "identity_check_removed",
+			Detail: fmt.Sprintf("identity_check %s was removed; a run no longer checks, before the first scenario, that each identity's token belongs to the user its binding names, so a scenario meant to keep one user from another's data may test a user against their own (AUTH-04)", identityCheckText(b))}}, nil
+	case b.IdentityCheck == nil:
+		return nil, []DriverChange{{Driver: identityCheckDriver(h), Kind: "identity_check_added",
+			Detail: fmt.Sprintf("identity_check %s: each identity is checked before the first scenario (AUTH-04)", identityCheckText(h))}}
+	}
+	bt, ht := identityCheckText(b), identityCheckText(h)
+	bp, _ := expr.Canonical(b.IdentityCheck.UserID)
+	hp, _ := expr.Canonical(h.IdentityCheck.UserID)
+	if bt == ht || (identityCheckDriver(b) == identityCheckDriver(h) && b.IdentityCheck.Path == h.IdentityCheck.Path && bp != "" && bp == hp) {
+		return nil, nil
+	}
+	return []Weakening{{Driver: identityCheckDriver(h), Kind: "identity_check_changed",
+		Detail: fmt.Sprintf("identity_check %s became %s; judge whether the new endpoint and path still name the user each token belongs to (AUTH-04)", bt, ht)}}, nil
 }
 
 func compareRelations(b, h *model.Config) []Weakening {

@@ -37,21 +37,71 @@ func (c *conn) roleProblems(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	checks := []struct {
+	rows, err = q(`SELECT current_setting('server_version_num')::int`)
+	if err != nil {
+		return nil, err
+	}
+	version := int64(0)
+	if len(rows) == 1 {
+		if v, ok := rows[0][0].(json.Number); ok {
+			if n, err := v.Int64(); err == nil {
+				version = n
+			}
+		}
+	}
+
+	const me = `(SELECT oid FROM pg_roles WHERE rolname = current_user)`
+	type check struct {
 		sql  string
 		what string
-	}{
-		{`SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
-			WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = current_user) ORDER BY 1`, "is a member of role %s"},
-		{`SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-			WHERE c.relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) ORDER BY 1`, "owns %s"},
-		{`SELECT nspname FROM pg_namespace WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) ORDER BY 1`, "owns schema %s"},
-		{`SELECT p.oid::regprocedure::text FROM pg_proc p WHERE p.proowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) ORDER BY 1`, "owns function %s"},
-		{`SELECT datname FROM pg_database WHERE datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user) ORDER BY 1`, "owns database %s"},
-		{`SELECT nspname FROM pg_namespace
-			WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\_toast%' AND nspname NOT LIKE 'pg\_temp%'
-			AND has_schema_privilege(oid, 'CREATE') ORDER BY 1`, "can CREATE in schema %s"},
 	}
+	checks := []check{
+		{`SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+			WHERE m.member = ` + me + ` ORDER BY 1`, "is a member of role %s"},
+		{`SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relowner = ` + me + ` ORDER BY 1`, "owns %s"},
+		{`SELECT nspname FROM pg_namespace WHERE nspowner = ` + me + ` ORDER BY 1`, "owns schema %s"},
+		{`SELECT p.oid::regprocedure::text FROM pg_proc p WHERE p.proowner = ` + me + ` ORDER BY 1`, "owns function %s"},
+		{`SELECT datname FROM pg_database WHERE datdba = ` + me + ` ORDER BY 1`, "owns database %s"},
+		{`SELECT CASE t.typtype WHEN 'd' THEN 'domain ' ELSE 'type ' END || n.nspname || '.' || t.typname
+			FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+			WHERE t.typowner = ` + me + ` AND t.typrelid = 0 AND t.typtype <> 'm'
+			AND NOT EXISTS (SELECT 1 FROM pg_type e WHERE e.typarray = t.oid) ORDER BY 1`, "owns %s"},
+		{`SELECT oid::text FROM pg_largeobject_metadata WHERE lomowner = ` + me + ` ORDER BY oid`, "owns large object %s"},
+		{`SELECT n.nspname || '.' || c.collname FROM pg_collation c JOIN pg_namespace n ON n.oid = c.collnamespace
+			WHERE c.collowner = ` + me + ` ORDER BY 1`, "owns collation %s"},
+		{`SELECT n.nspname || '.' || c.conname FROM pg_conversion c JOIN pg_namespace n ON n.oid = c.connamespace
+			WHERE c.conowner = ` + me + ` ORDER BY 1`, "owns conversion %s"},
+		{`SELECT n.nspname || '.' || o.oprname || ' (' || COALESCE(format_type(NULLIF(o.oprleft, 0), NULL), 'NONE') || ', ' || format_type(o.oprright, NULL) || ')'
+			FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE o.oprowner = ` + me + ` ORDER BY 1`, "owns operator %s"},
+		{`SELECT n.nspname || '.' || c.opcname || ' using ' || a.amname FROM pg_opclass c
+			JOIN pg_namespace n ON n.oid = c.opcnamespace JOIN pg_am a ON a.oid = c.opcmethod
+			WHERE c.opcowner = ` + me + ` ORDER BY 1`, "owns operator class %s"},
+		{`SELECT n.nspname || '.' || f.opfname || ' using ' || a.amname FROM pg_opfamily f
+			JOIN pg_namespace n ON n.oid = f.opfnamespace JOIN pg_am a ON a.oid = f.opfmethod
+			WHERE f.opfowner = ` + me + ` ORDER BY 1`, "owns operator family %s"},
+		{`SELECT lanname FROM pg_language WHERE lanowner = ` + me + ` ORDER BY 1`, "owns language %s"},
+		{`SELECT n.nspname || '.' || c.cfgname FROM pg_ts_config c JOIN pg_namespace n ON n.oid = c.cfgnamespace
+			WHERE c.cfgowner = ` + me + ` ORDER BY 1`, "owns text search configuration %s"},
+		{`SELECT n.nspname || '.' || d.dictname FROM pg_ts_dict d JOIN pg_namespace n ON n.oid = d.dictnamespace
+			WHERE d.dictowner = ` + me + ` ORDER BY 1`, "owns text search dictionary %s"},
+		{`SELECT extname FROM pg_extension WHERE extowner = ` + me + ` ORDER BY 1`, "owns extension %s"},
+		{`SELECT fdwname FROM pg_foreign_data_wrapper WHERE fdwowner = ` + me + ` ORDER BY 1`, "owns foreign-data wrapper %s"},
+		{`SELECT srvname FROM pg_foreign_server WHERE srvowner = ` + me + ` ORDER BY 1`, "owns foreign server %s"},
+		{`SELECT evtname FROM pg_event_trigger WHERE evtowner = ` + me + ` ORDER BY 1`, "owns event trigger %s"},
+		{`SELECT spcname FROM pg_tablespace WHERE spcowner = ` + me + ` ORDER BY 1`, "owns tablespace %s"},
+	}
+	if version >= 100000 {
+		checks = append(checks,
+			check{`SELECT pubname FROM pg_publication WHERE pubowner = ` + me + ` ORDER BY 1`, "owns publication %s"},
+			check{`SELECT subname FROM pg_subscription WHERE subowner = ` + me + ` ORDER BY 1`, "owns subscription %s"},
+			check{`SELECT n.nspname || '.' || s.stxname FROM pg_statistic_ext s JOIN pg_namespace n ON n.oid = s.stxnamespace
+			WHERE s.stxowner = ` + me + ` ORDER BY 1`, "owns statistics object %s"},
+		)
+	}
+	checks = append(checks, check{`SELECT nspname FROM pg_namespace
+			WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\_toast%' AND nspname NOT LIKE 'pg\_temp%'
+			AND has_schema_privilege(oid, 'CREATE') ORDER BY 1`, "can CREATE in schema %s"})
 	for _, ch := range checks {
 		rows, err := q(ch.sql)
 		if err != nil {
@@ -62,10 +112,6 @@ func (c *conn) roleProblems(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	rows, err = q(`SELECT current_setting('server_version_num')::int`)
-	if err != nil {
-		return nil, err
-	}
 	privileges := []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
 	columns := `has_any_column_privilege(c.oid, 'SELECT'),
 			has_any_column_privilege(c.oid, 'INSERT'),
@@ -74,14 +120,10 @@ func (c *conn) roleProblems(ctx context.Context) ([]string, error) {
 			has_table_privilege(c.oid, 'TRUNCATE'),
 			has_any_column_privilege(c.oid, 'REFERENCES'),
 			has_table_privilege(c.oid, 'TRIGGER')`
-	if len(rows) == 1 {
-		if v, ok := rows[0][0].(json.Number); ok {
-			if n, err := v.Int64(); err == nil && n >= 170000 {
-				privileges = append(privileges, "MAINTAIN")
-				columns += `,
+	if version >= 170000 {
+		privileges = append(privileges, "MAINTAIN")
+		columns += `,
 			has_table_privilege(c.oid, 'MAINTAIN')`
-			}
-		}
 	}
 	rows, err = q(`SELECT n.nspname || '.' || c.relname, c.relkind::text,
 			` + columns + `

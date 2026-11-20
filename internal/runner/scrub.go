@@ -78,6 +78,13 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 	for i := range out.Violations {
 		out.Violations[i] = s.clean(out.Violations[i])
 	}
+	if ic := out.Identity; ic != nil {
+		ic.Message = s.clean(ic.Message)
+		for i := range ic.Identities {
+			e := &ic.Identities[i]
+			e.Message, e.Expected, e.Actual = s.clean(e.Message), s.clean(e.Expected), s.clean(e.Actual)
+		}
+	}
 	for i := range out.Drivers {
 		d := &out.Drivers[i]
 		d.Stderr = s.clean(d.Stderr)
@@ -90,6 +97,7 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 		s.scrubApproved(out.Tables[i].ApprovedLog)
 	}
 	for i := range out.Scenarios {
+		out.Scenarios[i].Message = s.clean(out.Scenarios[i].Message)
 		r.scrubAppLogs(out.Scenarios[i].AppLogs)
 		s.scrubApproved(out.Scenarios[i].Transcript)
 		s.scrubApproved(out.Scenarios[i].ApprovedLog)

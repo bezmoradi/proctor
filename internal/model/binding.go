@@ -5,6 +5,7 @@ type Binding struct {
 	Identities  map[string]BindingIdentity `yaml:"identities"`
 	Secrets     map[string]BindingSecret   `yaml:"secrets"`
 	Environment string                     `yaml:"environment"`
+	Disposable  bool                       `yaml:"disposable"`
 	Image       *BindingImage              `yaml:"image"`
 	AppLogs     *BindingAppLogs            `yaml:"app_logs"`
 }

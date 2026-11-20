@@ -47,6 +47,7 @@ const (
 	excerptBytes  = 4 << 10
 	maxCABundleSz = 1 << 20
 	holdRule      = "SQS-03"
+	redriveRule   = "SQS-04"
 	maxHold       = 30
 	releaseMargin = 2 * time.Second
 	releaseGrace  = 500 * time.Millisecond

@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Only the owner releases
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != bezmoradi ]; then
+            echo "::error::Only bezmoradi starts a release; this run was started by $ACTOR."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tag names a release version on main
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' || [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+            echo "::error::$GITHUB_REF isn't a release tag vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::$GITHUB_SHA isn't on main; tag a commit on main."
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/release.sh "$VERSION" "$RUNNER_TEMP/dist"
+      - name: Check the archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          (cd "$dist" && sha256sum --strict -c SHA256SUMS)
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            name="proctor-$VERSION-$target"
+            grep -qx "[0-9a-f]\{64\}  $name.tar.gz" "$dist/SHA256SUMS"
+            check="$RUNNER_TEMP/check/$name"
+            mkdir -p "$check"
+            tar -xzf "$dist/$name.tar.gz" -C "$check" --no-same-owner
+            (cd "$check/$name" && sha256sum --strict -c SHA256SUMS && test -x proctor && ls proctor-driver-* >/dev/null)
+          done
+          got=$("$RUNNER_TEMP/check/proctor-$VERSION-linux-amd64/proctor-$VERSION-linux-amd64/proctor" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::The linux/amd64 proctor reports version $got, not $VERSION."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: dist
+          path: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/*-NOTICES.txt
+            ${{ runner.temp }}/dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  attest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - name: Check the archives against SHA256SUMS
+        run: cd "$RUNNER_TEMP/dist" && sha256sum --strict -c SHA256SUMS
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/*-NOTICES.txt
+            ${{ runner.temp }}/dist/SHA256SUMS
+          create-storage-record: false
+
+  draft:
+    needs: [build, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - name: Create a draft release with the archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          [ "$TAG" = "v$VERSION" ]
+          dist="$RUNNER_TEMP/dist"
+          (cd "$dist" && sha256sum --strict -c SHA256SUMS)
+          set --
+          case "$VERSION" in *-*) set -- --prerelease ;; esac
+          fence='```'
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Proctor $VERSION for linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64. Each archive holds \`proctor\`, the drivers whose checksums are built into it, the SES simulator, \`LICENSE\`, \`NOTICES.txt\` and a \`SHA256SUMS\` of its files. Keep them in one folder: \`proctor\` refuses drivers that don't match (INT-17).
+
+          ${fence}bash
+          VERSION=$VERSION OS=linux ARCH=amd64
+          curl -fsSLO https://github.com/$GITHUB_REPOSITORY/releases/download/v\$VERSION/proctor-\$VERSION-\$OS-\$ARCH.tar.gz
+          curl -fsSLO https://github.com/$GITHUB_REPOSITORY/releases/download/v\$VERSION/SHA256SUMS
+          grep " proctor-\$VERSION-\$OS-\$ARCH.tar.gz\$" SHA256SUMS | shasum -a 256 -c -
+          gh attestation verify proctor-\$VERSION-\$OS-\$ARCH.tar.gz -R $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-ref refs/tags/v\$VERSION
+          ${fence}
+
+          The archives, \`SHA256SUMS\` and the notices carry build provenance signed keylessly with Sigstore by this repository's release workflow for $TAG, from commit $GITHUB_SHA.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "$@" \
+            --title "Proctor $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$dist"/*.tar.gz "$dist"/*-NOTICES.txt "$dist/SHA256SUMS"

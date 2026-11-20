@@ -61,6 +61,8 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 		if err != nil {
 			return diffError(stdout, stderr, c.json, err)
 		}
+	} else if err := protdiff.CheckMergeBase(repo, base, head); err != nil {
+		return diffBaseError(stdout, stderr, c.json, err)
 	}
 	res, err := protdiff.Compute(repo, base, head, c.config)
 	if err != nil {
@@ -84,6 +86,17 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Protected changes against base: none")
 		return exitOK
 	}
+	if len(res.Weakenings) > 0 {
+		fmt.Fprintln(stdout, "Weakenings (review these first):")
+		for _, wk := range res.Weakenings {
+			line := fmt.Sprintf("  %-20s %s: %s", safe(wk.Kind), safe(weakeningPlace(wk, c.config)), safe(wk.Detail))
+			if wk.AssertionsLost > 0 {
+				line += fmt.Sprintf(" (%d assertion(s) lost)", wk.AssertionsLost)
+			}
+			fmt.Fprintln(stdout, line)
+		}
+		fmt.Fprintln(stdout, "\nChanged files:")
+	}
 	for _, f := range res.Files {
 		line := fmt.Sprintf("  %-9s %s", safe(f.Change), safe(f.Path))
 		if f.From != "" {
@@ -103,16 +116,6 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 				if s.Modified {
 					line += ", modified"
 				}
-			}
-			fmt.Fprintln(stdout, line)
-		}
-	}
-	if len(res.Weakenings) > 0 {
-		fmt.Fprintln(stdout, "\nWeakenings (review these first):")
-		for _, wk := range res.Weakenings {
-			line := fmt.Sprintf("  %-20s %s: %s", safe(wk.Kind), safe(weakeningPlace(wk, c.config)), safe(wk.Detail))
-			if wk.AssertionsLost > 0 {
-				line += fmt.Sprintf(" (%d assertion(s) lost)", wk.AssertionsLost)
 			}
 			fmt.Fprintln(stdout, line)
 		}
@@ -176,6 +179,17 @@ func diffError(stdout, stderr io.Writer, asJSON bool, err error) int {
 		_ = enc.Encode(map[string]any{"result": "integrity_violation", "exit_code": exitIntegrity, "error": err.Error()})
 	} else {
 		fmt.Fprintf(stderr, "proctor diff: integrity violation (INT-08): %s\n", safe(err.Error()))
+	}
+	return exitIntegrity
+}
+
+func diffBaseError(stdout, stderr io.Writer, asJSON bool, err error) int {
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(map[string]any{"result": "integrity_violation", "exit_code": exitIntegrity, "error": "INT-09: " + err.Error()})
+	} else {
+		fmt.Fprintf(stderr, "proctor diff: integrity violation (INT-09): %s\n", safe(err.Error()))
 	}
 	return exitIntegrity
 }

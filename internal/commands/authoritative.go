@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -33,23 +32,31 @@ type authOptions struct {
 	progress                      func(runner.Progress)
 	kind, kindSource              string
 	kindGiven, kindSourceGiven    bool
+	earlier                       string
+	earlierGiven                  bool
 }
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+const protectedPathKey = "protected_paths:"
 
 type authReport struct {
 	Result           string                  `json:"result"`
 	ExitCode         int                     `json:"exit_code"`
 	Mode             string                  `json:"mode"`
+	Aborted          bool                    `json:"aborted,omitempty"`
+	Reason           string                  `json:"reason,omitempty"`
 	Trust            authTrust               `json:"trust"`
 	Provenance       authProvenance          `json:"provenance"`
 	ProtectedChanges *protdiff.Result        `json:"protected_changes"`
 	ChangeKind       *protdiff.KindCheck     `json:"change_kind"`
+	EarlierAttempts  *earlierAttempts        `json:"earlier_attempts"`
 	Violations       []string                `json:"violations"`
 	Errors           []string                `json:"errors"`
 	Drivers          []runner.DriverInfo     `json:"drivers"`
 	Target           string                  `json:"target,omitempty"`
 	Readiness        string                  `json:"readiness,omitempty"`
+	IdentityCheck    *runner.IdentityCheck   `json:"identity_check,omitempty"`
 	Summary          *runner.Summary         `json:"summary,omitempty"`
 	Scenarios        []runner.ScenarioResult `json:"scenarios"`
 	Tables           []runner.TableResult    `json:"tables,omitempty"`
@@ -83,7 +90,7 @@ type authProvenance struct {
 	EndedAt        string              `json:"ended_at"`
 }
 
-func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
+func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writer) int {
 	if o.report == "" {
 		fmt.Fprintln(stderr, "proctor run: --report is required with --authoritative (MODE-05)")
 		return exitInvalid
@@ -114,6 +121,13 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	} else if inside {
 		invalid("MODE-01: the binding %s is inside the repository checkout; in authoritative mode it must come from outside it", o.binding)
 	}
+	if o.earlierGiven && o.earlier == "" {
+		invalid("REP-10: --earlier-reports needs a folder")
+	} else if o.earlierGiven {
+		if inside, err := within(repo.Dir(), o.earlier); err == nil && inside {
+			invalid("REP-10: the earlier reports' folder %s is inside the repository checkout; it must come from outside it", o.earlier)
+		}
+	}
 
 	tested, err := repo.ResolveCommit(o.commit)
 	if err != nil {
@@ -136,6 +150,8 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	case o.base != "" && tested != "":
 		if base, err = repo.ResolveCommit(o.base); err != nil {
 			violate("INT-09", "base: %v", err)
+		} else if err = protdiff.CheckMergeBase(repo, base, tested); err != nil {
+			violate("INT-09", "%v", err)
 		}
 	case o.base == "" && o.prHead == "":
 		invalid("INT-09: --pr-head or --base is required in authoritative mode, so protected changes are found against the right base")
@@ -160,6 +176,9 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		ar.Provenance.SHA256 = map[string]string{}
 		for k, v := range rep.Hashes {
 			ar.Provenance.SHA256[k] = v
+		}
+		for k, v := range rep.ProtectedPathHashes {
+			ar.Provenance.SHA256[protectedPathKey+k] = v
 		}
 	}
 
@@ -208,13 +227,15 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	client := github.Client(10 * time.Second)
 
-	ident, err := github.FetchIdentity(ctx, client)
+	ident, err := (*github.Identity)(nil), github.ErrNoToken
+	if ctx.Err() == nil {
+		ident, err = github.FetchIdentity(ctx, client)
+	}
 	switch {
 	case errors.Is(err, github.ErrNoToken):
+	case err != nil && ctx.Err() != nil:
 	case err != nil:
 		violate("MODE-03", "the job offers an OIDC token, but it can't be verified: %v", err)
 	default:
@@ -248,11 +269,12 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 	}
 	switch {
 	case base == "":
+	case ctx.Err() != nil:
 	case ar.Provenance.Repository == "" || token == "":
 		violate("INT-11", "can't ask GitHub to check CODEOWNERS: GITHUB_REPOSITORY and GITHUB_TOKEN must be set (the job needs contents: read)")
 	default:
 		errs, err := github.CodeownersErrors(ctx, client, api, ar.Provenance.Repository, token, base)
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			violate("INT-11", "checking CODEOWNERS with GitHub: %v", err)
 		}
 		for _, e := range errs {
@@ -273,10 +295,35 @@ func runAuthoritative(o authOptions, stdout, stderr io.Writer) int {
 		code = exitInvalid
 	}
 	var out *runner.Outcome
-	if code == exitOK {
+	if code == exitOK && ctx.Err() == nil {
 		code, out = authRun(ctx, o, ar, rep, &b)
 	}
+	ar.Aborted = ctx.Err() != nil && (out == nil || out.Aborted)
+	if ar.Aborted && code == exitOK {
+		code = exitError
+	}
 	ar.ExitCode, ar.Result = code, resultName(code)
+	if out == nil {
+		reason := ""
+		switch {
+		case code == exitInvalid:
+			reason = runner.ReasonConfigurationError
+		case code == exitError && ar.Aborted:
+			reason = runner.ReasonAborted
+		}
+		var specs []runner.SpecFile
+		if rep != nil {
+			specs = specFiles(rep)
+		}
+		stopped := runner.NotStarted(specs, reason, nil)
+		ar.Scenarios, ar.Tables, ar.Summary = stopped.Scenarios, stopped.Tables, &stopped.Summary
+	}
+	ar.Summary.IntegrityViolations = append([]string{}, ar.Violations...)
+	if ar.ProtectedChanges != nil {
+		n := ar.ProtectedChanges.Count()
+		ar.Summary.ProtectedChanges = &n
+	}
+	ar.EarlierAttempts = checkEarlier(o.earlier, o.earlierGiven, ar.Provenance)
 	ar.Provenance.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
 	data, err := json.MarshalIndent(ar, "", "  ")
@@ -325,7 +372,8 @@ func changeKindText(k *protdiff.KindCheck) string {
 }
 
 func newAuthReport() *authReport {
-	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{}}
+	ar := &authReport{Mode: "authoritative", Violations: []string{}, Errors: []string{}, Drivers: []runner.DriverInfo{}, Scenarios: []runner.ScenarioResult{},
+		EarlierAttempts: notCheckedEarlier("the run stopped before it read any earlier report")}
 	ar.Trust = authTrust{WorkflowIdentity: "unverified", WorkflowChanged: "unknown", CodeownersErrors: []string{}, UnownedProtectedPaths: []string{}}
 	ar.Provenance = authProvenance{ProctorVersion: Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		CIRunID: os.Getenv("GITHUB_RUN_ID"), CIRunAttempt: os.Getenv("GITHUB_RUN_ATTEMPT"), Repository: os.Getenv("GITHUB_REPOSITORY")}
@@ -397,6 +445,7 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 	}
 	ar.Violations = append(ar.Violations, out.Violations...)
 	ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
+	ar.IdentityCheck = out.Identity
 	ar.Provenance.RunID = out.RunID
 	if out.Drivers != nil {
 		ar.Drivers = out.Drivers
@@ -514,8 +563,16 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 	}
 	fmt.Fprintf(w, "Workflow changed: %v\n", ar.Trust.WorkflowChanged)
 	fmt.Fprintf(w, "Change kind:     %s\n", changeKindText(ar.ChangeKind))
+	writeEarlier(w, ar.EarlierAttempts)
 	writeDrivers(w, ar.Drivers)
-	if ar.ProtectedChanges != nil {
+	if ar.ProtectedChanges != nil && rep != nil {
+		for _, wk := range ar.ProtectedChanges.Weakenings {
+			line := fmt.Sprintf("WEAKENING          %s %s: %s", safe(wk.Kind), safe(weakeningPlace(wk, rep.ConfigPath)), safe(wk.Detail))
+			if wk.AssertionsLost > 0 {
+				line += fmt.Sprintf(" (%d assertion(s) lost)", wk.AssertionsLost)
+			}
+			fmt.Fprintln(w, line)
+		}
 		for _, f := range ar.ProtectedChanges.Files {
 			fmt.Fprintf(w, "APPROVAL REQUIRED  %s %s\n", safe(f.Change), safe(f.Path))
 		}
@@ -530,6 +587,9 @@ func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out 
 		fmt.Fprintf(w, "%s %s\n", errorLabel(ar.ExitCode), safe(e))
 	}
 	if out == nil {
+		if ar.Aborted {
+			fmt.Fprintln(w, abortedNote)
+		}
 		fmt.Fprintf(w, "\nNo scenario was run.\nRESULT: %s (exit %d, authoritative)\n", strings.ToUpper(ar.Result), ar.ExitCode)
 		return
 	}
@@ -563,6 +623,10 @@ func writeKindSummary(w io.Writer, k *protdiff.KindCheck) {
 
 func writeSummary(w io.Writer, ar *authReport, config string) {
 	fmt.Fprintf(w, "## Proctor: %s (exit %d)\n\n", strings.ToUpper(ar.Result), ar.ExitCode)
+	if ar.Aborted {
+		fmt.Fprintln(w, "**The run was interrupted** (SIGINT or SIGTERM): no scenario started after it, so this result is incomplete.")
+		fmt.Fprintln(w)
+	}
 	p := ar.Provenance
 	fmt.Fprintf(w, "Tested commit %s, base %s", code(orDash(p.TestedCommit)), code(orDash(p.Base)))
 	if p.PRHead != "" {
@@ -571,6 +635,7 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 	fmt.Fprintln(w, ".")
 	fmt.Fprintln(w)
 	writeKindSummary(w, ar.ChangeKind)
+	writeEarlierSummary(w, ar.EarlierAttempts)
 	if len(ar.Drivers) > 0 {
 		fmt.Fprintln(w, "| Driver | Program | Version | Origin | Proofs |\n|---|---|---|---|---|")
 		for _, d := range ar.Drivers {
@@ -593,14 +658,14 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 	if ar.ProtectedChanges != nil && len(ar.ProtectedChanges.Files) > 0 {
 		fmt.Fprintln(w, "### Protected changes: approval required")
 		fmt.Fprintln(w)
+		for _, wk := range ar.ProtectedChanges.Weakenings {
+			fmt.Fprintf(w, "- weakening in %s: %s\n", md(weakeningPlace(wk, config)), md(wk.Detail))
+		}
 		for _, f := range ar.ProtectedChanges.Files {
 			fmt.Fprintf(w, "- %s %s\n", md(f.Change), code(f.Path))
 		}
 		for _, d := range ar.ProtectedChanges.Drivers {
 			fmt.Fprintf(w, "- %s %s: %s\n", md(d.Kind), code(d.Driver), md(d.Detail))
-		}
-		for _, wk := range ar.ProtectedChanges.Weakenings {
-			fmt.Fprintf(w, "- weakening in %s: %s\n", md(weakeningPlace(wk, config)), md(wk.Detail))
 		}
 		fmt.Fprintln(w)
 	}
@@ -609,6 +674,13 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 	}
 	for _, e := range ar.Errors {
 		fmt.Fprintf(w, "- %s: %s\n", strings.ToLower(strings.TrimSpace(errorLabel(ar.ExitCode))), md(e))
+	}
+	if ic := ar.IdentityCheck; ic != nil && (ic.Result == runner.Fail || ic.Result == runner.Error) {
+		for _, e := range ic.Identities {
+			if e.Result == runner.Fail || e.Result == runner.Error {
+				fmt.Fprintf(w, "- identity check %s: %s: %s\n", md(string(e.Result)), code(e.Identity), md(e.Message))
+			}
+		}
 	}
 	if len(ar.Scenarios) > 0 {
 		fmt.Fprintln(w, "\n| Scenario | Result |\n|---|---|")

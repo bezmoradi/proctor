@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -24,7 +25,7 @@ import (
 type runOptions struct {
 	common
 	binding, commit, base, prHead, report string
-	received, kind, kindSource            string
+	received, kind, kindSource, earlier   string
 	authoritative, noProgress             bool
 	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
@@ -55,11 +56,19 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	f.StringVar(&o.report, "report", "", "where to write the JSON report: required with --authoritative; in local mode it gets the document --json prints, with mode 0600")
 	f.BoolVar(&o.noProgress, "no-progress", false, "don't write a line to stderr as each scenario finishes")
 	addChangeKind(cmd, &o.kind, &o.kindSource)
+	f.StringVar(&o.earlier, "earlier-reports", "", "with --authoritative: folder, outside the repository, holding the JSON reports of this workflow run's earlier attempts; the report and job summary name each earlier attempt that recorded a behavioral FAIL for the same tested commit and input hashes, and each attempt without such a report as unknown, without changing the result (REP-10)")
 	f.StringVar(&o.received, "received", "", "folder, outside the repository and new or empty, for the received transcripts and logs of scenarios with transcript: true or approved_log: true (default: a new folder under $TMPDIR/proctor-received/<project>/)")
 	return cmd
 }
 
-func run(o runOptions, stdout, stderr io.Writer) int {
+func run(o runOptions, stdout, stderr io.Writer) (code int) {
+	ctx, stop := interruptContext()
+	defer stop()
+	defer func() {
+		if v := recover(); v != nil {
+			code = reportInternal(v, o.report, o.authoritative, o.json, stdout, stderr)
+		}
+	}()
 	c, bindingPath := o.common, o.binding
 	refuse := func(prefix, msg string) int {
 		fmt.Fprintln(stderr, prefix+safe(msg))
@@ -74,11 +83,12 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	progress, endProgress := newProgress(stderr, o.noProgress)
 	defer endProgress()
 	if o.authoritative {
-		return runAuthoritative(authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
+		return runAuthoritative(ctx, authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
 			received: o.received, callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress,
-			kind: o.kind, kindSource: o.kindSource, kindGiven: o.set("change-kind"), kindSourceGiven: o.set("change-kind-source")}, stdout, stderr)
+			kind: o.kind, kindSource: o.kindSource, kindGiven: o.set("change-kind"), kindSourceGiven: o.set("change-kind-source"),
+			earlier: o.earlier, earlierGiven: o.set("earlier-reports")}, stdout, stderr)
 	}
-	for _, name := range []string{"commit", "base", "pr-head", "change-kind", "change-kind-source"} {
+	for _, name := range []string{"commit", "base", "pr-head", "change-kind", "change-kind-source", "earlier-reports"} {
 		if o.set(name) {
 			return refuse("proctor run: ", "--"+name+" is only for --authoritative")
 		}
@@ -95,38 +105,40 @@ func run(o runOptions, stdout, stderr io.Writer) int {
 	}
 	rep := integrity.Load(integrity.WorkTreeSource{Root: repo.Dir()}, c.config)
 	if code := rep.ExitCode(); code != exitOK {
-		return emit(func(w io.Writer, asJSON bool) int { return write(w, asJSON, "RUN", rep, nil, code, resultName(code)) })
+		dc := &driverCheck{stopped: stoppedOutcome(rep, code, false, nil)}
+		return emit(func(w io.Writer, asJSON bool) int { return write(w, asJSON, "RUN", rep, dc, code, resultName(code)) })
 	}
 
 	b, err := readBinding(bindingPath)
 	if err != nil {
 		se := &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}}
-		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
+	}
+	if ctx.Err() != nil {
+		se := &runner.SetupError{ExitCode: exitError, Msgs: []string{"the run was interrupted before any scenario started"}}
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, true) })
 	}
 	opt := runner.Options{CallTimeout: o.callTimeout, ReadyTimeout: o.readyTimeout, LookupEnv: os.LookupEnv, Progress: progress}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	info, drivers, se := describeSteps(ctx, rep, b, opt)
 	if se != nil {
-		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
 	}
 	if code := rep.ExitCode(); code != exitOK {
-		return emit(func(w io.Writer, asJSON bool) int {
-			return write(w, asJSON, "RUN", rep, &driverCheck{drivers: drivers}, code, resultName(code))
-		})
+		dc := &driverCheck{drivers: drivers, stopped: stoppedOutcome(rep, code, false, nil)}
+		return emit(func(w io.Writer, asJSON bool) int { return write(w, asJSON, "RUN", rep, dc, code, resultName(code)) })
 	}
 	opt.Described = info
 	opt.RunID = runner.NewRunID()
 	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
 	if err != nil {
 		se := asSetupError(err)
-		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
 	}
 	defer rn.Close()
 	rd, err := prepareReceived(o.received, repo.Dir(), rep, opt.RunID)
 	if err != nil {
 		se := &runner.SetupError{ExitCode: pathErrorCode(err), Msgs: []string{"received transcripts: " + err.Error()}}
-		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se) })
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
 	}
 	if rd != nil {
 		rn.SetReceived(rd.write)
@@ -147,29 +159,34 @@ func writeLocalRun(w io.Writer, asJSON bool, rep *integrity.Report, out *runner.
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{
+		doc := map[string]any{
 			"result":    out.Result,
 			"exit_code": out.ExitCode,
 			"mode":      "local",
-			"trust":     map[string]any{"authoritative": false, "reason": "local mode reads the working tree; the result is not evidence for a commit"},
+			"trust":     localTrust,
 			"provenance": map[string]any{
 				"proctor_version": Version,
 				"config":          rep.ConfigPath,
 				"sha256":          rep.Hashes,
 			},
-			"run_id":     out.RunID,
-			"target":     out.Target,
-			"readiness":  out.Readiness,
-			"violations": out.Violations,
-			"drivers":    out.Drivers,
-			"summary":    out.Summary,
-			"scenarios":  out.Scenarios,
-			"tables":     out.Tables,
-			"received":   out.Received,
-		})
+			"run_id":         out.RunID,
+			"target":         out.Target,
+			"readiness":      out.Readiness,
+			"violations":     out.Violations,
+			"identity_check": out.Identity,
+			"drivers":        out.Drivers,
+			"summary":        out.Summary,
+			"scenarios":      out.Scenarios,
+			"tables":         out.Tables,
+			"received":       out.Received,
+		}
+		if out.Aborted {
+			doc["aborted"] = true
+		}
+		_ = enc.Encode(doc)
 		return out.ExitCode
 	}
-	writeRun(w, rep, out, "local, non-authoritative")
+	writeRun(w, rep, out, localMode)
 	return out.ExitCode
 }
 
@@ -189,15 +206,50 @@ func emitLocal(report string, asJSON bool, stdout, stderr io.Writer, render func
 	return code
 }
 
+func interruptContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+func reportInternal(v any, report string, authoritative, asJSON bool, stdout, stderr io.Writer) int {
+	msg := safe("Proctor failed internally (a panic, recovered): " + fmt.Sprint(v))
+	fmt.Fprintln(stderr, "proctor: "+msg)
+	var doc any = map[string]any{"result": resultName(exitError), "exit_code": exitError, "mode": "local", "reason": runner.ReasonInternal, "errors": []string{msg}}
+	if authoritative {
+		ar := newAuthReport()
+		ar.Errors = append(ar.Errors, msg)
+		ar.ExitCode, ar.Result, ar.Reason = exitError, resultName(exitError), runner.ReasonInternal
+		ar.Provenance.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		doc = ar
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
+		return exitError
+	}
+	data = append(data, '\n')
+	if asJSON {
+		_, _ = stdout.Write(data)
+	}
+	if report != "" {
+		if err := writePrivate(report, data); err != nil {
+			fmt.Fprintf(stderr, "proctor: writing the report: %s\n", safe(err.Error()))
+		}
+	}
+	return exitError
+}
+
 func reportRefusal(report string, authoritative bool, code int, msg string, stderr io.Writer) int {
 	if report == "" {
 		return code
 	}
-	var doc any = map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": []string{msg}}
+	local := map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": []string{msg}}
+	addStopped(local, runner.NotStarted(nil, "", nil))
+	var doc any = local
 	if authoritative {
 		ar := newAuthReport()
 		ar.Errors = append(ar.Errors, msg)
 		ar.ExitCode, ar.Result = code, resultName(code)
+		ar.Summary = &runner.NotStarted(nil, "", nil).Summary
 		ar.Provenance.EndedAt = ar.Provenance.StartedAt
 		doc = ar
 	}
@@ -251,7 +303,7 @@ func asSetupError(err error) *runner.SetupError {
 	return &runner.SetupError{ExitCode: exitError, Msgs: []string{err.Error()}}
 }
 
-func setupFailed(stdout io.Writer, asJSON bool, rep *integrity.Report, se *runner.SetupError) int {
+func setupFailed(stdout io.Writer, asJSON bool, rep *integrity.Report, se *runner.SetupError, aborted bool) int {
 	code := se.ExitCode
 	if code < exitError {
 		code = exitError
@@ -259,13 +311,45 @@ func setupFailed(stdout io.Writer, asJSON bool, rep *integrity.Report, se *runne
 	if asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": se.Msgs})
+		doc := map[string]any{"result": resultName(code), "exit_code": code, "mode": "local", "errors": se.Msgs}
+		if aborted {
+			doc["aborted"] = true
+		}
+		var violations []string
+		if code == exitIntegrity {
+			violations = se.Msgs
+		}
+		addStopped(doc, stoppedOutcome(rep, code, aborted, violations))
+		_ = enc.Encode(doc)
 		return code
 	}
 	fmt.Fprintf(stdout, "PROCTOR RUN  (local, non-authoritative)\n\nConfiguration:   %s\n\n", safe(rep.ConfigPath))
 	for _, m := range se.Msgs {
 		fmt.Fprintf(stdout, "%s %s\n", setupLabel(code), safe(m))
 	}
-	fmt.Fprintf(stdout, "\nNothing was sent to the application.\nRESULT: %s (exit %d)\n", strings.ToUpper(resultName(code)), code)
+	if aborted {
+		fmt.Fprintln(stdout, abortedNote)
+	}
+	fmt.Fprintf(stdout, "\nNothing was sent to the application.\nRESULT: %s (exit %d, %s)\n", strings.ToUpper(resultName(code)), code, localMode)
 	return code
+}
+
+func stoppedOutcome(rep *integrity.Report, code int, aborted bool, violations []string) *runner.Outcome {
+	var specs []runner.SpecFile
+	if rep != nil {
+		specs = specFiles(rep)
+		for _, f := range rep.Findings {
+			if f.Kind == integrity.Violation {
+				violations = append(violations, f.Rule+": "+strings.TrimPrefix(f.Path+": ", ": ")+f.Message)
+			}
+		}
+	}
+	reason := ""
+	switch {
+	case code == exitInvalid:
+		reason = runner.ReasonConfigurationError
+	case code == exitError && aborted:
+		reason = runner.ReasonAborted
+	}
+	return runner.NotStarted(specs, reason, violations)
 }

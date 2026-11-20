@@ -104,6 +104,12 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 		if bytes.HasPrefix(data, []byte("version https://git-lfs.github.com/spec/")) {
 			r.add(Violation, "INT-13", p, "protected input is a Git LFS pointer")
 		}
+		if !Protected(p, r.ProtectedRoot, nil) {
+			if r.ProtectedPathHashes == nil {
+				r.ProtectedPathHashes = map[string]string{}
+			}
+			r.ProtectedPathHashes[p] = sha(data)
+		}
 		for _, c := range CodeownersPaths {
 			if p == c {
 				codeowners++
