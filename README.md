@@ -15,7 +15,7 @@
 
 # Proctor
 
-Proctor checks that an application still does what people agreed it should do, and refuses to report a pass when the agreement itself was quietly changed. It is for codebases where AI coding agents change the code, the tests and the test configuration in the same pull request. It is a first draft, not yet released.
+Proctor checks that an application still does what people agreed it should do, and refuses to report a pass when the agreement itself was quietly changed. It is for codebases where AI coding agents change the code, the tests and the test configuration in the same pull request.
 
 - The expected behavior lives in YAML specifications under a protected folder, and people approve changes to them through code-owner review.
 - A trusted CI job runs every listed scenario against the application built from the tested commit and records what it checked. Proctor approves nothing; GitHub's branch protection does, using Proctor's check and report as evidence.
@@ -44,8 +44,6 @@ Proctor checks that an application still does what people agreed it should do, a
 - [License](#license)
 
 ## Install
-
-No release is published yet, so until the first one these commands fail: [build from source](#development) instead.
 
 ```sh
 curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install.sh | sh
@@ -79,17 +77,13 @@ gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
+To build from source, see [Development](#development).
+
 Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)). `.github/workflows/release.yml` drafts a release, with `install.sh`, when the owner pushes a `v*` tag on a commit on main; the owner then publishes it.
 
 ## Quick start
 
-Needs Git. [Install](#install) Proctor, or until the first release, with Go 1.27.4 or later and Bash, build it and its drivers into `bin/` in Proctor's checkout (a driver is found beside the `proctor` program, so `go build ./cmd/proctor` alone isn't enough):
-
-```sh
-scripts/build.sh
-```
-
-In your application's Git repository, create a `proctor/` folder with four files:
+Needs Git. [Install](#install) Proctor, then in your application's Git repository create a `proctor/` folder with four files:
 
 ```yaml
 # proctor/proctor.yaml
@@ -157,8 +151,8 @@ drivers:
 Then, from the repository root, with the application running:
 
 ```sh
-/path/to/bin/proctor validate
-/path/to/bin/proctor run --binding proctor/environments/local.yaml
+proctor validate
+proctor run --binding proctor/environments/local.yaml
 ```
 
 `validate` needs neither the application nor Git: in a folder that isn't in a Git repository it reads the files as they are and says `not a Git repository: the folder was read as it is` (`"git": false` with `--json`); with `--commit` it needs Git, and so does every other command that reads the repository. The run waits for `/readyz` (set `ready_path` to your application's health endpoint), executes every listed scenario and prints `RESULT: PASSED (exit 0, local, non-authoritative)` when they all pass. Add `--json` for the machine-readable report.
