@@ -1,0 +1,312 @@
+name: proctor
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+env:
+  PROCTOR_VERSION: <version>
+  PROCTOR_SHA256: <sha256 of proctor-<version>-linux-amd64.tar.gz, from the release's SHA256SUMS>
+  PROCTOR_IDENTITIES: alice bob
+  VERIFY_DIR: proctor/verify
+  VERIFY_COMPOSE: compose.verify.yaml
+
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      kind: ${{ steps.kind.outputs.kind }}
+    steps:
+      - name: Map the proctor label to a change kind
+        id: kind
+        env:
+          EVENT: ${{ github.event_name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ "$EVENT" = merge_group ]; then
+            echo "A merge group carries no labels, so its run passes no change kind."
+            echo "kind=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          kind=$(printf '%s' "$LABELS" | jq -r '
+            [(. // [])[] | select(type == "string" and (ascii_downcase | startswith("proctor:")))]
+            | if length > 1 then "several"
+              elif length == 0 then "none"
+              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0]] // "unknown"
+              end')
+          case "$kind" in
+            none) kind="" ;;
+            refactor | docs | fix | feature) ;;
+            several)
+              echo "::error::The pull request has more than one proctor: label; keep one of proctor:refactor, proctor:docs, proctor:fix and proctor:feature."
+              exit 1
+              ;;
+            *)
+              echo "::error::The pull request has a proctor: label that names no change kind; use proctor:refactor, proctor:docs, proctor:fix or proctor:feature."
+              exit 1
+              ;;
+          esac
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: kind
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build the application image
+        id: image
+        run: |
+          docker build -t app:tested .
+          docker save app:tested -o "$RUNNER_TEMP/image.tar"
+          echo "digest=$(docker image inspect --format '{{.Id}}' app:tested)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  verify:
+    needs: [kind, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: ${{ github.event_name == 'merge_group' && '0' || '2' }}
+          persist-credentials: false
+      - name: Find the base
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          case "$EVENT" in
+            pull_request)
+              test "$(git rev-parse --verify 'HEAD^2^{commit}')" = "$PR_HEAD"
+              base=$(git rev-parse --verify 'HEAD^1^{commit}')
+              ;;
+            merge_group)
+              base=$(git rev-parse --verify "$GROUP_BASE^{commit}")
+              git merge-base --is-ancestor "$base" HEAD
+              ;;
+            *)
+              echo "::error::The workflow doesn't handle the $EVENT event."
+              exit 1
+              ;;
+          esac
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      - name: Build repository drivers from the base
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          dest="$RUNNER_TEMP/base-drivers"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          if [ -n "$(git ls-tree --full-tree "$BASE" -- proctor/drivers)" ]; then
+            git archive --format=tar "$BASE" -- proctor/drivers/ | tar -x -C "$dest" --no-same-owner
+          fi
+          for dir in "$dest"/proctor/drivers/*/; do
+            [ -d "$dir" ] || continue
+            dir=${dir%/}
+            name=${dir##*/}
+            [ -d "$dir/cmd/proctor-driver-$name" ] || continue
+            if ! printf '%s' "$name" | grep -qE '^[a-z][a-z0-9_-]*$'; then
+              echo "::error::proctor/drivers/$name at the base: a repository driver's folder name must match ^[a-z][a-z0-9_-]*$."
+              exit 1
+            fi
+            mod=readonly
+            [ ! -f "$dir/vendor/modules.txt" ] || mod=vendor
+            (cd "$dir" && env -i PATH="$PATH" HOME="$HOME" GOWORK=off GOTOOLCHAIN=go1.27.4 CGO_ENABLED=0 GOFLAGS="-mod=$mod" \
+              GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o "bin/proctor-driver-$name" "./cmd/proctor-driver-$name")
+            echo "built proctor/drivers/$name/bin/proctor-driver-$name from $BASE with sha256 $(sha256sum "$dir/bin/proctor-driver-$name" | cut -d' ' -f1)"
+          done
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: image
+          path: ${{ runner.temp }}/image
+      - name: Load the application image
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+        run: |
+          docker load -i "$RUNNER_TEMP/image/image.tar"
+          test "$(docker image inspect --format '{{.Id}}' app:tested)" = "$BUILT"
+          docker tag "$BUILT" proctor-verify-app:tested
+          test "$(docker image inspect --format '{{.Id}}' proctor-verify-app:tested)" = "$BUILT"
+      - name: Take the dependency definitions from the base
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          dest="$RUNNER_TEMP/verify-env"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          git ls-tree -r -z --full-tree "$BASE" -- "$VERIFY_DIR/" > "$RUNNER_TEMP/verify-tree"
+          test -s "$RUNNER_TEMP/verify-tree"
+          if tr '\0' '\n' < "$RUNNER_TEMP/verify-tree" | grep -vqE '^100(644|755) blob '; then
+            echo "::error::$VERIFY_DIR at the base holds something other than regular files (INT-13)."
+            exit 1
+          fi
+          git archive --format=tar "$BASE" -- "$VERIFY_DIR" | tar -x -C "$dest" --no-same-owner
+          test -f "$dest/$VERIFY_DIR/$VERIFY_COMPOSE"
+          echo "dependency definitions from $BASE, $VERIFY_COMPOSE sha256 $(sha256sum "$dest/$VERIFY_DIR/$VERIFY_COMPOSE" | cut -d' ' -f1)"
+      - name: Start the disposable environment
+        env:
+          BUILT: ${{ needs.build.outputs.digest }}
+        run: |
+          dir="$RUNNER_TEMP/verify-env/$VERIFY_DIR"
+          compose() {
+            env -i PATH="$PATH" HOME="$HOME" APP_IMAGE=proctor-verify-app:tested \
+              docker compose --project-name proctor-verify --project-directory "$dir" -f "$dir/$VERIFY_COMPOSE" "$@"
+          }
+          compose up --detach --wait --wait-timeout 180 --quiet-pull
+          running=$(docker inspect --format '{{.Image}}' "$(compose ps -q app)")
+          test "$running" = "$BUILT"
+          echo "RUNNING=$running" >> "$GITHUB_ENV"
+      - name: Download the earlier attempts' reports
+        if: fromJSON(github.run_attempt) > 1
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: proctor-report-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/earlier-reports
+      - name: Download Proctor
+        run: |
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/proctor.tar.gz" \
+            "https://github.com/bezmoradi/proctor/releases/download/v$PROCTOR_VERSION/proctor-$PROCTOR_VERSION-linux-amd64.tar.gz"
+      - name: Run Proctor
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BUILT: ${{ needs.build.outputs.digest }}
+          BASE: ${{ steps.base.outputs.base }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          CHANGE_KIND: ${{ needs.kind.outputs.kind }}
+        run: |
+          echo "$PROCTOR_SHA256  $RUNNER_TEMP/proctor.tar.gz" | sha256sum -c -
+          dist="$RUNNER_TEMP/proctor-dist"
+          rm -rf "$dist"
+          mkdir -p "$dist"
+          tar -xzf "$RUNNER_TEMP/proctor.tar.gz" -C "$dist" --no-same-owner
+          bin="$dist/proctor-$PROCTOR_VERSION-linux-amd64"
+          (cd "$bin" && sha256sum --strict -c SHA256SUMS)
+          echo "executing proctor with sha256 $(sha256sum "$bin/proctor" | cut -d' ' -f1)"
+
+          umask 077
+          binding="$RUNNER_TEMP/binding.yaml"
+          {
+            printf 'environment: github-actions\ndisposable: true\n'
+            printf 'drivers:\n  http: { base_url: "http://127.0.0.1:18080", user_agent: proctor-ci/0 }\n'
+            printf 'image: { built_digest: "%s", running_digest: "%s" }\n' "$BUILT" "$RUNNING"
+            printf 'identities:\n'
+          } > "$binding"
+          for id in $PROCTOR_IDENTITIES; do
+            if ! printf '%s' "$id" | grep -qE '^[a-z][a-z0-9_]*$'; then
+              echo "::error::Each name in PROCTOR_IDENTITIES must be lower-case letters, digits and _."
+              exit 1
+            fi
+            token=$(curl -fsS --max-time 10 -H 'Host: idp:8080' \
+              --data-urlencode grant_type=client_credentials --data-urlencode "client_id=$id" \
+              --data-urlencode client_secret=unused --data-urlencode scope=app \
+              http://127.0.0.1:18090/proctor/token | jq -r '.access_token // empty')
+            if [ -z "$token" ] || [ "$(printf '%s' "$token" | wc -l)" -ne 0 ]; then
+              echo "::error::The environment's identity provider gave no usable token for $id."
+              exit 1
+            fi
+            echo "::add-mask::$token"
+            var="PROCTOR_$(printf '%s' "$id" | tr '[:lower:]' '[:upper:]')_TOKEN"
+            export "$var=$token"
+            printf '  %s: { token_env: %s, values: { user_id: "%s" } }\n' "$id" "$var" "$id" >> "$binding"
+          done
+          unset token
+
+          set --
+          case "$EVENT" in
+            pull_request) set -- --pr-head "$PR_HEAD" ;;
+            merge_group) set -- --base "$BASE" ;;
+          esac
+          if [ -n "$CHANGE_KIND" ]; then
+            set -- "$@" --change-kind "$CHANGE_KIND" --change-kind-source label
+          fi
+          mkdir -p "$RUNNER_TEMP/earlier-reports"
+          "$bin/proctor" run --authoritative --config proctor/proctor.yaml \
+            --binding "$binding" --earlier-reports "$RUNNER_TEMP/earlier-reports" --driver-programs "$RUNNER_TEMP/base-drivers" \
+            --report "$RUNNER_TEMP/report-$GITHUB_RUN_ATTEMPT.json" "$@"
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: proctor-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report-${{ github.run_attempt }}.json
+          if-no-files-found: error
+      - name: Tear down the disposable environment
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/binding.yaml"
+          dir="$RUNNER_TEMP/verify-env/$VERIFY_DIR"
+          if [ -f "$dir/$VERIFY_COMPOSE" ]; then
+            env -i PATH="$PATH" HOME="$HOME" APP_IMAGE=proctor-verify-app:tested \
+              docker compose --project-name proctor-verify --project-directory "$dir" -f "$dir/$VERIFY_COMPOSE" \
+              down --volumes --remove-orphans --timeout 10
+          fi
+
+  verdict:
+    needs: [kind, build, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Download this attempt's report
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: proctor-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report
+      - name: Every prerequisite succeeded and the report passed
+        env:
+          KIND: ${{ needs.kind.result }}
+          BUILD: ${{ needs.build.result }}
+          VERIFY: ${{ needs.verify.result }}
+          TESTED: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          echo "kind: $KIND, build: $BUILD, verify: $VERIFY"
+          ok=1
+          for result in "$KIND" "$BUILD" "$VERIFY"; do
+            [ "$result" = success ] || ok=0
+          done
+          report="$RUNNER_TEMP/report/report-$RUN_ATTEMPT.json"
+          if [ ! -f "$report" ] || [ -L "$report" ]; then
+            echo "::error::This attempt left no Proctor report (REP-13)."
+            ok=0
+          elif ! jq -e -s --arg tested "$TESTED" --arg run "$RUN_ID" --arg attempt "$RUN_ATTEMPT" '
+              length == 1 and (.[0] | type == "object"
+                and .mode == "authoritative"
+                and .result == "passed" and .exit_code == 0
+                and (.provenance | type == "object")
+                and .provenance.tested_commit == $tested
+                and .provenance.ci_run_id == $run
+                and .provenance.ci_run_attempt == $attempt
+                and (.scenarios | type == "array"))' "$report" > /dev/null; then
+            echo "::error::The report isn't a passing authoritative Proctor report for $TESTED from this attempt (REP-13)."
+            ok=0
+          else
+            jq -r '"report: \(.result), exit \(.exit_code), tested \(.provenance.tested_commit), base \(.provenance.base)"' "$report"
+          fi
+          test "$ok" = 1

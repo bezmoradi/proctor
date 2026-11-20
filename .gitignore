@@ -1,0 +1,7 @@
+/bin/
+.env
+__pycache__/
+/dist/
+/.claude/
+/drivers/*/proctor-driver-*
+/simulators/*/proctor-sim-*
