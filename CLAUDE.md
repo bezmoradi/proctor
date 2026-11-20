@@ -34,6 +34,8 @@ scripts/build.sh <out-dir> && <out-dir>/proctor version && <out-dir>/proctor ver
 
 Build into a folder under `/tmp`, not `bin/` or `~/go/bin`. `scripts/build.sh` builds the drivers' checksums into `proctor`, which refuses drivers that don't match (INT-17), so every program it builds is copied or installed together.
 
+A built `proctor` asks `api.github.com` for the latest published release on `validate`, `integrity`, `diff` and a local `run` (`internal/commands/update.go`); `PROCTOR_NO_UPDATE_CHECK=1`, `CI` or `GITHUB_ACTIONS` turns that off. Only the owner releases, as README's [Releasing](README.md#releasing) section describes.
+
 ## Safety
 
 - Commit only when the owner asks. Never push, add a remote or publish a release.
