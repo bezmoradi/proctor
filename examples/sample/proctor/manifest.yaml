@@ -1,0 +1,6 @@
+version: 2
+specifications:
+  - id: users
+    path: specs/users.yaml
+  - id: auth
+    path: specs/auth.yaml

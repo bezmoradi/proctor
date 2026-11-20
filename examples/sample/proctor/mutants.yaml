@@ -1,0 +1,21 @@
+- id: M-01
+  title: Create answers 200 instead of 201
+  killed_by: [USR-001, USR-002, USR-003, USR-004]
+  edits:
+    - file: examples/sample/internal/adapters/handlers/http/users.go
+      find: "w.WriteHeader(http.StatusCreated)"
+      replace: "w.WriteHeader(http.StatusOK)"
+- id: M-02
+  title: A rename publishes user.created instead of user.updated
+  killed_by: [USR-002]
+  edits:
+    - file: examples/sample/internal/core/user/services/user.service.go
+      find: "us.publish(ctx, domain.UserUpdated, user)"
+      replace: "us.publish(ctx, domain.UserCreated, user)"
+- id: M-03
+  title: Delete answers success but deletes nothing
+  killed_by: [USR-003]
+  edits:
+    - file: examples/sample/internal/adapters/repositories/postgres/repository.go
+      find: '"DELETE FROM %v WHERE id = $1"'
+      replace: '"SELECT FROM %v WHERE id = $1"'

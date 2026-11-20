@@ -1,0 +1,17 @@
+environment: local
+drivers:
+  http:
+    base_url: http://127.0.0.1:18480
+    user_agent: proctor-sample/0
+    ready_path: /readyz
+  db:
+    app_dsn_env: SAMPLE_DB_DSN
+  otel:
+    endpoint: http://127.0.0.1:14318
+  kafka:
+    brokers: [127.0.0.1:19480]
+identities:
+  admin:
+    token_env: SAMPLE_TOKEN
+app_logs:
+  otel: http://127.0.0.1:14318

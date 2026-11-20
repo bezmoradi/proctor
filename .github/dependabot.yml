@@ -15,10 +15,30 @@ updates:
       - /protocol
       - /drivers/*
       - /simulators/*
+      - /examples/sample
+      - /examples/sample/proctor/drivers/kafka
     schedule:
       interval: weekly
     cooldown:
       default-days: 7
     groups:
       go-modules:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /examples/sample
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker-images:
+        patterns: ["*"]
+  - package-ecosystem: docker-compose
+    directory: /examples/sample
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      compose-images:
         patterns: ["*"]

@@ -1,0 +1,244 @@
+version: 2
+suite: users
+scenarios:
+  - id: USR-001
+    name: A created user can be read back, is stored, published and traced
+    steps:
+      - id: create
+        do: http.request
+        identity: admin
+        with:
+          method: POST
+          path: /api/v1/users
+          body: { name: "Ada ${run.id}" }
+          trace: true
+        expect:
+          equal:
+            $.status: 201
+            $.body.message: Created user successfully
+        save: { user_id: $.body.data, trace: $.trace_id }
+      - id: read
+        do: http.request
+        identity: admin
+        with: { method: GET, path: "/api/v1/users/${user_id}" }
+        expect:
+          equal:
+            $.status: 200
+            $.body.data.id: "${user_id}"
+            $.body.data.name: "Ada ${run.id}"
+      - id: stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT name FROM users WHERE id::text = $1
+          args: ["${user_id}"]
+        expect:
+          equal:
+            $.row_count: 1
+            "$.rows[0].name": "Ada ${run.id}"
+      - id: published
+        do: kafka.events
+        with:
+          topic: users
+          where: { type: user.created, data.id: "${user_id}", data.name: "Ada ${run.id}" }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.records: 1 }
+          equal:
+            "$.records[0].value.version": 1
+            "$.records[0].value.data.name": "Ada ${run.id}"
+      - id: traced
+        do: otel.spans
+        with: { trace_id: "${trace}", kind: server }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.traces: 1 }
+          any:
+            $.spans: { name: POST /api/v1/users, "attributes['http.response.status_code']": 201 }
+
+  - id: USR-002
+    name: A user's name can be changed
+    steps:
+      - id: create
+        do: http.request
+        identity: admin
+        with: { method: POST, path: /api/v1/users, body: { name: "Grace ${run.id}" } }
+        expect:
+          equal: { $.status: 201, $.body.message: Created user successfully }
+        save: { user_id: $.body.data }
+      - id: rename
+        do: http.request
+        identity: admin
+        with: { method: PUT, path: "/api/v1/users/${user_id}", body: { name: "Grace Hopper ${run.id}" } }
+        expect:
+          equal:
+            $.status: 200
+            $.body.message: User updated successfully
+            $.body.data.name: "Grace Hopper ${run.id}"
+      - id: read
+        do: http.request
+        identity: admin
+        with: { method: GET, path: "/api/v1/users/${user_id}" }
+        expect:
+          equal: { $.status: 200, $.body.data.name: "Grace Hopper ${run.id}" }
+      - id: stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT name FROM users WHERE id::text = $1
+          args: ["${user_id}"]
+        expect:
+          equal: { $.row_count: 1, "$.rows[0].name": "Grace Hopper ${run.id}" }
+      - id: published
+        do: kafka.events
+        with:
+          topic: users
+          where: { type: user.updated, data.id: "${user_id}", data.name: "Grace Hopper ${run.id}" }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.records: 1 }
+          equal: { "$.records[0].value.data.name": "Grace Hopper ${run.id}" }
+
+  - id: USR-003
+    name: A deleted user is gone
+    steps:
+      - id: create
+        do: http.request
+        identity: admin
+        with: { method: POST, path: /api/v1/users, body: { name: "Linus ${run.id}" } }
+        expect:
+          equal: { $.status: 201, $.body.message: Created user successfully }
+        save: { user_id: $.body.data }
+      - id: delete
+        do: http.request
+        identity: admin
+        with: { method: DELETE, path: "/api/v1/users/${user_id}" }
+        expect:
+          equal:
+            $.status: 200
+            $.body.message: "deleted user with ID of ${user_id} successfully"
+      - id: read
+        do: http.request
+        identity: admin
+        with: { method: GET, path: "/api/v1/users/${user_id}" }
+        expect:
+          equal: { $.status: 404, $.body.error: Not found }
+      - id: stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT name FROM users WHERE id::text = $1
+          args: ["${user_id}"]
+        expect:
+          equal: { $.row_count: 0 }
+      - id: published
+        do: kafka.events
+        with:
+          topic: users
+          where: { type: user.deleted, data.id: "${user_id}" }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.records: 1 }
+
+  - id: USR-004
+    name: The list pages through users with a cursor
+    steps:
+      - id: create-first
+        do: http.request
+        identity: admin
+        with: { method: POST, path: /api/v1/users, body: { name: "Mary ${run.id}" } }
+        expect:
+          equal: { $.status: 201, $.body.message: Created user successfully }
+        save: { first_id: $.body.data }
+      - id: create-second
+        do: http.request
+        identity: admin
+        with: { method: POST, path: /api/v1/users, body: { name: "Ken ${run.id}" } }
+        expect:
+          equal: { $.status: 201, $.body.message: Created user successfully }
+        save: { second_id: $.body.data }
+      - id: stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT count(*)::int AS n FROM users WHERE id::text IN ($1, $2)
+          args: ["${first_id}", "${second_id}"]
+        expect:
+          equal: { "$.rows[0].n": 2 }
+      - id: first-page
+        do: http.request
+        identity: admin
+        with: { method: GET, path: /api/v1/users, query: { limit: "1" } }
+        expect:
+          equal: { $.status: 200, $.body.message: Fetched users successfully }
+          length: { $.body.data: 1 }
+          present: [$.body.next_cursor]
+        save: { cursor: $.body.next_cursor, page_one: "$.body.data[0].id" }
+      - id: second-page
+        do: http.request
+        identity: admin
+        with: { method: GET, path: /api/v1/users, query: { limit: "1", cursor: "${cursor}" } }
+        expect:
+          equal: { $.status: 200 }
+          length: { $.body.data: 1 }
+          differs: { "$.body.data[0].id": "${page_one}" }
+      - id: bad-cursor
+        do: http.request
+        identity: admin
+        with: { method: GET, path: /api/v1/users, query: { cursor: "not a cursor" } }
+        expect:
+          equal: { $.status: 400, $.body.error: Invalid pagination cursor }
+      - id: published-first
+        do: kafka.events
+        with:
+          topic: users
+          where: { type: user.created, data.id: "${first_id}", data.name: "Mary ${run.id}" }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.records: 1 }
+      - id: published-second
+        do: kafka.events
+        with:
+          topic: users
+          where: { type: user.created, data.id: "${second_id}", data.name: "Ken ${run.id}" }
+        eventually: { within: 10s, every: 250ms }
+        expect:
+          length: { $.records: 1 }
+
+  - id: USR-005
+    name: Bad requests get the agreed error answers and store nothing
+    transcript: true
+    steps:
+      - id: malformed-json
+        do: http.request
+        identity: admin
+        with:
+          method: POST
+          path: /api/v1/users
+          headers: { Content-Type: application/json }
+          body_text: '{"name": "Broken ${run.id}"'
+        expect:
+          equal: { $.status: 400, $.body.error: Failed to read request body }
+      - id: invalid-name
+        do: http.request
+        identity: admin
+        with: { method: POST, path: /api/v1/users, body: { name: "Bell\a ${run.id}" } }
+        expect:
+          equal:
+            $.status: 422
+            $.body.error: Validation failed
+            $.body.message: name contains invalid characters
+      - id: nothing-stored
+        do: db.query
+        with:
+          connection: app
+          query: SELECT count(*)::int AS n FROM users WHERE name LIKE '%' || $1
+          args: ["${run.id}"]
+        expect:
+          equal: { "$.rows[0].n": 0 }
+      - id: unknown-user
+        do: http.request
+        identity: admin
+        with: { method: GET, path: /api/v1/users/no-such-user }
+        expect:
+          equal: { $.status: 404, $.body.error: Not found }
