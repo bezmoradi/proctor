@@ -45,9 +45,29 @@ Proctor checks that an application still does what people agreed it should do, a
 
 ## Install
 
-No release is published yet, so build from source: in Proctor's checkout, `scripts/build.sh <dir>` builds `proctor`, its drivers and the simulators into `<dir>` (`bin/` by default).
+No release is published yet, so until the first one these commands fail: [build from source](#development) instead.
 
-Once releases exist, each one has an archive per platform (linux and darwin, amd64 and arm64) and a `SHA256SUMS`. Download one, check its checksum and its signed provenance, then check the files inside:
+```sh
+curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install.sh | sh
+```
+
+The script:
+
+- runs on linux and darwin, amd64 and arm64, and stops with one line on anything else, or when `curl`, `tar`, `git`, or `sha256sum` or `shasum` is missing; it needs no Go;
+- downloads the release's archive for your platform, checks it against the SHA-256 written into the script and against the archive's own `SHA256SUMS`, and checks that its `proctor version` prints the release's version;
+- installs `proctor`, its drivers and the simulators together into one folder, `~/.local/bin` or `PROCTOR_INSTALL_DIR`, without sudo, since `proctor` refuses a driver whose checksum it doesn't hold (INT-17). Running it again replaces them and leaves other files alone; a failed download or check changes nothing in the folder.
+
+`validate`, `integrity`, `diff` and a local `run` say when a newer release exists and print the command that updates the programs in the folder `proctor` runs from; [Privacy](#privacy) says how to turn this off.
+
+`latest` is the newest release that isn't a prerelease; `releases/download/v<version>/install.sh` installs that version. To check the script before it runs, with a signed-in `gh`:
+
+```sh
+curl -fsSLO https://github.com/bezmoradi/proctor/releases/latest/download/install.sh
+gh attestation verify install.sh -R bezmoradi/proctor --signer-workflow bezmoradi/proctor/.github/workflows/release.yml
+sh install.sh
+```
+
+Or download an archive yourself: each release has one per platform and a `SHA256SUMS`. Check its checksum and its signed provenance, then the files inside:
 
 ```sh
 VERSION=<version> OS=linux ARCH=amd64; name="proctor-$VERSION-$OS-$ARCH"
@@ -59,11 +79,11 @@ gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
-Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)). `.github/workflows/release.yml` drafts a release when the owner pushes a `v*` tag on a commit on main; the owner then publishes it.
+Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)). `.github/workflows/release.yml` drafts a release, with `install.sh`, when the owner pushes a `v*` tag on a commit on main; the owner then publishes it.
 
 ## Quick start
 
-Needs Go 1.27.4 or later, Bash and Git. In Proctor's checkout, build Proctor and its drivers into `bin/` (a driver is found beside the `proctor` program, so `go build ./cmd/proctor` alone isn't enough):
+Needs Git. [Install](#install) Proctor, or until the first release, with Go 1.27.4 or later and Bash, build it and its drivers into `bin/` in Proctor's checkout (a driver is found beside the `proctor` program, so `go build ./cmd/proctor` alone isn't enough):
 
 ```sh
 scripts/build.sh
@@ -910,7 +930,7 @@ An authoritative run uses the base commit's driver, never the tested commit's: i
 
 Proctor runs a private copy of the program from a new folder under `TMPDIR`, which must allow running programs, and removes it afterwards. The targets, `shows`, `destructive` and state checks a driver reports aren't in `proctor.yaml`, so review its source for them. `proctor diff` lists a changed pin as `driver_program_changed` and an `act` that became `observe` as `operation_now_observes`.
 
-The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which needs Go 1.27.4 or later. While the repository is private, set `GOPRIVATE=github.com/bezmoradi/*` with Git credentials, or run `go mod vendor` in the driver's folder: the reference workflow then builds with `-mod=vendor`, and the vendored code is protected and reviewed with the rest. Proctor speaks one protocol version, so rebuild the driver when it changes. To start, copy [`protocol/cmd/proctor-driver-example/`](protocol/cmd/proctor-driver-example/main.go), a driver with one `observe` operation. In an operation, `accumulates` marks an `observe` operation whose fact only grows, with or without a handle, so TIME-14 applies to it, and `scan` lists fact paths whose text Proctor searches for known credentials and secrets after every sample (`secret_in_telemetry`, see [Telemetry](#telemetry)); a `scan` path that doesn't parse stops the run (exit 2).
+The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which needs Go 1.27.4 or later. To build without downloading modules, run `go mod vendor` in the driver's folder: the reference workflow then builds with `-mod=vendor`, and the vendored code is protected and reviewed with the rest. Proctor speaks one protocol version, so rebuild the driver when it changes. To start, copy [`protocol/cmd/proctor-driver-example/`](protocol/cmd/proctor-driver-example/main.go), a driver with one `observe` operation. In an operation, `accumulates` marks an `observe` operation whose fact only grows, with or without a handle, so TIME-14 applies to it, and `scan` lists fact paths whose text Proctor searches for known credentials and secrets after every sample (`secret_in_telemetry`, see [Telemetry](#telemetry)); a `scan` path that doesn't parse stops the run (exit 2).
 
 ## Quick reference
 
@@ -1060,6 +1080,7 @@ An assertion that moved to another step sending the same request is listed under
 | `simulators/otel/` | `proctor-sim-otel`, a local OTLP/HTTP receiver for the otel driver |
 | `scripts/build.sh` | Builds `proctor`, its drivers and the simulators |
 | `scripts/release.sh`, `.github/workflows/release.yml` | Builds the release archives; drafts a release from a `v*` tag on main |
+| `scripts/install.sh`, `scripts/release-install.sh` | The install script's template, which refuses to run; `release.sh` renders it into the release with the version and the archives' checksums |
 | `.github/workflows/ci.yml`, `pull-requests.yml`, `workflow-guard.yml` | CI and pull request checks |
 | `.github/rulesets/` | The branch and tag rulesets the owner applies on GitHub |
 | `.go-arch-lint.yml`, `scripts/check-arch.sh` | Which packages may import which; `internal/model`, `internal/expr`, `internal/transcript` and `internal/strictyaml` stay free of file, process and network access |
@@ -1067,6 +1088,8 @@ An assertion that moved to another step sending the same request is listed under
 | `examples/github/verify/` | An example disposable environment for the workflow, copied to `proctor/verify/` |
 
 ## Development
+
+To build from source, with Go 1.27.4 or later: in Proctor's checkout, `scripts/build.sh <dir>` builds `proctor`, its drivers and the simulators into `<dir>` (`bin/` by default), and `--install` also copies them into `$(go env GOPATH)/bin`. `scripts/release.sh <version> <dir>` builds a release folder from a clean checkout: the four archives, the notices, `install.sh` and `SHA256SUMS`.
 
 ```sh
 go build ./... && go vet ./... && test -z "$(gofmt -l .)"

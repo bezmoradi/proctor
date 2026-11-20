@@ -94,7 +94,7 @@ notices="$out/proctor-$version-NOTICES.txt"
 	done | sort -u |
 		while read -r path ver dir; do
 			case $path in
-			proctor | proctor/*) continue ;;
+			proctor | proctor/* | github.com/bezmoradi/proctor/protocol) continue ;;
 			esac
 			found=0
 			for f in "$dir"/LICENSE* "$dir"/NOTICE* "$dir"/COPYING*; do
@@ -156,6 +156,8 @@ rm -rf "$stage"
 : > "$sumfile"
 trap - EXIT
 
-(cd "$out" && sum proctor-"$version"-* > SHA256SUMS)
+(cd "$out" && sum proctor-"$version"-*.tar.gz > SHA256SUMS)
+sh "$root/scripts/release-install.sh" "$version" "$out"
+(cd "$out" && sum proctor-"$version"-* install.sh > SHA256SUMS.part && mv SHA256SUMS.part SHA256SUMS)
 echo "wrote $out/SHA256SUMS"
 cat "$out/SHA256SUMS"
