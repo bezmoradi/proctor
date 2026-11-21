@@ -401,6 +401,7 @@ func (r *Runner) judge(c check, fact any, red []string, op string) Assertion {
 		want := c.want.(string)
 		a.Expected = want
 		text, isText := got.(string)
+		num, isNumber := got.(json.Number)
 		list, isList := got.([]any)
 		switch {
 		case !ok:
@@ -408,6 +409,11 @@ func (r *Runner) judge(c check, fact any, red []string, op string) Assertion {
 		case c.kind == "excludes" && isList:
 			a.Present, a.Actual = true, list
 			excludeInList(&a, c.target, want, list)
+		case c.kind == "matches" && isNumber:
+			a.Present, a.Actual = true, num
+			if !c.pattern.MatchString(num.String()) {
+				fail("doesn't match the pattern, which must match the whole number as the fact's JSON writes it")
+			}
 		case !isText:
 			a.Present, a.Actual = true, got
 			fail("not text")

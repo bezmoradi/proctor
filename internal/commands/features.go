@@ -60,6 +60,7 @@ var features = []string{
 	"matchers.excludes",
 	"matchers.excludes_lists",
 	"matchers.matches",
+	"matchers.matches_numbers",
 	"matchers.overflow",
 	"matchers.truncated_text",
 	"mutants.build_check_exit2",

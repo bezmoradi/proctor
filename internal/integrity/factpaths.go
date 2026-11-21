@@ -12,19 +12,19 @@ import (
 
 const factPathsRule = "EXE-11"
 
-var factPathNeeds = map[string]string{
-	"keys":      "object",
-	"length":    "array",
-	"unordered": "array",
-	"any":       "array",
-	"none":      "array",
-	"count":     "array",
-	"contains":  "string",
-	"matches":   "string",
-	"excludes":  "string",
+var factPathNeeds = map[string][]string{
+	"keys":      {"object"},
+	"length":    {"array"},
+	"unordered": {"array"},
+	"any":       {"array"},
+	"none":      {"array"},
+	"count":     {"array"},
+	"contains":  {"string"},
+	"matches":   {"string", "number"},
+	"excludes":  {"string"},
 }
 
-var needText = map[string]string{"object": "an object", "array": "a list", "string": "text"}
+var needText = map[string]string{"object": "an object", "array": "a list", "string": "text", "number": "a number"}
 
 type factPaths struct {
 	do       string
@@ -119,15 +119,32 @@ func (f *factPaths) check(root schema.Shape, matcher, target string) (schema.Sha
 		}
 		return sh, true
 	}
-	if need := factPathNeeds[matcher]; need != "" && !sh.Open() && !sh.Allows(need) {
+	if needs := factPathNeeds[matcher]; len(needs) > 0 && !sh.Open() && !allowsAny(sh, needs) {
 		if matcher == "excludes" {
 			f.add(at, "%s: excludes needs text or a list of texts, but the fact of %s holds %s there", target, f.do, sh.TypeText())
 			return schema.Shape{}, false
 		}
-		f.add(at, "%s: %s needs %s, but the fact of %s holds %s there", target, matcher, needText[need], f.do, sh.TypeText())
+		f.add(at, "%s: %s needs %s, but the fact of %s holds %s there", target, matcher, needsText(needs), f.do, sh.TypeText())
 		return schema.Shape{}, false
 	}
 	return sh, true
+}
+
+func allowsAny(sh schema.Shape, types []string) bool {
+	for _, t := range types {
+		if sh.Allows(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func needsText(types []string) string {
+	words := make([]string, 0, len(types))
+	for _, t := range types {
+		words = append(words, needText[t])
+	}
+	return strings.Join(words, " or ")
 }
 
 func (f *factPaths) claims(root schema.Shape, matcher, target string, claims []map[string]any) {
