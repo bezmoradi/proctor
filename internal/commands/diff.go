@@ -95,7 +95,10 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintln(stdout, line)
 		}
-		fmt.Fprintln(stdout, "\nChanged files:")
+		fmt.Fprintln(stdout)
+	}
+	if len(res.Files) > 0 {
+		fmt.Fprintln(stdout, "Changed files:")
 	}
 	for _, f := range res.Files {
 		line := fmt.Sprintf("  %-9s %s", safe(f.Change), safe(f.Path))
