@@ -1,0 +1,14 @@
+version: 2
+project: selfcheck-requires-missing
+manifest: manifest.yaml
+requires:
+  features: [cli, no-such-feature]
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        ok:
+          program: sh
+          args: [-c, "echo ok"]
+          kind: observe

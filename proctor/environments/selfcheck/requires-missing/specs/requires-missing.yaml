@@ -1,0 +1,10 @@
+version: 2
+suite: requires-missing
+scenarios:
+  - id: Q-001
+    name: passes
+    steps:
+      - id: ok
+        do: cli.run
+        with: { command: ok }
+        expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }

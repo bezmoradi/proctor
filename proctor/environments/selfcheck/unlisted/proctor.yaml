@@ -1,0 +1,12 @@
+version: 2
+project: selfcheck-unlisted
+manifest: manifest.yaml
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        ok:
+          program: sh
+          args: [-c, "echo ok"]
+          kind: observe

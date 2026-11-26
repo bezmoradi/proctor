@@ -12,7 +12,7 @@ CI (`.github/workflows/ci.yml`) runs these and the rest of the checks in [CLAUDE
 
 ## Self-check
 
-The root `proctor/` folder is Proctor's check of itself with the cli driver: its scenarios run the `proctor` first on `PATH` (`version`, `version --features`, `validate` on the sample, `run` without `--binding`, and `init`'s refusals). CI's "Sample end to end" job runs it in local mode in the step "Proctor checks itself". To run it locally, from the repository root:
+The root `proctor/` folder is Proctor's check of itself with the cli driver: its scenarios run the `proctor` first on `PATH`: `version` and `--features`, `validate` on the sample, `run` without `--binding`, `init`'s refusals, and what each feature added since must do. For those, the scenarios run Proctor against small projects of their own under `proctor/environments/selfcheck/`, which INT-05 doesn't scan: one with a file the manifest doesn't list (`validate` and `integrity` exit 4), two whose `requires` aren't met (exit 3), one with invalid invariants and `unless_passed` (exit 3), and `run/`, whose cli commands use only `sh` and a file in `TMPDIR`. A full run of `run/` checks `unless_passed`, `left_state_behind` and `dirty_since` in its JSON report; `--only` and `--rerun-failed` against its saved `report.json` check a partial run; `report failed` and `report show` read that report; and two refusals check that authoritative mode takes no selection and needs `--report`. SELF-008 runs `integrity --commit HEAD`, so it passes only once the fixtures are committed. CI's "Sample end to end" job runs it in local mode in the step "Proctor checks itself". To run it locally, from the repository root:
 
 ```sh
 scripts/build.sh /tmp/proctor-self

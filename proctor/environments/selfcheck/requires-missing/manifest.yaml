@@ -1,0 +1,3 @@
+version: 2
+specifications:
+  - { id: requires-missing, path: specs/requires-missing.yaml }

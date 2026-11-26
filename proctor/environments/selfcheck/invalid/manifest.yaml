@@ -1,0 +1,3 @@
+version: 2
+specifications:
+  - { id: invalid, path: specs/invalid.yaml }

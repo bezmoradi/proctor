@@ -1,0 +1,15 @@
+version: 2
+suite: requires-unlisted
+scenarios:
+  - id: Q-002
+    name: passes
+    steps:
+      - id: ok
+        do: cli.run
+        with: { command: ok }
+        expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }
+    cleanup:
+      - id: tidy
+        do: cli.run
+        with: { command: tidy }
+        expect: { equal: { $.exit_code: 0 } }

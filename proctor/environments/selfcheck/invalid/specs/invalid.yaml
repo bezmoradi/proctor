@@ -1,0 +1,11 @@
+version: 2
+suite: invalid
+scenarios:
+  - id: V-001
+    name: names unless_passed outside cleanup
+    steps:
+      - id: ok
+        unless_passed: ok
+        do: cli.run
+        with: { command: ok }
+        expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }

@@ -1,0 +1,41 @@
+version: 2
+project: selfcheck-run
+manifest: manifest.yaml
+requires:
+  proctor: ">=0.0.0"
+  features: [cleanup, cleanup.unless_passed, cli, invariants]
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        ok:
+          program: sh
+          args: [-c, "echo ok"]
+          kind: observe
+          targets: [checks]
+        no:
+          program: sh
+          args: [-c, "echo no; exit 1"]
+          kind: observe
+          targets: [checks]
+        leave:
+          program: sh
+          args: [-c, 'd=$TMPDIR; [ -n "$d" ] || d=/tmp; touch "$d/proctor-selfcheck-left"']
+          kind: act
+          targets: [state]
+        clear:
+          program: sh
+          args: [-c, 'd=$TMPDIR; [ -n "$d" ] || d=/tmp; rm -f "$d/proctor-selfcheck-left"']
+          kind: act
+          targets: [state]
+        state:
+          program: sh
+          args: [-c, 'd=$TMPDIR; [ -n "$d" ] || d=/tmp; if [ -e "$d/proctor-selfcheck-left" ]; then echo left; else echo clean; fi']
+          kind: observe
+          targets: [state]
+invariants:
+  - id: clean
+    do: cli.run
+    with: { command: state }
+    expect: { equal: { $.exit_code: 0, $.stdout_text: "clean\n" } }
