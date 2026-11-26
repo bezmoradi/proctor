@@ -25,7 +25,7 @@ curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install
 
 Run the same command again: it replaces `proctor`, its drivers and the simulators, and leaves other files in the folder alone. `validate`, `integrity`, `diff` and a local `run` say when a newer release exists, and print the command that updates the programs in the folder `proctor` runs from.
 
-Set `PROCTOR_NO_UPDATE_CHECK=1` to turn the check off; it is also off when `CI` or `GITHUB_ACTIONS` is set, and in authoritative mode. It asks `api.github.com` for the latest release and sends only `proctor/<version>` as the User-Agent (see [Privacy](#privacy)).
+Set `PROCTOR_NO_UPDATE_CHECK=1` to turn the check off; it is also off when `CI` or `GITHUB_ACTIONS` is set, and in authoritative mode. It asks `api.github.com` for the latest release and sends only `proctor/<version>` as the User-Agent (see [Privacy](../security-model.md#privacy)).
 
 ## Check the script first
 
@@ -51,11 +51,11 @@ gh attestation verify "$name.tar.gz" -R bezmoradi/proctor --deny-self-hosted-run
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
-The release workflow attests every file it publishes, `SHA256SUMS`, `install.sh` and the NOTICES file included, and runs only on GitHub-hosted runners, so `--deny-self-hosted-runners` holds for each. Archive names carry the version, so a script that wants the newest release asks for its tag first, or uses `releases/latest/download/install.sh`. In CI, pin a version and its archive's SHA-256 instead, as the [reference workflow](examples/github/proctor.yml) does: a new release then can't change a required check's verdict on an unchanged commit, and the upgrade is a reviewed change. Check the features your specifications need with `proctor version --features`, or declare them in `proctor.yaml` (see [Requirements](#requirements)).
+The release workflow attests every file it publishes, `SHA256SUMS`, `install.sh` and the NOTICES file included, and runs only on GitHub-hosted runners, so `--deny-self-hosted-runners` holds for each. Archive names carry the version, so a script that wants the newest release asks for its tag first, or uses `releases/latest/download/install.sh`. In CI, pin a version and its archive's SHA-256 instead, as the [reference workflow](../../examples/github/proctor.yml) does: a new release then can't change a required check's verdict on an unchanged commit, and the upgrade is a reviewed change. Check the features your specifications need with `proctor version --features`, or declare them in `proctor.yaml` (see [Requirements](#requirements)).
 
-Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)).
+Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](repository-drivers.md)).
 
-To build from source, see [Development](#development).
+To build from source, see [Development](../development.md).
 
 ## Requirements
 

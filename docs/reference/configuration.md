@@ -4,11 +4,11 @@
 
 | Key | Meaning |
 |---|---|
-| `requires` | `proctor: ">=X.Y.Z"` and `features: [...]`, checked before anything else (INT-22, see [Requirements](#requirements)) |
-| `invariants` | read-only steps that must hold before the first scenario and after each one; see [Environment invariants](#environment-invariants) (INV-01) |
+| `requires` | `proctor: ">=X.Y.Z"` and `features: [...]`, checked before anything else (INT-22, see [Requirements](../guides/install.md#requirements)) |
+| `invariants` | read-only steps that must hold before the first scenario and after each one; see [Environment invariants](../guides/specifications.md#environment-invariants) (INV-01) |
 | `protected_paths` | more paths to protect besides `proctor/`, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig` and CODEOWNERS; an entry ending in `/` is a folder |
 | `protected_owners` | authoritative mode lists each protected file whose CODEOWNERS rule at the base names none of these owners as `UNOWNED` and in `trust.unowned_protected_paths`, reported only (OD-16); without the key every protected file is listed |
-| `drivers.<name>.program` | a [repository driver](#repository-drivers)'s program, a clean path from the repository root to `proctor-driver-<name>` under a protected folder; instead of `official` |
+| `drivers.<name>.program` | a [repository driver](../guides/repository-drivers.md)'s program, a clean path from the repository root to `proctor-driver-<name>` under a protected folder; instead of `official` |
 | `drivers.<name>.sha256` | `<GOOS>/<GOARCH>: <64 hex digits>` for each platform the program is pinned for, at least one |
 | `drivers.<name>.operations` | every operation of a repository driver, `act` or `observe`; the driver's `hello` must match it |
 | `identities.<name>.type` | `none` or `bearer`; validation refuses any other type (exit 3); the names `run`, `secret`, `row` and `fill` are reserved |
@@ -38,7 +38,7 @@
 
 | Variable | Effect |
 |---|---|
-| `PROCTOR_NO_UPDATE_CHECK` | any value turns off the update check (see [Privacy](#privacy)) |
+| `PROCTOR_NO_UPDATE_CHECK` | any value turns off the update check (see [Privacy](../security-model.md#privacy)) |
 | `CI`, `GITHUB_ACTIONS` | any value turns off the update check; `approve` and `mutate` refuse to run |
 | `GITHUB_REPOSITORY`, `GITHUB_TOKEN` | authoritative mode asks GitHub for CODEOWNERS errors with them; without either, or with no CODEOWNERS file at the base, it exits 4 (INT-11), so it can't pass outside GitHub Actions |
 | `GITHUB_API_URL` | GitHub's API, default `https://api.github.com` |

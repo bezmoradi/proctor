@@ -14,13 +14,13 @@ In this mode Proctor:
 - requires the job's GitHub Actions OIDC token and verifies it against GitHub's published keys, so a job without one, such as a pull request from a fork, can't give an authoritative result (MODE-03);
 - reports whether the workflow that ran differs from the base branch's;
 - refuses to run unless the binding's `image` (or each entry of `images`) gives equal `built_digest` and `running_digest` (REP-11). Proctor compares the two values; the trusted job that writes the binding must read them itself, the built one from its build and the running one from the started container, as the reference workflow does;
-- takes each repository driver's `program`, `sha256` and `operations` from the base commit's `proctor.yaml`, and reads its program from `--driver-programs DIR` (default: the checkout); see [Repository drivers](#repository-drivers);
+- takes each repository driver's `program`, `sha256` and `operations` from the base commit's `proctor.yaml`, and reads its program from `--driver-programs DIR` (default: the checkout); see [Repository drivers](repository-drivers.md);
 - refuses a repository driver that isn't pinned for the job's platform or that the commit tracks;
 - with `--earlier-reports DIR`, says which earlier attempts of the same workflow run failed a scenario for the same commit and inputs (see [Re-runs](#re-runs)).
 
 It always writes the JSON report and a job summary. A binding inside the checkout is refused. Nothing runs while any of these checks fails.
 
-These checks hold only while the pull request's code can't act as root on the job's host. An application that mounts the host's Docker socket can, and then it can rewrite the report or read the job's tokens; run such an environment off the job's host (see [Adapting it](examples/github/README.md#adapting-it)).
+These checks hold only while the pull request's code can't act as root on the job's host. An application that mounts the host's Docker socket can, and then it can rewrite the report or read the job's tokens; run such an environment off the job's host (see [Adapting it](../../examples/github/README.md#adapting-it)).
 
 GitHub must be configured so that nothing merges without the check and a code owner's approval:
 
@@ -30,11 +30,11 @@ GitHub must be configured so that nothing merges without the check and a code ow
 - branches up to date before merging;
 - actions pinned by commit SHA, and each job's token limited to the `permissions` it needs.
 
-Code owners and branch protection in a private repository need a paid GitHub plan. [`examples/github/README.md`](examples/github/README.md) gives these settings as a branch protection request and the results of testing them.
+Code owners and branch protection in a private repository need a paid GitHub plan. [`examples/github/README.md`](../../examples/github/README.md) gives these settings as a branch protection request and the results of testing them.
 
-The reference workflow ([`examples/github/proctor.yml`](examples/github/proctor.yml)) builds the image in one job and verifies it in another, with a pinned Proctor release archive whose checksums it checks. A third job, `verdict`, is the required check: it fails if any prerequisite failed or was skipped.
+The reference workflow ([`examples/github/proctor.yml`](../../examples/github/proctor.yml)) builds the image in one job and verifies it in another, with a pinned Proctor release archive whose checksums it checks. A third job, `verdict`, is the required check: it fails if any prerequisite failed or was skipped.
 
-Copy `examples/github/` as its README says, and pin `PROCTOR_VERSION` and `PROCTOR_SHA256` to a release you verified (see [Other ways to install](#other-ways-to-install)). The workflow handles `merge_group` too. It starts the disposable environment from `proctor/verify/` on the base commit, never the pull request's, so merge an environment change before the change that needs it. Its binding marks the environment `disposable: true`.
+Copy `examples/github/` as its README says, and pin `PROCTOR_VERSION` and `PROCTOR_SHA256` to a release you verified (see [Other ways to install](install.md#other-ways-to-install)). The workflow handles `merge_group` too. It starts the disposable environment from `proctor/verify/` on the base commit, never the pull request's, so merge an environment change before the change that needs it. Its binding marks the environment `disposable: true`.
 
 ## Re-runs
 
@@ -60,7 +60,7 @@ A pull request can claim what kind of change it is, and Proctor fails it when it
 proctor diff --base main --head HEAD --change-kind fix
 ```
 
-The kind is only a claim, so it can add a failure and never removes one: `feature` keeps today's rules. `proctor diff` exits 4 on a mismatch and lists each one with its place; `proctor run --authoritative` reports each as a `CHG-02` integrity violation and runs nothing. An unknown kind exits 3. In the reference workflow ([`examples/github/proctor.yml`](examples/github/proctor.yml)) the label `proctor:refactor`, `proctor:docs`, `proctor:fix` or `proctor:feature`, in any letter case, sets the kind; two `proctor:` labels, or one naming no kind, fail the first job before anything is built. The report's `change_kind` and the job summary record the kind and where it came from (`--change-kind-source label`). Anyone who can label the pull request can pick the kind, and Proctor judges only the protected files, not the application code.
+The kind is only a claim, so it can add a failure and never removes one: `feature` keeps today's rules. `proctor diff` exits 4 on a mismatch and lists each one with its place; `proctor run --authoritative` reports each as a `CHG-02` integrity violation and runs nothing. An unknown kind exits 3. In the reference workflow ([`examples/github/proctor.yml`](../../examples/github/proctor.yml)) the label `proctor:refactor`, `proctor:docs`, `proctor:fix` or `proctor:feature`, in any letter case, sets the kind; two `proctor:` labels, or one naming no kind, fail the first job before anything is built. The report's `change_kind` and the job summary record the kind and where it came from (`--change-kind-source label`). Anyone who can label the pull request can pick the kind, and Proctor judges only the protected files, not the application code.
 
 ## The OIDC token
 

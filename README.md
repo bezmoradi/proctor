@@ -19,7 +19,7 @@ Proctor checks that an application still does what people agreed it should do, a
 
 - The expected behavior lives in YAML specifications under a protected folder, and people approve changes to them through code-owner review.
 - A trusted CI job runs every listed scenario against the application built from the tested commit and records what it checked. Proctor approves nothing; GitHub's branch protection does, using Proctor's check and report as evidence.
-- Static integrity checks and a semantic diff of protected changes list weakenings first, with an optional [change kind](#change-kind).
+- Static integrity checks and a semantic diff of protected changes list weakenings first, with an optional [change kind](docs/guides/ci-github.md#change-kind).
 - Official drivers for HTTP (with streams and binary, large and file bodies), WebSocket, PostgreSQL (read-only), DynamoDB, SQS, SES, OpenTelemetry, Docker (read-only), Redis (read-only), command-line programs, a headless browser and HTTP fakes, with local simulators for SES, OpenTelemetry and the services your application calls; your own drivers can live in your repository.
 - Exact JSON assertions, text matchers, time-based checks with per-step timeouts, and tables that can cover every combination of declared dimensions.
 - The application-log check, approved transcripts, approved logs and mutation testing.
@@ -27,25 +27,25 @@ Proctor checks that an application still does what people agreed it should do, a
 
 ## Table of Contents
 
-- [Installation](#installation)
+- [Installation](docs/guides/install.md)
 - [Quick start](#quick-start)
-- [Commands](#commands)
-- [Authoritative mode](#authoritative-mode)
-- [Specifications](#specifications)
-- [Approved transcripts](#approved-transcripts)
-- [Approved logs](#approved-logs)
-- [Mutation testing](#mutation-testing)
-- [Repository drivers](#repository-drivers)
-- [Quick reference](#quick-reference)
-- [Repository layout](#repository-layout)
-- [Development](#development)
-- [Privacy](#privacy)
+- [Commands](docs/reference/cli.md#commands)
+- [Authoritative mode](docs/guides/ci-github.md)
+- [Specifications](docs/guides/specifications.md)
+- [Approved transcripts](docs/guides/approvals.md#approved-transcripts)
+- [Approved logs](docs/guides/approvals.md#approved-logs)
+- [Mutation testing](docs/guides/mutation-testing.md)
+- [Repository drivers](docs/guides/repository-drivers.md)
+- [Quick reference](docs/reference/cli.md)
+- [Repository layout](docs/architecture.md#repository-layout)
+- [Development](docs/development.md)
+- [Privacy](docs/security-model.md#privacy)
 - [Author](#author)
 - [License](#license)
 
 ## Quick start
 
-[Install](#installation) Proctor, then from your application's repository root:
+[Install](docs/guides/install.md) Proctor, then from your application's repository root:
 
 ```sh
 proctor init

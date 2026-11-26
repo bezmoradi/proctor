@@ -7,7 +7,7 @@
 | `scenario_removed`, `table_row_removed`, `step_removed`, `setup_step_removed` | removed, with the number of `assertions_lost` (a setup step that became cleanup counts as removed) |
 | `step_moved_to_setup` | a verification step became setup |
 | `invariant_removed`, `invariant_changed` | an environment invariant was removed, or its request, timing or expectations changed |
-| `cleanup_step_removed`, `step_moved_to_cleanup`, `cleanup_made_conditional`, `cleanup_condition_changed` | a cleanup step was removed; a verification step became cleanup; a cleanup step gained `unless_passed`, or names another step there (see [Cleanup](#cleanup)) |
+| `cleanup_step_removed`, `step_moved_to_cleanup`, `cleanup_made_conditional`, `cleanup_condition_changed` | a cleanup step was removed; a verification step became cleanup; a cleanup step gained `unless_passed`, or names another step there (see [Cleanup](../guides/specifications.md#cleanup)) |
 | `driver_changed`, `driver_origin_changed` | a step's `do` names another driver; a driver's `official` or `program` changed, or it switched between them |
 | `driver_program_changed` | a repository driver's `sha256` pin was added or changed, so its steps run another program |
 | `operation_now_observes` | a repository driver's operation went from `act` to `observe` |

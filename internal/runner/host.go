@@ -150,7 +150,7 @@ func copyRepoProgram(repoDir, rel string) (tmp, file, sum string, code int, err 
 		fi, err := root.Lstat(filepath.FromSlash(sub))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return "", "", "", ExitError, fmt.Errorf("program %s doesn't exist; build it from its source first, with the command in the README's Repository drivers section", rel)
+			return "", "", "", ExitError, fmt.Errorf("program %s doesn't exist; build it from its source first, with the command in Proctor's docs/guides/repository-drivers.md", rel)
 		case err != nil:
 			return "", "", "", ExitError, fmt.Errorf("cannot read program %s: %v", rel, err)
 		case fi.Mode()&fs.ModeSymlink != 0:

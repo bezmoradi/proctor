@@ -8,7 +8,7 @@ sh scripts/check-arch.sh
 scripts/build.sh /tmp/proctor-bin && /tmp/proctor-bin/proctor version --features
 ```
 
-CI (`.github/workflows/ci.yml`) runs these and the rest of the checks in [CLAUDE.md](CLAUDE.md#verify) on every pull request. A pull request needs a linked issue (`Closes #<n>`) to merge. This repository doesn't include Proctor's test suite.
+CI (`.github/workflows/ci.yml`) runs these and the rest of the checks in [CLAUDE.md](../CLAUDE.md#verify) on every pull request. A pull request needs a linked issue (`Closes #<n>`) to merge. This repository doesn't include Proctor's test suite.
 
 ## Self-check
 
@@ -23,9 +23,9 @@ proctor validate
 proctor run --binding proctor/environments/local.yaml
 ```
 
-The third line builds the sample's `kafka` driver, as step 1 of [`examples/sample/README.md`](examples/sample/README.md) does, since SELF-003 validates the sample's configuration; the sample's stack needn't run. The binding passes `PROCTOR_NO_UPDATE_CHECK` to the checked commands, so it must be set. `proctor.yaml` protects `examples/sample/proctor/` because SELF-003 names a file there, and an observe command's files must be protected (CLI-04).
+The third line builds the sample's `kafka` driver, as step 1 of [`examples/sample/README.md`](../examples/sample/README.md) does, since SELF-003 validates the sample's configuration; the sample's stack needn't run. The binding passes `PROCTOR_NO_UPDATE_CHECK` to the checked commands, so it must be set. `proctor.yaml` protects `examples/sample/proctor/` because SELF-003 names a file there, and an observe command's files must be protected (CLI-04).
 
-On a pull request and in a merge queue, `.github/workflows/proctor.yml` also runs it in [authoritative mode](#authoritative-mode), modeled on the reference workflow, [`examples/github/proctor.yml`](examples/github/proctor.yml):
+On a pull request and in a merge queue, `.github/workflows/proctor.yml` also runs it in [authoritative mode](guides/ci-github.md), modeled on the reference workflow, [`examples/github/proctor.yml`](../examples/github/proctor.yml):
 
 - **build** builds the pull request's `proctor`, its drivers and the sample's `kafka` driver into an image, with only `contents: read`.
 - **verify** builds the verifier, `proctor` and its drivers, from the base commit's source with its `scripts/build.sh`, outside the checkout; no release is pinned. On `PATH` it puts a `proctor` script, outside the checkout, that runs the pull request's image with no network, no environment but `PROCTOR_NO_UPDATE_CHECK`, and the checkout mounted read-only, so this job's host never runs the pull request's code. The binding gives that image's ID as both digests.
