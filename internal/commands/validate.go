@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -53,8 +55,9 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		repoDir = repo.Dir()
 	}
 	var src integrity.Source = integrity.WorkTreeSource{Root: repoDir}
+	var cs *integrity.CommitSource
 	if commit != "" {
-		cs, err := integrity.NewCommitSource(repo, commit)
+		cs, err = integrity.NewCommitSource(repo, commit)
 		if err != nil {
 			fmt.Fprintf(stderr, "proctor: %s\n", safe(err.Error()))
 			return exitInvalid
@@ -62,6 +65,14 @@ func validate(o validateOptions, stdout, stderr io.Writer) int {
 		src = cs
 	}
 	r := integrity.Load(src, c.config)
+	switch {
+	case cs != nil:
+		r.CheckUnlisted(cs.RegularPaths(), nil)
+	case inGit:
+		r.CheckUnlisted(workTreeFiles(repoDir))
+	default:
+		r.CheckUnlisted(folderFiles(repoDir, r.ProtectedRoot))
+	}
 	if inGit {
 		r.CheckTrackedWorkTree(repo.Index)
 	}
@@ -106,4 +117,42 @@ func checkMutation(r *integrity.Report, repoDir string, src integrity.Source, li
 		listed[f] = true
 	}
 	r.CheckMutantFiles(repoDir, src, integrity.WorkTreeState(repoDir, listed), lines)
+}
+
+func workTreeFiles(dir string) ([]string, error) {
+	listed, err := mutate.ListFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range listed {
+		if fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(p))); err == nil && fi.Mode().IsRegular() {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func folderFiles(dir, root string) ([]string, error) {
+	if root == "" {
+		return nil, nil
+	}
+	var out []string
+	err := filepath.WalkDir(filepath.Join(dir, filepath.FromSlash(root)), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return out, err
 }

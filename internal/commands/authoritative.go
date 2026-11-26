@@ -66,6 +66,7 @@ type authReport struct {
 	Drivers          []runner.DriverInfo     `json:"drivers"`
 	Target           string                  `json:"target,omitempty"`
 	Readiness        string                  `json:"readiness,omitempty"`
+	DirtyStart       []runner.StepResult     `json:"dirty_at_start,omitempty"`
 	IdentityCheck    *runner.IdentityCheck   `json:"identity_check,omitempty"`
 	Summary          *runner.Summary         `json:"summary,omitempty"`
 	Scenarios        []runner.ScenarioResult `json:"scenarios"`
@@ -86,20 +87,21 @@ type authTrust struct {
 }
 
 type authProvenance struct {
-	Repository     string              `json:"repository"`
-	TestedCommit   string              `json:"tested_commit"`
-	Parents        []string            `json:"parents"`
-	PRHead         string              `json:"pr_head,omitempty"`
-	Base           string              `json:"base"`
-	Image          *model.BindingImage `json:"image"`
-	SHA256         map[string]string   `json:"sha256"`
-	ProctorVersion string              `json:"proctor_version"`
-	Environment    string              `json:"environment"`
-	CIRunID        string              `json:"ci_run_id,omitempty"`
-	CIRunAttempt   string              `json:"ci_run_attempt,omitempty"`
-	RunID          string              `json:"run_id,omitempty"`
-	StartedAt      string              `json:"started_at"`
-	EndedAt        string              `json:"ended_at"`
+	Repository     string                         `json:"repository"`
+	TestedCommit   string                         `json:"tested_commit"`
+	Parents        []string                       `json:"parents"`
+	PRHead         string                         `json:"pr_head,omitempty"`
+	Base           string                         `json:"base"`
+	Image          *model.BindingImage            `json:"image"`
+	Images         map[string]*model.BindingImage `json:"images,omitempty"`
+	SHA256         map[string]string              `json:"sha256"`
+	ProctorVersion string                         `json:"proctor_version"`
+	Environment    string                         `json:"environment"`
+	CIRunID        string                         `json:"ci_run_id,omitempty"`
+	CIRunAttempt   string                         `json:"ci_run_attempt,omitempty"`
+	RunID          string                         `json:"run_id,omitempty"`
+	StartedAt      string                         `json:"started_at"`
+	EndedAt        string                         `json:"ended_at"`
 }
 
 func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writer) int {
@@ -187,10 +189,6 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 				ar.Errors = append(ar.Errors, msg)
 			}
 		}
-		for _, u := range rep.Unlisted {
-
-			violate("INT-05", "%s looks like a specification but the manifest doesn't list it", u)
-		}
 		ar.Provenance.SHA256 = map[string]string{}
 		for k, v := range rep.Hashes {
 			ar.Provenance.SHA256[k] = v
@@ -217,15 +215,8 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		ar.Provenance.SHA256["binding"] = hex.EncodeToString(sum[:])
 		ar.Provenance.Environment = b.Environment
 		ar.Provenance.Image = b.Image
-
-		switch {
-		case b.Image == nil || b.Image.BuiltDigest == "" || b.Image.RunningDigest == "":
-			violate("REP-11", "the binding must give image.built_digest and image.running_digest")
-		case !digestPattern.MatchString(b.Image.BuiltDigest) || !digestPattern.MatchString(b.Image.RunningDigest):
-			violate("REP-11", "image digests must be sha256: followed by 64 lowercase hex digits")
-		case b.Image.BuiltDigest != b.Image.RunningDigest:
-			violate("REP-11", "the running application was started from %s, not from the built image %s", b.Image.RunningDigest, b.Image.BuiltDigest)
-		}
+		ar.Provenance.Images = b.Images
+		checkImages(&b, violate)
 	}
 	if ar.Provenance.Environment == "" {
 		ar.Provenance.Environment = "unnamed"
@@ -256,8 +247,9 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		ident, err = github.FetchIdentity(ctx, client)
 	}
 	switch {
-	case errors.Is(err, github.ErrNoToken):
 	case err != nil && ctx.Err() != nil:
+	case errors.Is(err, github.ErrNoToken):
+		violate("MODE-03", "the job offers no OIDC token, so the workflow that ran can't be verified; grant the job permissions: id-token: write (a pull request from a fork gets no token, so it can't give an authoritative result)")
 	case err != nil:
 		violate("MODE-03", "the job offers an OIDC token, but it can't be verified: %v", err)
 	default:
@@ -558,7 +550,7 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 	}
 	ar.Violations = append(ar.Violations, out.Violations...)
 	ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
-	ar.IdentityCheck = out.Identity
+	ar.IdentityCheck, ar.DirtyStart = out.Identity, out.DirtyStart
 	ar.Provenance.RunID = out.RunID
 	if out.Drivers != nil {
 		ar.Drivers = out.Drivers
@@ -659,6 +651,8 @@ func unowned(repo *gitrepo.Repo, base, tested string, rep *integrity.Report) []s
 	}
 	return out
 }
+
+const summaryAddedLimit = 200
 
 func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out *runner.Outcome) {
 	fmt.Fprintf(w, "PROCTOR RUN  (authoritative)\n\n")
@@ -796,6 +790,18 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 			fmt.Fprintf(w, "- %s %s: %s\n", md(d.Kind), code(d.Driver), md(d.Detail))
 		}
 		fmt.Fprintln(w)
+		if added := ar.ProtectedChanges.Added; len(added) > 0 {
+			fmt.Fprintln(w, "### Added steps: read what each one asserts")
+			fmt.Fprintln(w)
+			for i, a := range added {
+				if i == summaryAddedLimit {
+					fmt.Fprintf(w, "- and %d more; see `protected_changes.added_steps` in the report\n", len(added)-i)
+					break
+				}
+				fmt.Fprintf(w, "- %s\n", md(addedLine(a)))
+			}
+			fmt.Fprintln(w)
+		}
 	}
 	for _, v := range ar.Violations {
 		fmt.Fprintf(w, "- integrity violation: %s\n", md(v))
@@ -815,5 +821,41 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 		for _, s := range ar.Scenarios {
 			fmt.Fprintf(w, "| %s | %s |\n", md(s.ID), md(string(s.Result)))
 		}
+	}
+}
+
+var imageName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
+
+func checkImages(b *model.Binding, violate func(rule, format string, args ...any)) {
+	if b.Image == nil && len(b.Images) == 0 {
+		violate("REP-11", "the binding must give image.built_digest and image.running_digest, or images.<service>.built_digest and running_digest for each image the environment runs")
+		return
+	}
+	check := func(key string, im *model.BindingImage) {
+		switch {
+		case im == nil || im.BuiltDigest == "" || im.RunningDigest == "":
+			violate("REP-11", "the binding must give %s.built_digest and %s.running_digest", key, key)
+		case !digestPattern.MatchString(im.BuiltDigest) || !digestPattern.MatchString(im.RunningDigest):
+			violate("REP-11", "%s digests must be sha256: followed by 64 lowercase hex digits", key)
+		case im.BuiltDigest != im.RunningDigest && key == "image":
+			violate("REP-11", "the running application was started from %s, not from the built image %s", im.RunningDigest, im.BuiltDigest)
+		case im.BuiltDigest != im.RunningDigest:
+			violate("REP-11", "%s: the running container was started from %s, not from the built image %s", key, im.RunningDigest, im.BuiltDigest)
+		}
+	}
+	if b.Image != nil {
+		check("image", b.Image)
+	}
+	names := make([]string, 0, len(b.Images))
+	for name := range b.Images {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !imageName.MatchString(name) {
+			violate("REP-11", "images: %q isn't a service name (lower-case letters, digits, '.', '_' and '-', at most 63)", name)
+			continue
+		}
+		check("images."+name, b.Images[name])
 	}
 }

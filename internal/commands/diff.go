@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -95,7 +96,10 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintln(stdout, line)
 		}
-		fmt.Fprintln(stdout, "\nChanged files:")
+		fmt.Fprintln(stdout)
+	}
+	if len(res.Files) > 0 {
+		fmt.Fprintln(stdout, "Changed files:")
 	}
 	for _, f := range res.Files {
 		line := fmt.Sprintf("  %-9s %s", safe(f.Change), safe(f.Path))
@@ -118,6 +122,12 @@ func diff(o diffOptions, stdout, stderr io.Writer) int {
 				}
 			}
 			fmt.Fprintln(stdout, line)
+		}
+	}
+	if len(res.Added) > 0 {
+		fmt.Fprintln(stdout, "\nAdded steps (read what each one asserts):")
+		for _, a := range res.Added {
+			fmt.Fprintln(stdout, "  "+safe(addedLine(a)))
 		}
 	}
 	if len(res.Drivers) > 0 {
@@ -203,4 +213,45 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+const shownWithLimit = 240
+
+func addedLine(a protdiff.AddedStep) string {
+	var line string
+	switch {
+	case a.Table != "" && a.Scenario == "":
+		line = "table " + a.Table + " " + a.Phase + " " + a.Step
+	case a.Table != "":
+		line = "table " + a.Table + " case " + a.Scenario
+	case a.Phase != "verification":
+		line = a.Scenario + " " + a.Phase + " " + a.Step
+	default:
+		line = a.Scenario + " " + a.Step
+	}
+	line += ": " + a.Do
+	if a.Identity != "" {
+		who := a.Identity
+		if a.Variant != "" {
+			who += " variant " + a.Variant
+		}
+		line += " [" + who + "]"
+	}
+	if a.With != "" {
+		with := []rune(a.With)
+		if len(with) > shownWithLimit {
+			with = append(with[:shownWithLimit], []rune("…")...)
+		}
+		line += " " + string(with)
+	}
+	if a.Timing != "" {
+		line += ", " + a.Timing
+	}
+	if a.UnlessPassed != "" {
+		line += ", unless_passed " + a.UnlessPassed
+	}
+	if len(a.Expect) == 0 {
+		return line + " -> (no expectation)"
+	}
+	return line + " -> " + strings.Join(a.Expect, "; ")
 }

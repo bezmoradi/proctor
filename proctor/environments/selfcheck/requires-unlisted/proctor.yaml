@@ -1,0 +1,19 @@
+version: 2
+project: selfcheck-requires-unlisted
+manifest: manifest.yaml
+requires:
+  features: [cli]
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        ok:
+          program: sh
+          args: [-c, "echo ok"]
+          kind: observe
+        tidy:
+          program: sh
+          args: [-c, "true"]
+          kind: act
+          targets: [nothing]

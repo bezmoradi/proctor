@@ -7,6 +7,7 @@ type Binding struct {
 	Environment string                     `yaml:"environment"`
 	Disposable  bool                       `yaml:"disposable"`
 	Image       *BindingImage              `yaml:"image"`
+	Images      map[string]*BindingImage   `yaml:"images"`
 	AppLogs     *BindingAppLogs            `yaml:"app_logs"`
 }
 

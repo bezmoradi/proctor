@@ -59,6 +59,8 @@ type Report struct {
 
 	ProtectedPathHashes map[string]string `json:"-"`
 
+	Subset bool `json:"-"`
+
 	listed map[string]bool
 	limits limits
 }

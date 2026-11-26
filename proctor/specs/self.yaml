@@ -83,3 +83,149 @@ scenarios:
         with: { command: git-status, args: [proctor] }
         expect:
           equal: { $.exit_code: 0, $.stdout_text: "${before}" }
+
+  - id: SELF-007
+    name: proctor version --features lists what this release added
+    steps:
+      - id: features
+        do: cli.run
+        with: { command: features }
+        expect:
+          equal: { $.exit_code: 0, $.stdout_truncated: false }
+          matches:
+            $.stdout_text: "(?ms).*^cleanup\\.unless_passed$.*^diff\\.added_steps$.*^int05\\.validate_unlisted$.*^invariants$.*^mode03\\.identity_required$.*^rep11\\.images$.*^report\\.show$.*^requires$.*^run\\.only$.*^run\\.rerun_failed$.*"
+
+  - id: SELF-008
+    name: validate and integrity refuse a specification file the manifest doesn't list
+    steps:
+      - id: validate
+        do: cli.run
+        with: { command: validate-unlisted }
+        expect:
+          equal: { $.exit_code: 4 }
+          contains: { $.stdout_text: "INT-05  proctor/environments/selfcheck/unlisted/specs/extra.yaml: looks like a specification, but the manifest doesn't list it" }
+      - id: integrity
+        do: cli.run
+        with: { command: integrity-unlisted }
+        expect:
+          equal: { $.exit_code: 4 }
+          contains: { $.stdout_text: "INT-05  proctor/environments/selfcheck/unlisted/specs/extra.yaml" }
+
+  - id: SELF-009
+    name: a required feature this build doesn't have stops validation
+    steps:
+      - id: validate
+        do: cli.run
+        with: { command: validate-requires-missing }
+        expect:
+          equal: { $.exit_code: 3 }
+          contains: { $.stdout_text: "has no feature \"no-such-feature\", which proctor.yaml requires" }
+
+  - id: SELF-010
+    name: a used feature that requires.features leaves out is refused
+    steps:
+      - id: validate
+        do: cli.run
+        with: { command: validate-requires-unlisted }
+        expect:
+          equal: { $.exit_code: 3 }
+          contains: { $.stdout_text: "scenario Q-002 uses cleanup, but requires.features doesn't list it" }
+
+  - id: SELF-011
+    name: validation refuses an invariant that saves or names an undeclared identity, and unless_passed outside cleanup
+    steps:
+      - id: validate
+        do: cli.run
+        with: { command: validate-invalid }
+        expect:
+          equal: { $.exit_code: 3 }
+          matches:
+            $.stdout_text: "(?s).*INV-01  [^\\n]*invariants\\[0\\] \\(saves\\): save can't be used in an invariant.*INT-12  [^\\n]*invariants\\[1\\] \\(stranger\\): identity \"nobody\" is not declared.*EXE-14  [^\\n]*scenario V-001 steps\\[0\\] \\(ok\\): unless_passed is only for cleanup steps.*"
+
+  - id: SELF-012
+    name: a run applies unless_passed, blames the scenario that leaves state behind, and marks the next one dirty
+    steps:
+      - id: run
+        do: cli.run
+        with: { command: run-fixture }
+        expect:
+          equal:
+            $.exit_code: 1
+            $.stdout_json.result: failed
+            $.stdout_json.scenarios[0].result: PASS
+            $.stdout_json.scenarios[1].result: FAIL
+            $.stdout_json.scenarios[2].result: PASS
+            $.stdout_json.scenarios[2].steps[4].id: clear-fallback
+            $.stdout_json.scenarios[2].steps[4].result: NOT_RUN
+            $.stdout_json.scenarios[2].steps[4].reason: cleanup_not_needed
+            $.stdout_json.scenarios[3].result: FAIL
+            $.stdout_json.scenarios[3].steps[3].reason: earlier_step_failed
+            $.stdout_json.scenarios[3].steps[5].id: clear-fallback
+            $.stdout_json.scenarios[3].steps[5].result: PASS
+            $.stdout_json.scenarios[4].result: ERROR
+            $.stdout_json.scenarios[4].reason: left_state_behind
+            $.stdout_json.scenarios[4].left_state_behind[0].id: clean
+            $.stdout_json.scenarios[5].result: PASS
+            $.stdout_json.scenarios[5].dirty_since: R-005
+          absent: [$.stdout_json.dirty_at_start, $.stdout_json.selection]
+
+  - id: SELF-013
+    name: run --only runs one scenario and reports a partial run, never a pass
+    steps:
+      - id: run
+        do: cli.run
+        with: { command: run-only }
+        expect:
+          equal: { $.exit_code: 0 }
+          contains: { $.stdout_text: "RESULT: PARTIAL (exit 0, local, non-authoritative; 1 of 6 scenarios ran)" }
+
+  - id: SELF-014
+    name: run --rerun-failed runs only what didn't pass in a saved report
+    steps:
+      - id: run
+        do: cli.run
+        with: { command: run-rerun-failed }
+        expect:
+          equal:
+            $.exit_code: 1
+            $.stdout_json.result: failed
+            $.stdout_json.selection.selected: 1
+            $.stdout_json.selection.total: 6
+            $.stdout_json.scenarios[0].id: R-002
+          length: { $.stdout_json.scenarios: 1 }
+
+  - id: SELF-015
+    name: report failed lists what didn't pass in a saved report
+    steps:
+      - id: failed
+        do: cli.run
+        with: { command: report-failed }
+        expect:
+          equal: { $.exit_code: 0 }
+          matches: { $.stdout_text: "FAIL     R-002  proctor/environments/selfcheck/run/specs/run\\.yaml\n\n1 of 2 didn't pass; the run's result was failed\\. .*\n" }
+
+  - id: SELF-016
+    name: report show prints one scenario's steps with expected and actual values
+    steps:
+      - id: show
+        do: cli.run
+        with: { command: report-show }
+        expect:
+          equal: { $.exit_code: 0 }
+          contains: { $.stdout_text: "equal $.exit_code: value differs: expected 0, got 1" }
+
+  - id: SELF-017
+    name: authoritative mode refuses a selection and a run without --report
+    steps:
+      - id: only
+        do: cli.run
+        with: { command: authoritative-only }
+        expect:
+          equal: { $.exit_code: 3, $.stdout_text: "" }
+          contains: { $.stderr_text: "--only and --rerun-failed are for local runs; an authoritative run always runs every listed scenario" }
+      - id: report
+        do: cli.run
+        with: { command: authoritative-without-report }
+        expect:
+          equal: { $.exit_code: 3, $.stdout_text: "" }
+          contains: { $.stderr_text: "--report is required with --authoritative (MODE-05)" }

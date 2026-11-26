@@ -221,6 +221,9 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 	where = fmt.Sprintf("%s (%s)", where, st.ID)
 	if at.cleanup {
 		r.checkCleanupStep(p, where, st, sc.Case != nil)
+		r.checkUnlessPassed(p, where, st, sc)
+	} else if st.HasUnlessPassed() {
+		r.add(Invalid, "EXE-14", p, "%s: unless_passed is only for cleanup steps; it makes a cleanup step run only when the step it names didn't pass", where)
 	}
 	if st.NoStateCheck != "" && strings.TrimSpace(st.NoStateCheck) == "" && !tableChecked && !at.cleanup {
 		r.add(Invalid, "EXE-07", p, "%s: no_state_check must state a reason", where)
@@ -371,6 +374,35 @@ func (r *Report) checkIdentity(p, where string, at stepAt, c *model.Config) {
 	case at.cleanup:
 		r.add(Invalid, "AUTH-06", p, "%s: a credential variant is for negative tests, not cleanup", where)
 	}
+}
+
+func (r *Report) checkUnlessPassed(p, where string, st *model.Step, sc *model.Scenario) {
+	if !st.HasUnlessPassed() {
+		return
+	}
+	name := st.UnlessPassedName()
+	if strings.TrimSpace(name) == "" {
+		r.add(Invalid, "EXE-14", p, "%s: unless_passed must name a step, as text", where)
+		return
+	}
+	for _, list := range [][]model.Step{sc.Setup, sc.Steps} {
+		for _, other := range list {
+			if other.ID == name {
+				return
+			}
+		}
+	}
+	for _, other := range sc.Cleanup {
+		if other.ID == name {
+			r.add(Invalid, "EXE-14", p, "%s: unless_passed %q names a cleanup step; it must name a setup or verification step, whose result is known when cleanup starts", where, name)
+			return
+		}
+	}
+	if sc.Case != nil {
+		r.add(Invalid, "EXE-14", p, "%s: unless_passed %q names no setup step of the table; name one of them, or case for the row's own step", where, name)
+		return
+	}
+	r.add(Invalid, "EXE-14", p, "%s: unless_passed %q names no setup or verification step of the scenario", where, name)
 }
 
 func (r *Report) checkCleanupStep(p, where string, st *model.Step, table bool) {

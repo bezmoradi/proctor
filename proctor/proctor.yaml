@@ -34,6 +34,66 @@ drivers:
           program: proctor
           args: [init]
           kind: observe
+        validate-unlisted:
+          program: proctor
+          args: [validate, -c, proctor/environments/selfcheck/unlisted/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        integrity-unlisted:
+          program: proctor
+          args: [integrity, --commit, HEAD, -c, proctor/environments/selfcheck/unlisted/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        validate-requires-missing:
+          program: proctor
+          args: [validate, -c, proctor/environments/selfcheck/requires-missing/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        validate-requires-unlisted:
+          program: proctor
+          args: [validate, -c, proctor/environments/selfcheck/requires-unlisted/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        validate-invalid:
+          program: proctor
+          args: [validate, -c, proctor/environments/selfcheck/invalid/proctor.yaml]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        run-fixture:
+          program: proctor
+          args: [run, -c, proctor/environments/selfcheck/run/proctor.yaml, --binding, proctor/environments/selfcheck/run/environments/local.yaml, --no-progress, --json]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        run-only:
+          program: proctor
+          args: [run, -c, proctor/environments/selfcheck/run/proctor.yaml, --binding, proctor/environments/selfcheck/run/environments/local.yaml, --no-progress, --only, R-001]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        run-rerun-failed:
+          program: proctor
+          args: [run, -c, proctor/environments/selfcheck/run/proctor.yaml, --binding, proctor/environments/selfcheck/run/environments/local.yaml, --no-progress, --json, --rerun-failed, proctor/environments/selfcheck/run/report.json]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        report-failed:
+          program: proctor
+          args: [report, failed, --report, proctor/environments/selfcheck/run/report.json]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        report-show:
+          program: proctor
+          args: [report, show, R-002, --report, proctor/environments/selfcheck/run/report.json]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        authoritative-only:
+          program: proctor
+          args: [run, --authoritative, --only, R-001]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
+        authoritative-without-report:
+          program: proctor
+          args: [run, --authoritative]
+          kind: observe
+          env: [PROCTOR_NO_UPDATE_CHECK]
         git-status:
           program: git
           args: [status, --porcelain, --untracked-files=all, --]

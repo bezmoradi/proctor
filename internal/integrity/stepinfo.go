@@ -101,6 +101,10 @@ func (r *Report) ApplyStepInfo(info map[model.StepRef]model.StepInfo, entries ma
 			r.Findings = kept
 		}
 	}
+	r.applyInvariantInfo(c, info, used)
+	if r.Subset {
+		return
+	}
 	r.checkSetupExercised(checked)
 	r.checkEntriesUsed(entries, used, c)
 	r.checkRelationsUsed(c, seen, relUsed)
@@ -273,6 +277,9 @@ func (r *Report) describe(p string, sc *model.Scenario, info map[model.StepRef]m
 			}
 			if in.Kind == kindObserve && at.cleanup {
 				r.add(Invalid, "EXE-14", p, "%s: this step observes, and cleanup takes only acts; an observation's expectations are checks of the scenario, so they belong in steps, where a mismatch fails it", where)
+			}
+			if at.cleanup && st.HasUnlessPassed() && in.Kind == kindAct && CleanupNeedsGuard(sc, at.ref.Index, in, true) {
+				r.add(Invalid, "EXE-14", p, "%s: this step acts destructively on a fixed target, so it's sent only when every earlier step passed (cleanup_unguarded), and unless_passed skips it exactly then, so it could never be sent; target ${run.id} or a value saved earlier in the scenario instead", where)
 			}
 		})
 		for name := range at.step.Save {

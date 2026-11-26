@@ -38,7 +38,7 @@ jobs:
             [(. // [])[] | select(type == "string" and (ascii_downcase | startswith("proctor:")))]
             | if length > 1 then "several"
               elif length == 0 then "none"
-              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0]] // "unknown"
+              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0] | ascii_downcase] // "unknown"
               end')
           case "$kind" in
             none) kind="" ;;
@@ -130,7 +130,7 @@ jobs:
               echo "::error::proctor/drivers/$name at the base: a repository driver's folder name must match ^[a-z][a-z0-9_-]*$."
               exit 1
             fi
-            mod=readonly
+            mod='readonly'
             [ ! -f "$dir/vendor/modules.txt" ] || mod=vendor
             (cd "$dir" && env -i PATH="$PATH" HOME="$HOME" GOWORK=off GOTOOLCHAIN=go1.27.4 CGO_ENABLED=0 GOFLAGS="-mod=$mod" \
               GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o "bin/proctor-driver-$name" "./cmd/proctor-driver-$name")
@@ -299,12 +299,13 @@ jobs:
               length == 1 and (.[0] | type == "object"
                 and .mode == "authoritative"
                 and .result == "passed" and .exit_code == 0
+                and (.trust | type == "object") and (.trust.workflow_identity | type == "object")
                 and (.provenance | type == "object")
                 and .provenance.tested_commit == $tested
                 and .provenance.ci_run_id == $run
                 and .provenance.ci_run_attempt == $attempt
                 and (.scenarios | type == "array"))' "$report" > /dev/null; then
-            echo "::error::The report isn't a passing authoritative Proctor report for $TESTED from this attempt (REP-13)."
+            echo "::error::The report isn't a passing authoritative Proctor report with a verified workflow identity for $TESTED from this attempt (REP-13, MODE-03)."
             ok=0
           else
             jq -r '"report: \(.result), exit \(.exit_code), tested \(.provenance.tested_commit), base \(.provenance.base)"' "$report"

@@ -1,0 +1,23 @@
+version: 2
+project: selfcheck-invalid
+manifest: manifest.yaml
+drivers:
+  cli:
+    official: cli
+    policy:
+      commands:
+        ok:
+          program: sh
+          args: [-c, "echo ok"]
+          kind: observe
+invariants:
+  - id: saves
+    do: cli.run
+    with: { command: ok }
+    expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }
+    save: { out: $.stdout_text }
+  - id: stranger
+    do: cli.run
+    identity: nobody
+    with: { command: ok }
+    expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }

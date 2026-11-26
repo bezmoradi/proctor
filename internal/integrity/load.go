@@ -59,6 +59,9 @@ func LoadConfig(src Source, configPath string) *Report {
 	}
 	r.ProtectedRoot = root
 
+	if data, ok, err := src.ReadFile(configPath); err == nil && ok && !r.checkRunningBuild(configPath, data) {
+		return r
+	}
 	var cfg model.Config
 	if !r.decode(src, configPath, &cfg) {
 		return r
@@ -151,6 +154,7 @@ func Load(src Source, configPath string) *Report {
 	r.loadMutation(src, cfg)
 	r.loadCoverage(src, cfg)
 	r.loadApproved(src, cfg)
+	r.checkUsedFeatures(cfg)
 	return r
 }
 
@@ -173,6 +177,7 @@ func (r *Report) decode(src Source, p string, v any) bool {
 }
 
 func (r *Report) validateConfig(c *model.Config) {
+	r.validateInvariants(c)
 	p := r.ConfigPath
 	if c.Version != 2 {
 		r.add(Invalid, "INT-15", p, "version must be 2, got %d", c.Version)

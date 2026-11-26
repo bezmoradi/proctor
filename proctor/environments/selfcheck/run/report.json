@@ -1,0 +1,97 @@
+{
+  "result": "failed",
+  "exit_code": 1,
+  "mode": "local",
+  "run_id": "000000000000",
+  "target": "selfcheck",
+  "scenarios": [
+    {
+      "id": "R-001",
+      "name": "passes",
+      "specification": "proctor/environments/selfcheck/run/specs/run.yaml",
+      "result": "PASS",
+      "steps": [
+        {
+          "id": "ok",
+          "phase": "verification",
+          "result": "PASS",
+          "driver": "cli",
+          "origin": "official",
+          "action": {
+            "driver": "cli",
+            "op": "run",
+            "summary": "observe command ok exited 0 in 7 ms"
+          },
+          "evidence": {
+            "request_excerpt": "exec [\"sh\" \"-c\" \"echo ok\"] in /work/proctor",
+            "response_excerpt": "stdout ok\n\nstderr "
+          },
+          "assertions": [
+            {
+              "kind": "equal",
+              "target": "$.exit_code",
+              "expected": 0,
+              "actual": 0,
+              "present": true,
+              "result": "PASS"
+            },
+            {
+              "kind": "equal",
+              "target": "$.stdout_text",
+              "expected": "ok\n",
+              "actual": "ok\n",
+              "present": true,
+              "result": "PASS"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R-002",
+      "name": "fails",
+      "specification": "proctor/environments/selfcheck/run/specs/run.yaml",
+      "result": "FAIL",
+      "steps": [
+        {
+          "id": "no",
+          "phase": "verification",
+          "result": "FAIL",
+          "cause": "unexpected_response",
+          "driver": "cli",
+          "origin": "official",
+          "action": {
+            "driver": "cli",
+            "op": "run",
+            "summary": "observe command no exited 1 in 5 ms"
+          },
+          "evidence": {
+            "request_excerpt": "exec [\"sh\" \"-c\" \"echo no; exit 1\"] in /work/proctor",
+            "response_excerpt": "stdout no\n\nstderr "
+          },
+          "assertions": [
+            {
+              "kind": "equal",
+              "target": "$.exit_code",
+              "expected": 0,
+              "actual": 1,
+              "present": true,
+              "result": "FAIL",
+              "message": "value differs"
+            },
+            {
+              "kind": "equal",
+              "target": "$.stdout_text",
+              "expected": "ok\n",
+              "actual": "no\n",
+              "present": true,
+              "result": "FAIL",
+              "message": "value differs"
+            }
+          ]
+        }
+      ],
+      "first_failure": "no"
+    }
+  ]
+}

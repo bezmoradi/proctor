@@ -1,0 +1,10 @@
+version: 2
+suite: extra
+scenarios:
+  - id: U-002
+    name: passes
+    steps:
+      - id: ok
+        do: cli.run
+        with: { command: ok }
+        expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"proctor/internal/integrity"
 	"proctor/internal/runner"
 )
 
@@ -50,6 +51,7 @@ func addCommon(cmd *cobra.Command, c *common) {
 
 func Execute(args []string, stdout, stderr io.Writer) int {
 	runner.CoreVersion = Version
+	integrity.Running = integrity.Build{Version: Version, Features: features}
 	u := &updateCheck{}
 	root := newRootCmd(stdout, stderr, u)
 	root.SetArgs(args)
@@ -103,6 +105,7 @@ Exit codes: 0 passed, 1 failed, 2 error, 3 invalid, 4 integrity violation.`,
 		newLogsCmd(stdout, stderr),
 		newMutateCmd(stdout, stderr),
 		newMutantsCmd(stdout, stderr),
+		newReportCmd(stdout, stderr),
 		newVersionCmd(stdout),
 	)
 	return root

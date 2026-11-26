@@ -16,6 +16,7 @@ var HandleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 type Config struct {
 	Version         int                     `yaml:"version"`
+	Requires        *Requirements           `yaml:"requires"`
 	Project         string                  `yaml:"project"`
 	Manifest        string                  `yaml:"manifest"`
 	ProtectedOwners []string                `yaml:"protected_owners"`
@@ -32,8 +33,20 @@ type Config struct {
 	Transcripts     *Transcripts            `yaml:"transcripts"`
 	Relations       []Relation              `yaml:"relations"`
 	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
+	Invariants      []Step                  `yaml:"invariants"`
 
 	files ProtectedFiles
+}
+
+const InvariantsPhase = "invariants"
+
+func InvariantRef(i int) StepRef {
+	return StepRef{Phase: InvariantsPhase, Index: i}
+}
+
+type Requirements struct {
+	Proctor  string   `yaml:"proctor"`
+	Features []string `yaml:"features"`
 }
 
 type IdentityCheck struct {
@@ -366,6 +379,18 @@ type Step struct {
 	Save         map[string]string `yaml:"save"`
 	NoStateCheck string            `yaml:"no_state_check"`
 	Waive        map[string]Waiver `yaml:"waive"`
+	UnlessPassed yaml.Node         `yaml:"unless_passed,omitempty"`
+}
+
+func (s Step) HasUnlessPassed() bool {
+	return s.UnlessPassed.Kind != 0
+}
+
+func (s Step) UnlessPassedName() string {
+	if s.UnlessPassed.Kind != yaml.ScalarNode || s.UnlessPassed.ShortTag() == "!!null" {
+		return ""
+	}
+	return s.UnlessPassed.Value
 }
 
 type Within struct {

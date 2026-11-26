@@ -30,6 +30,8 @@ type runOptions struct {
 	received, kind, kindSource, earlier   string
 	programs                              string
 	authoritative, noProgress             bool
+	only                                  []string
+	rerunFailed                           string
 	callTimeout, readyTimeout             time.Duration
 	set                                   func(name string) bool
 }
@@ -61,6 +63,8 @@ func newRunCmd(stdout, stderr io.Writer) *cobra.Command {
 	addChangeKind(cmd, &o.kind, &o.kindSource)
 	f.StringVar(&o.earlier, "earlier-reports", "", "with --authoritative: folder, outside the repository, holding the JSON reports of this workflow run's earlier attempts; the report and job summary name each earlier attempt that recorded a behavioral FAIL for the same tested commit and input hashes, and each attempt without such a report as unknown, without changing the result (REP-10)")
 	f.StringVar(&o.programs, "driver-programs", "", "with --authoritative: folder to read repository drivers' programs from, at their program paths, instead of the checkout; the reference workflow builds the base commit's drivers there")
+	f.StringSliceVar(&o.only, "only", nil, "local mode only: run just these scenarios, tables, table cases or specification ids (comma-separated or repeated); the run is reported as partial")
+	f.StringVar(&o.rerunFailed, "rerun-failed", "", "local mode only: run just the scenarios and table cases that didn't pass in this saved JSON report; the run is reported as partial")
 	f.StringVar(&o.received, "received", "", "folder, outside the repository and new or empty, for the received transcripts and logs of scenarios with transcript: true or approved_log: true (default: a new folder under $TMPDIR/proctor-received/<project>/)")
 	return cmd
 }
@@ -86,6 +90,9 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 	}
 	progress, endProgress := newProgress(stderr, o.noProgress)
 	defer endProgress()
+	if o.authoritative && (o.set("only") || o.set("rerun-failed")) {
+		return refuse("proctor run: ", "--only and --rerun-failed are for local runs; an authoritative run always runs every listed scenario")
+	}
 	if o.authoritative {
 		return runAuthoritative(ctx, authOptions{c: c, binding: bindingPath, commit: o.commit, base: o.base, prHead: o.prHead, report: o.report,
 			received: o.received, callTimeout: o.callTimeout, readyTimeout: o.readyTimeout, progress: progress,
@@ -135,7 +142,13 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 	}
 	opt.Described = info
 	opt.RunID = runner.NewRunID()
-	rn, err := runner.New(rep.Config, specFiles(rep), b, opt)
+	files, sel, err := selectScenarios(rep, o.only, o.rerunFailed)
+	if err != nil {
+		se := &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}}
+		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
+	}
+	opt.Subset = sel != nil
+	rn, err := runner.New(rep.Config, files, b, opt)
 	if err != nil {
 		se := asSetupError(err)
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
@@ -150,6 +163,12 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		rn.SetReceived(rd.write)
 	}
 	out := rn.Run(ctx)
+	if sel != nil {
+		out.Selection = sel
+		if out.ExitCode == exitOK {
+			out.Result = partialResult
+		}
+	}
 	if rd != nil {
 		if err := rd.finish(out, rep, "local", ""); err != nil {
 			fmt.Fprintf(stderr, "proctor: writing the received transcripts' manifest: %s\n", safe(err.Error()))
@@ -185,6 +204,12 @@ func writeLocalRun(w io.Writer, asJSON bool, rep *integrity.Report, out *runner.
 			"scenarios":      out.Scenarios,
 			"tables":         out.Tables,
 			"received":       out.Received,
+		}
+		if out.Selection != nil {
+			doc["selection"] = out.Selection
+		}
+		if len(out.DirtyStart) > 0 {
+			doc["dirty_at_start"] = out.DirtyStart
 		}
 		if out.Aborted {
 			doc["aborted"] = true
@@ -402,4 +427,81 @@ func stoppedOutcome(rep *integrity.Report, code int, aborted bool, violations []
 		reason = runner.ReasonAborted
 	}
 	return runner.NotStarted(specs, reason, violations)
+}
+
+const partialResult = "partial"
+
+func selectScenarios(rep *integrity.Report, only []string, rerun string) ([]runner.SpecFile, *runner.Selection, error) {
+	all := specFiles(rep)
+	if len(only) == 0 && rerun == "" {
+		return all, nil, nil
+	}
+	want := map[string]bool{}
+	var order []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" && !want[id] {
+			want[id] = true
+			order = append(order, id)
+		}
+	}
+	for _, id := range only {
+		add(id)
+	}
+	if rerun != "" {
+		prev, err := readReport(rerun)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--rerun-failed: %v", err)
+		}
+		n := 0
+		for _, sc := range prev.Scenarios {
+			if sc.Result != runner.Pass {
+				add(sc.ID)
+				n++
+			}
+		}
+		if n == 0 && len(only) == 0 {
+			return nil, nil, fmt.Errorf("--rerun-failed: every scenario in %s passed, so there is nothing to run again", rerun)
+		}
+	}
+	if len(order) == 0 {
+		return nil, nil, fmt.Errorf("--only names no scenario")
+	}
+	matched := map[string]bool{}
+	sel := &runner.Selection{Only: only, RerunFailed: rerun}
+	var out []runner.SpecFile
+	for _, f := range all {
+		sel.Total += len(f.Spec.Scenarios)
+		specID := rep.SpecIDs[f.Path]
+		cp := *f.Spec
+		cp.Scenarios = nil
+		for _, sc := range f.Spec.Scenarios {
+			keys := []string{sc.ID, specID}
+			if sc.Case != nil {
+				keys = append(keys, sc.Case.Table, sc.Case.Label())
+			}
+			picked := false
+			for _, k := range keys {
+				if want[k] {
+					matched[k] = true
+					picked = true
+				}
+			}
+			if picked {
+				cp.Scenarios = append(cp.Scenarios, sc)
+			}
+		}
+		sel.Selected += len(cp.Scenarios)
+		out = append(out, runner.SpecFile{Path: f.Path, Spec: &cp})
+	}
+	var unknown []string
+	for _, id := range order {
+		if !matched[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, nil, fmt.Errorf("no scenario, table, table case or specification is named %s", strings.Join(unknown, ", "))
+	}
+	return out, sel, nil
 }
