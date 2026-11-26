@@ -55,6 +55,7 @@ var features = []string{
 	"init",
 	"int03.configuration_error",
 	"int03.not_started",
+	"int05.validate_unlisted",
 	"int09.merge_base",
 	"int16.protected_paths_hashed",
 	"matchers.differs",

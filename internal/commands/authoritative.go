@@ -187,10 +187,6 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 				ar.Errors = append(ar.Errors, msg)
 			}
 		}
-		for _, u := range rep.Unlisted {
-
-			violate("INT-05", "%s looks like a specification but the manifest doesn't list it", u)
-		}
 		ar.Provenance.SHA256 = map[string]string{}
 		for k, v := range rep.Hashes {
 			ar.Provenance.SHA256[k] = v

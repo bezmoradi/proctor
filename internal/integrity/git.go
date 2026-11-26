@@ -132,7 +132,7 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 		}
 	}
 
-	var protectedPaths []string
+	var protectedPaths, regular []string
 	codeowners := 0
 	for _, p := range sortedKeys(tree) {
 		e := tree[p]
@@ -144,6 +144,7 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 			r.add(Violation, "INT-13", p, "protected input is a %s (mode %s); only regular files are allowed", kindOf(e), e.Mode)
 			continue
 		}
+		regular = append(regular, p)
 		data, err := repo.Blob(e.OID)
 		if err != nil {
 			r.add(Violation, "INT-07", p, "cannot read blob: %v", err)
@@ -163,10 +164,8 @@ func CheckCommit(repo *gitrepo.Repo, commit, configPath string) *Report {
 				codeowners++
 			}
 		}
-		if isSpecCandidate(p, r) && !r.listed[p] {
-			r.Unlisted = append(r.Unlisted, p)
-		}
 	}
+	r.CheckUnlisted(regular, nil)
 	if codeowners > 1 {
 		r.add(Violation, "INT-11", "", "more than one CODEOWNERS file (%s); keep exactly one", strings.Join(CodeownersPaths, ", "))
 	}
@@ -211,6 +210,33 @@ func forbiddenAttr(a string) bool {
 		return true
 	}
 	return false
+}
+
+func (r *Report) CheckUnlisted(paths []string, err error) {
+	if r.ProtectedRoot == "" {
+		return
+	}
+	if err != nil {
+		r.add(Violation, "INT-05", r.ProtectedRoot, "cannot list the files under %s/ to look for specifications the manifest doesn't list: %v", r.ProtectedRoot, err)
+		return
+	}
+	for _, p := range paths {
+		if !isSpecCandidate(p, r) || r.listed[p] {
+			continue
+		}
+		r.Unlisted = append(r.Unlisted, p)
+		r.add(Violation, "INT-05", p, "looks like a specification, but the manifest doesn't list it, so it would never run; list it in the manifest, or move a file that isn't a specification under %s/environments/, or declare it as mutation.mutants or dimensions in %s", r.ProtectedRoot, r.ConfigPath)
+	}
+}
+
+func (s *CommitSource) RegularPaths() []string {
+	var out []string
+	for _, p := range sortedKeys(s.tree) {
+		if s.tree[p].Regular() {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func isSpecCandidate(p string, r *Report) bool {

@@ -86,9 +86,6 @@ func write(w io.Writer, asJSON bool, title string, r *integrity.Report, dc *driv
 	}
 	writeDrivers(w, dc.drivers)
 	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d   Unlisted: %d\n", len(r.Specs), len(r.ScenarioIDs), len(r.Unlisted))
-	for _, u := range r.Unlisted {
-		fmt.Fprintf(w, "  unlisted (not executed): %s\n", safe(u))
-	}
 	if len(r.Findings)+len(errs) > 0 {
 		fmt.Fprintln(w)
 	}
