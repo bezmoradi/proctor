@@ -124,6 +124,9 @@ func usedFeatures(c *model.Config, specs []SpecFile) map[string]string {
 	if c.IdentityCheck != nil {
 		note("auth04.identity_check", cfg+" identity_check")
 	}
+	if len(c.Invariants) > 0 {
+		note("invariants", cfg+" invariants")
+	}
 	for _, name := range sortedKeys(c.Drivers) {
 		d := c.Drivers[name]
 		where := fmt.Sprintf("%s driver %s", cfg, name)

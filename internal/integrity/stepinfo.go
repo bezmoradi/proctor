@@ -101,6 +101,7 @@ func (r *Report) ApplyStepInfo(info map[model.StepRef]model.StepInfo, entries ma
 			r.Findings = kept
 		}
 	}
+	r.applyInvariantInfo(c, info, used)
 	r.checkSetupExercised(checked)
 	r.checkEntriesUsed(entries, used, c)
 	r.checkRelationsUsed(c, seen, relUsed)

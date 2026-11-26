@@ -615,6 +615,26 @@ A teardown kept as steps is evidence, but it doesn't run once an earlier step fa
 
 When the named step passed, the cleanup step is NOT_RUN `cleanup_not_needed` and nothing is sent. It doesn't count against the scenario: the scenario keeps its result, `cleanup_failure` stays empty, and later cleanup steps run as if it had passed; the summary's step counts list it as not run. When the named step failed, errored or didn't run, the cleanup step runs under every rule above. In a table, it names a setup step of the table or `case`, the row's own step, and is decided for each row. Validation refuses (exit 3, EXE-14) `unless_passed` outside cleanup, an empty or null one, one naming a cleanup step or no step, and one on a destructive act on a fixed target that an earlier step guards, which `cleanup_unguarded` would hold back whenever `unless_passed` lets it run: target `${run.id}` or a saved value instead. A Proctor older than the `cleanup.unless_passed` feature refuses the key as unknown. `proctor diff` lists adding `unless_passed` to a cleanup step (`cleanup_made_conditional`) and changing the step it names (`cleanup_condition_changed`) as weakenings, since the step then runs less often; a new cleanup step with it isn't one.
 
+### Environment invariants
+
+A scenario that fails part-way can leave behind what it created, and the scenarios after it then fail for that reason alone. Declare in `proctor.yaml` the state that must hold between scenarios, as read-only checks:
+
+```yaml
+invariants:
+  - id: no-sessions
+    do: http.request
+    identity: anonymous
+    with: { method: GET, path: /api/sessions }
+    expect: { equal: { $.status: 200, $.body.count: 0 } }
+```
+
+Proctor checks every invariant before the first scenario and after each scenario and table row that ran, after its cleanup:
+
+- If one doesn't hold after a scenario that started in a clean environment, the scenario left state behind: a PASS becomes ERROR `left_state_behind`, and a FAIL or ERROR keeps its result. Either way `left_state_behind` in the report, and the terminal under the scenario, show each invariant that failed, with its expected and actual values.
+- Every later scenario carries `dirty_since: <id>` (`[environment dirty since <id>]` in the terminal) until the invariants hold again, so its failure can be read as a likely consequence. A scenario that ran in a dirty environment isn't blamed for it. When they don't hold before the first scenario, the report's `dirty_at_start` shows them and the first scenarios carry `dirty_since: the start of the run`.
+
+An invariant only observes: its driver must describe it as a read, and `save`, `as`, `on`, `variant`, `consistently`, `never`, `no_state_check`, `waive`, `unless_passed`, `${run.id}`, saved values and `${row.…}` are refused (exit 3, INV-01). `eventually` lets it wait, for a container that takes a moment to go. It never acts, so it can't hide what a scenario left. A specification set without `invariants` runs as before. `proctor diff` lists a removed invariant (`invariant_removed`) and a changed one (`invariant_changed`) as weakenings, and an added one with the other changes.
+
 ### Streams
 
 `http.open` and `http.frames` read a response that stays open, newline-delimited JSON (NDJSON) or server-sent events (SSE), the way `ws.connect` and `ws.messages` read a WebSocket (HTTP-15):
@@ -1211,6 +1231,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 | Key | Meaning |
 |---|---|
 | `requires` | `proctor: ">=X.Y.Z"` and `features: [...]`, checked before anything else (INT-22, see [Requirements](#requirements)) |
+| `invariants` | read-only steps that must hold before the first scenario and after each one; see [Environment invariants](#environment-invariants) (INV-01) |
 | `protected_paths` | more paths to protect besides `proctor/`, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig` and CODEOWNERS; an entry ending in `/` is a folder |
 | `protected_owners` | authoritative mode lists each protected file whose CODEOWNERS rule at the base names none of these owners as `UNOWNED` and in `trust.unowned_protected_paths`, reported only (OD-16); without the key every protected file is listed |
 | `drivers.<name>.program` | a [repository driver](#repository-drivers)'s program, a clean path from the repository root to `proctor-driver-<name>` under a protected folder; instead of `official` |
@@ -1283,6 +1304,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 - `run --json` and local `--report`: `result`, `exit_code`, `mode`, `trust.reason`, `provenance` (`proctor_version`, `config`, `sha256`), `run_id`, `target`, `readiness`, `violations`, `drivers[]` (`name`, `official`, `program` and `platform` for a repository driver, `version`, `origin`: `official`, `repository` or `unpinned`, `sha256`, `proofs`, `stderr`, `stderr_dropped_bytes`), `identity_check`, `summary`, `scenarios`, `tables`, `received`, and `aborted` after an interrupt. Every local report, one that stops early included, has `trust` and `summary`.
 - `summary` adds to the counts `plain_scenarios` and `table_cases` (each `total`, `passed`, `failed`, `errors`, `not_run`), `steps`, `failed_ids` and `errored_ids` (a table case as `<table>/<case>`), `integrity_violations`, and in authoritative mode `protected_changes`.
 - A run stopped by an invalid configuration or specification (exit 3) reports every scenario and table case as NOT_RUN `configuration_error`. A scenario or case left without a result is NOT_RUN `not_started` and an integrity violation (exit 4, INT-03).
+- A run with `--only` or `--rerun-failed` adds `selection` (`only`, `rerun_failed`, `selected`, `total`); with [invariants](#environment-invariants), a scenario can have `left_state_behind` (the invariant steps that failed after it) and `dirty_since`, and the report `dirty_at_start`.
 - A table without an `id` is shown as a grid named `tables[<n>]`, which is also its `tables[].id` and its cases' `table`.
 - A step has `phase`, `result`, `reason`, `cause`, `action.summary`, `evidence` (`request_excerpt`, `response_excerpt`, `driver_duration_ms`), `duration_ms`, `samples`, `samples_skipped` (due times a slow sample overran, omitted when 0), `notice` (TIME-05), `saved` and `assertions[]` (with `cut_at` and `overflow`); a scenario has `handles[]`, a table `setup_from` and `rows[].cells`. A step whose telemetry holds a known credential or secret FAILs with reason `secret_in_telemetry` and one `secret_scan` assertion per place (at most 20), whose `target` is the path and `actual` `[redacted]`.
 - An ERROR the interrupt (Ctrl-C or SIGTERM) caused has cause `interrupted`; its reason is `aborted`, or `setup_failed` for a setup step.
@@ -1296,6 +1318,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 |---|---|
 | `scenario_removed`, `table_row_removed`, `step_removed`, `setup_step_removed` | removed, with the number of `assertions_lost` (a setup step that became cleanup counts as removed) |
 | `step_moved_to_setup` | a verification step became setup |
+| `invariant_removed`, `invariant_changed` | an environment invariant was removed, or its request, timing or expectations changed |
 | `cleanup_step_removed`, `step_moved_to_cleanup`, `cleanup_made_conditional`, `cleanup_condition_changed` | a cleanup step was removed; a verification step became cleanup; a cleanup step gained `unless_passed`, or names another step there (see [Cleanup](#cleanup)) |
 | `driver_changed`, `driver_origin_changed` | a step's `do` names another driver; a driver's `official` or `program` changed, or it switched between them |
 | `driver_program_changed` | a repository driver's `sha256` pin was added or changed, so its steps run another program |

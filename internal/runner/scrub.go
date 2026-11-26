@@ -134,22 +134,32 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 			hr.Handle, hr.Message = s.clean(hr.Handle), s.clean(hr.Message)
 		}
 		for j := range out.Scenarios[i].Steps {
-			st := &out.Scenarios[i].Steps[j]
-			st.Message = s.clean(st.Message)
-			if st.Action != nil {
-				st.Action.Summary = s.clean(st.Action.Summary)
-			}
-			if st.Evidence != nil {
-				st.Evidence.RequestExcerpt = cut(s.clean(st.Evidence.RequestExcerpt), r.excerpt)
-				st.Evidence.ResponseExcerpt = cut(s.clean(st.Evidence.ResponseExcerpt), r.excerpt)
-			}
-			for k := range st.Assertions {
-				a := &st.Assertions[k]
-				a.Expected, a.Actual, a.Message, a.Target = s.walk(a.Expected), s.walk(a.Actual), s.clean(a.Message), s.clean(a.Target)
-				if a.Response != "" {
-					a.Response = cut(s.clean(a.Response), r.excerpt)
-				}
-			}
+			r.scrubStep(&out.Scenarios[i].Steps[j])
+		}
+		for j := range out.Scenarios[i].LeftStateBehind {
+			r.scrubStep(&out.Scenarios[i].LeftStateBehind[j])
+		}
+	}
+	for j := range out.DirtyStart {
+		r.scrubStep(&out.DirtyStart[j])
+	}
+}
+
+func (r *Runner) scrubStep(st *StepResult) {
+	s := r.scrub
+	st.Message = s.clean(st.Message)
+	if st.Action != nil {
+		st.Action.Summary = s.clean(st.Action.Summary)
+	}
+	if st.Evidence != nil {
+		st.Evidence.RequestExcerpt = cut(s.clean(st.Evidence.RequestExcerpt), r.excerpt)
+		st.Evidence.ResponseExcerpt = cut(s.clean(st.Evidence.ResponseExcerpt), r.excerpt)
+	}
+	for k := range st.Assertions {
+		a := &st.Assertions[k]
+		a.Expected, a.Actual, a.Message, a.Target = s.walk(a.Expected), s.walk(a.Actual), s.clean(a.Message), s.clean(a.Target)
+		if a.Response != "" {
+			a.Response = cut(s.clean(a.Response), r.excerpt)
 		}
 	}
 }

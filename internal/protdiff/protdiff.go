@@ -242,6 +242,9 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 		res.Weakenings = append(res.Weakenings, cw...)
 		res.Weakenings = append(res.Weakenings, compareScrub(bc, hc)...)
 		res.Weakenings = append(res.Weakenings, compareApprovedLogs(bc, hc)...)
+		iw2, ie := compareInvariants(bc, hc)
+		res.Weakenings = append(res.Weakenings, iw2...)
+		res.Expectations = append(res.Expectations, ie...)
 	case hc != nil && !bFound:
 		ws, ds := compareDrivers(&model.Config{}, hc)
 		res.Weakenings = append(res.Weakenings, ws...)
@@ -2100,4 +2103,52 @@ func describeAdded(sc *model.Scenario, id, phase string, st model.Step) AddedSte
 	}
 	sort.Strings(a.Expect)
 	return a
+}
+
+func invariantText(st model.Step) string {
+	var parts []string
+	parts = append(parts, "do "+st.Do, "identity "+orNone(st.Identity))
+	if st.With != nil {
+		parts = append(parts, "with "+shownWith(st.With))
+	}
+	if t := timingOf(st); t != nil {
+		parts = append(parts, t.String())
+	}
+	if st.Timeout != "" {
+		parts = append(parts, "timeout "+st.Timeout)
+	}
+	var ex []string
+	for _, a := range assertionsOf(st.Expect) {
+		ex = append(ex, a.label()+" "+a.shown())
+	}
+	sort.Strings(ex)
+	return strings.Join(parts, ", ") + " -> " + strings.Join(ex, "; ")
+}
+
+func compareInvariants(b, h *model.Config) ([]Weakening, []ExpectationChange) {
+	var ws []Weakening
+	var es []ExpectationChange
+	head := map[string]model.Step{}
+	for _, st := range h.Invariants {
+		head[st.ID] = st
+	}
+	base := map[string]bool{}
+	for _, st := range b.Invariants {
+		base[st.ID] = true
+		hs, ok := head[st.ID]
+		switch {
+		case !ok:
+			ws = append(ws, Weakening{Scenario: "invariants", Step: st.ID, Kind: "invariant_removed",
+				Detail: "an environment invariant was removed; state a scenario leaves behind is no longer caught after it, nor blamed on it"})
+		case invariantText(st) != invariantText(hs):
+			ws = append(ws, Weakening{Scenario: "invariants", Step: st.ID, Kind: "invariant_changed",
+				Detail: fmt.Sprintf("an environment invariant changed from %s to %s; judge whether it still catches what it did", invariantText(st), invariantText(hs))})
+		}
+	}
+	for _, st := range h.Invariants {
+		if !base[st.ID] {
+			es = append(es, ExpectationChange{Scenario: "invariants", Step: st.ID, What: "invariant", From: "(none)", To: invariantText(st)})
+		}
+	}
+	return ws, es
 }

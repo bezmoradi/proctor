@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"proctor/internal/integrity"
+	"proctor/internal/model"
 	"proctor/internal/runner"
 )
 
@@ -198,6 +199,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		}
 		fmt.Fprintln(w, "No scenario was run (AUTH-04).")
 	}
+	writeDirtyStart(w, out)
 	printed := map[string]bool{}
 	for _, sc := range out.Scenarios {
 		if sc.Table != "" {
@@ -214,7 +216,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 		} else if sc.Cause != "" && sc.Result == runner.Error {
 			line += "  (" + safe(sc.Cause) + ")"
 		}
-		fmt.Fprintln(w, line+cleanupNote(sc))
+		fmt.Fprintln(w, line+cleanupNote(sc)+dirtyNote(sc))
 		if sc.Message != "" {
 			fmt.Fprintf(w, "           %s\n", safe(sc.Message))
 		}
@@ -288,6 +290,23 @@ func writeSamplingNote(w io.Writer, out *runner.Outcome) {
 	fmt.Fprintf(w, "\nNote: %d consistently/never check%s passed on samples; a change between samples, or after a window, can't be seen (TIME-05)\n", n, plural(n))
 }
 
+func dirtyNote(sc runner.ScenarioResult) string {
+	if sc.DirtySince == "" {
+		return ""
+	}
+	return "  [environment dirty since " + safe(sc.DirtySince) + "]"
+}
+
+func writeDirtyStart(w io.Writer, out *runner.Outcome) {
+	if len(out.DirtyStart) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "DIRTY    the environment invariants didn't hold before the first scenario; scenarios carry dirty_since until they hold again")
+	for _, st := range out.DirtyStart {
+		writeStepLine(w, st)
+	}
+}
+
 func cleanupNote(sc runner.ScenarioResult) string {
 	if sc.Cleanup == "" || sc.Cleanup == runner.Pass || sc.Reason == runner.ReasonCleanupFailed {
 		return ""
@@ -302,6 +321,8 @@ func stepLabel(st runner.StepResult) string {
 		label = "setup " + label
 	case runner.PhaseCleanup:
 		label = "cleanup " + label
+	case model.InvariantsPhase:
+		label = "invariant " + label
 	}
 	switch {
 	case st.Case == "":
@@ -333,33 +354,43 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 			inCleanup = true
 			fmt.Fprintf(w, "           cleanup %s  (run after the steps and reported apart; it turns only a PASS into ERROR cleanup_failed)\n", sc.Cleanup)
 		}
-		label := stepLabel(st)
-		act := actionText(st)
-		stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, act)
-		if st.Reason != "" {
-			stepLine += "  (" + safe(st.Reason) + causeText(st.Cause) + ")"
-		} else if st.Cause != "" && st.Result == runner.Error {
-			stepLine += "  (" + safe(st.Cause) + ")"
+		writeStepLine(w, st)
+	}
+	if len(sc.LeftStateBehind) > 0 {
+		fmt.Fprintln(w, "           left state behind: these environment invariants didn't hold after the scenario (left_state_behind)")
+		for _, st := range sc.LeftStateBehind {
+			writeStepLine(w, st)
 		}
-		if st.AfterSkippedAct {
-			stepLine += "  (after a skipped act)"
+	}
+}
+
+func writeStepLine(w io.Writer, st runner.StepResult) {
+	label := stepLabel(st)
+	act := actionText(st)
+	stepLine := fmt.Sprintf("           %-8s %s%s", st.Result, label, act)
+	if st.Reason != "" {
+		stepLine += "  (" + safe(st.Reason) + causeText(st.Cause) + ")"
+	} else if st.Cause != "" && st.Result == runner.Error {
+		stepLine += "  (" + safe(st.Cause) + ")"
+	}
+	if st.AfterSkippedAct {
+		stepLine += "  (after a skipped act)"
+	}
+	fmt.Fprintln(w, stepLine)
+	if st.Message != "" {
+		fmt.Fprintf(w, "                    %s\n", safe(st.Message))
+	}
+	for _, a := range st.Assertions {
+		if a.Result == runner.Pass {
+			continue
 		}
-		fmt.Fprintln(w, stepLine)
-		if st.Message != "" {
-			fmt.Fprintf(w, "                    %s\n", safe(st.Message))
+		label := strings.TrimSpace(a.Kind + " " + a.Target)
+		if a.Claim != nil {
+			label += fmt.Sprintf(" claim[%d]", *a.Claim)
 		}
-		for _, a := range st.Assertions {
-			if a.Result == runner.Pass {
-				continue
-			}
-			label := strings.TrimSpace(a.Kind + " " + a.Target)
-			if a.Claim != nil {
-				label += fmt.Sprintf(" claim[%d]", *a.Claim)
-			}
-			fmt.Fprintf(w, "                    %s %s\n", safe(label)+":", safe(describe(a)))
-			if a.Response != "" {
-				fmt.Fprintf(w, "                    response: %s\n", safe(a.Response))
-			}
+		fmt.Fprintf(w, "                    %s %s\n", safe(label)+":", safe(describe(a)))
+		if a.Response != "" {
+			fmt.Fprintf(w, "                    response: %s\n", safe(a.Response))
 		}
 	}
 }
@@ -495,6 +526,9 @@ func writeTable(w io.Writer, out *runner.Outcome, spec, id string) {
 			if st.Phase == runner.PhaseSetup && st.Result != runner.Pass {
 				failedSetup = true
 			}
+		}
+		if sc.DirtySince != "" {
+			fmt.Fprintf(w, "           case %s%s\n", safe(sc.ID), dirtyNote(sc))
 		}
 		cleanOK := sc.Cleanup == "" || sc.Cleanup == runner.Pass
 		if sc.Result == runner.Pass || (sc.Reason == runner.ReasonSetupFailed && !failedSetup && cleanOK) {

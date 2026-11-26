@@ -139,7 +139,7 @@ func writeScenarioDetail(w io.Writer, sc runner.ScenarioResult) {
 	if sc.Reason != "" {
 		line += "  (" + safe(sc.Reason) + causeText(sc.Cause) + ")"
 	}
-	fmt.Fprintln(w, line+cleanupNote(sc))
+	fmt.Fprintln(w, line+cleanupNote(sc)+dirtyNote(sc))
 	if sc.Message != "" {
 		fmt.Fprintf(w, "           %s\n", safe(sc.Message))
 	}

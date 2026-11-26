@@ -33,8 +33,15 @@ type Config struct {
 	Transcripts     *Transcripts            `yaml:"transcripts"`
 	Relations       []Relation              `yaml:"relations"`
 	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
+	Invariants      []Step                  `yaml:"invariants"`
 
 	files ProtectedFiles
+}
+
+const InvariantsPhase = "invariants"
+
+func InvariantRef(i int) StepRef {
+	return StepRef{Phase: InvariantsPhase, Index: i}
 }
 
 type Requirements struct {

@@ -59,6 +59,7 @@ var features = []string{
 	"int05.validate_unlisted",
 	"int09.merge_base",
 	"int16.protected_paths_hashed",
+	"invariants",
 	"matchers.differs",
 	"matchers.excludes",
 	"matchers.excludes_lists",

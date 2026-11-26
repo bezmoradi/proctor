@@ -737,6 +737,9 @@ func Describe(ctx context.Context, cfg *model.Config, specs []SpecFile, b *model
 		return Description{}, nil, err
 	}
 	infos, err := sess.describe(ctx, specs)
+	if err == nil {
+		err = sess.describeInvariants(ctx, cfg, infos)
+	}
 	sess.close()
 	if err != nil {
 		return Description{}, nil, err
@@ -1036,4 +1039,20 @@ func describeValue(v any) string {
 		return "text"
 	}
 	return "a number"
+}
+
+func (sess *session) describeInvariants(ctx context.Context, cfg *model.Config, out map[model.StepRef]model.StepInfo) error {
+	var probs problems
+	for i, st := range cfg.Invariants {
+		if name, _, ok := model.SplitDo(st.Do); !ok || sess.hosts[name] == nil {
+			continue
+		}
+		info, err := sess.validateStep(ctx, st, false)
+		if err != nil {
+			probs.add(ExitError, "proctor.yaml: invariants[%d]: %v", i, err)
+			continue
+		}
+		out[model.InvariantRef(i)] = info
+	}
+	return probs.err(sess.scrub)
 }

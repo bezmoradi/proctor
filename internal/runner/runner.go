@@ -39,6 +39,7 @@ const (
 	ReasonCleanupFailed       = "cleanup_failed"
 	ReasonCleanupUnguarded    = "cleanup_unguarded"
 	ReasonCleanupNotNeeded    = "cleanup_not_needed"
+	ReasonLeftStateBehind     = "left_state_behind"
 	ReasonHandleNotOpen       = "handle_not_open"
 	ReasonNotDisposable       = "disposable_environment_required"
 	ReasonInternal            = "internal"
@@ -166,6 +167,9 @@ type ScenarioResult struct {
 	CleanupFailure string            `json:"cleanup_failure,omitempty"`
 	Transcript     *TranscriptResult `json:"transcript,omitempty"`
 	ApprovedLog    *TranscriptResult `json:"approved_log,omitempty"`
+
+	LeftStateBehind []StepResult `json:"left_state_behind,omitempty"`
+	DirtySince      string       `json:"dirty_since,omitempty"`
 
 	rec      *scenarioRecord
 	logRec   *logRecord
@@ -314,6 +318,7 @@ type Outcome struct {
 	Result     string           `json:"result"`
 	Received   string           `json:"received,omitempty"`
 	Selection  *Selection       `json:"selection,omitempty"`
+	DirtyStart []StepResult     `json:"dirty_at_start,omitempty"`
 }
 
 const (
@@ -844,6 +849,13 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			}
 		}
 	}
+	dirty := ""
+	if stopAll == "" && ctx.Err() == nil {
+		if failed := r.checkInvariants(ctx, out.RunID); len(failed) > 0 {
+			out.DirtyStart = failed
+			dirty = DirtyAtStart
+		}
+	}
 	groups := map[string]*tableGroup{}
 	total, n := 0, 0
 	for _, f := range r.specs {
@@ -865,6 +877,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				tableLabel = sc.Case.Label()
 			}
 			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel})
+			ran := false
 			res := guarded(p, sc, func() (res ScenarioResult) {
 				switch {
 				case stopAll != "":
@@ -884,6 +897,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 						table = &tableWindow{w: r.openLogs()}
 					}
 					res = r.tableCase(ctx, p, sc, out.RunID, groups[key])
+					ran = true
 				default:
 					w := r.openLogs()
 					res = r.scenario(ctx, p, sc, out.RunID)
@@ -894,9 +908,13 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 					if sc.ApprovedLogWanted() {
 						res.logRec = newLogRecord(res.AppLogs)
 					}
+					ran = true
 				}
 				return res
 			})
+			if ran && ctx.Err() == nil {
+				dirty = r.afterScenario(ctx, &res, out.RunID, dirty)
+			}
 			out.add(p, sc, res)
 			done := Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel, Done: true, Result: res.Result, Cleanup: res.Cleanup, Elapsed: time.Since(began)}
 			if table == nil {
