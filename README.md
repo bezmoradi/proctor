@@ -25,27 +25,23 @@ Proctor checks that an application still does what people agreed it should do, a
 - The application-log check, approved transcripts, approved logs and mutation testing.
 - `proctor version --features` tells a wrapper what a build supports.
 
-## Table of Contents
+## How it works
 
-- [Installation](docs/guides/install.md)
-- [Quick start](#quick-start)
-- [Commands](docs/reference/cli.md#commands)
-- [Authoritative mode](docs/guides/ci-github.md)
-- [Specifications](docs/guides/specifications.md)
-- [Approved transcripts](docs/guides/approvals.md#approved-transcripts)
-- [Approved logs](docs/guides/approvals.md#approved-logs)
-- [Mutation testing](docs/guides/mutation-testing.md)
-- [Repository drivers](docs/guides/repository-drivers.md)
-- [Quick reference](docs/reference/cli.md)
-- [Repository layout](docs/architecture.md#repository-layout)
-- [Development](docs/development.md)
-- [Privacy](docs/security-model.md#privacy)
-- [Author](#author)
-- [License](#license)
+- **Protected inputs.** The specifications, `proctor.yaml` and the files they name live under `proctor/`. That folder, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, CODEOWNERS and any `protected_paths` are protected inputs: a change to them needs a code owner's approval, and `proctor diff` lists it with weakenings, such as a removed assertion or an added waiver, first.
+- **Local mode**, for development: `proctor validate` checks the specifications without contacting the application, and `proctor run --binding FILE` runs them against an application you started. Every local `RESULT:` line ends `(exit <n>, local, non-authoritative)`.
+- **Authoritative mode**, for the trusted CI job: `proctor run --authoritative` reads every protected input from the tested commit, verifies the job's GitHub Actions identity, lists every protected change as "approval required", and writes the JSON report and job summary that the required check and the reviewers rely on. See [Authoritative mode](docs/guides/ci-github.md).
+
+## Install
+
+```sh
+curl -fsSL https://github.com/bezmoradi/proctor/releases/latest/download/install.sh | sh
+```
+
+The script runs on linux and darwin, amd64 and arm64, checks the archive's SHA-256, and installs `proctor`, its drivers and the simulators into `~/.local/bin`. [Installation](docs/guides/install.md) covers verifying the script first, other folders, updating, pinning a release in CI and `requires`.
 
 ## Quick start
 
-[Install](docs/guides/install.md) Proctor, then from your application's repository root:
+With Proctor installed, from your application's repository root:
 
 ```sh
 proctor init
@@ -149,7 +145,17 @@ scenarios:
             $.body.data.name: "Ada ${run.id}"
 ```
 
-For CI, see [`examples/github/`](examples/github/README.md).
+For CI, see [Authoritative mode](docs/guides/ci-github.md) and [`examples/github/`](examples/github/README.md).
+
+## Documentation
+
+[docs/README.md](docs/README.md) lists every page by task:
+
+- **Write specifications:** [Writing specifications](docs/guides/specifications.md), [Approved transcripts and logs](docs/guides/approvals.md), [Mutation testing](docs/guides/mutation-testing.md), [Repository drivers](docs/guides/repository-drivers.md).
+- **Look something up:** [commands](docs/reference/cli.md), [configuration](docs/reference/configuration.md), [specification format](docs/reference/specifications.md), [drivers](docs/reference/drivers.md), [reports and exit codes](docs/reference/reports.md), [`proctor diff`](docs/reference/diff.md).
+- **Run it in CI:** [Authoritative mode](docs/guides/ci-github.md) and [`examples/github/`](examples/github/README.md).
+- **Know what it sends:** [Privacy](docs/security-model.md#privacy).
+- **Work on Proctor:** [Development](docs/development.md) and [Architecture](docs/architecture.md).
 
 ## Author
 
