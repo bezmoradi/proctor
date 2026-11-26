@@ -91,11 +91,12 @@ VERSION=<version> OS=linux ARCH=amd64; name="proctor-$VERSION-$OS-$ARCH"
 curl -fsSLO "https://github.com/bezmoradi/proctor/releases/download/v$VERSION/$name.tar.gz"
 curl -fsSLO "https://github.com/bezmoradi/proctor/releases/download/v$VERSION/SHA256SUMS"
 grep " $name.tar.gz\$" SHA256SUMS | shasum -a 256 -c -
-gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
+gh attestation verify "$name.tar.gz" -R bezmoradi/proctor --deny-self-hosted-runners \
   --signer-workflow bezmoradi/proctor/.github/workflows/release.yml --source-ref "refs/tags/v$VERSION"
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
+The release workflow attests every file it publishes, `SHA256SUMS`, `install.sh` and the NOTICES file included, and runs only on GitHub-hosted runners, so `--deny-self-hosted-runners` holds for each. Archive names carry the version, so a script that wants the newest release asks for its tag first, or uses `releases/latest/download/install.sh`. In CI, pin a version and its archive's SHA-256 instead, as the [reference workflow](examples/github/proctor.yml) does: a new release then can't change a required check's verdict on an unchanged commit, and the upgrade is a reviewed change. Check the features your specifications need with `proctor version --features`, or declare them in `proctor.yaml` (see [Requirements](#requirements)).
 
 Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)).
 
