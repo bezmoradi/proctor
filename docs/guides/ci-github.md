@@ -18,6 +18,34 @@ In this mode Proctor:
 - refuses a repository driver that isn't pinned for the job's platform or that the commit tracks;
 - with `--earlier-reports DIR`, says which earlier attempts of the same workflow run failed a scenario for the same commit and inputs (see [Re-runs](#re-runs)).
 
+In the reference workflow, what the pull request can change and what comes from the base commit:
+
+```mermaid
+flowchart TB
+  subgraph tested["Tested commit: the pull request's test merge"]
+    code["application source"]
+    specs["proctor/: specifications, proctor.yaml, approved files"]
+  end
+  subgraph base["Base commit"]
+    env["proctor/verify/: the environment"]
+    drvsrc["proctor/drivers/: repository driver source"]
+    pins["proctor.yaml: driver pins and operations"]
+  end
+  release["pinned Proctor release, checked by SHA-256"]
+  code -->|"build job"| image["image"]
+  image -->|"verify job: compose up"| app["running application"]
+  env --> app
+  drvsrc -->|"built outside the checkout"| programs["driver programs"]
+  specs --> proctor["proctor run --authoritative"]
+  pins --> proctor
+  programs --> proctor
+  release --> proctor
+  proctor -->|"steps, through the drivers"| app
+  proctor -->|"JSON report"| verdict["verdict job: the required check"]
+```
+
+A pull request's change to the environment, the drivers or their pins takes effect only once it is merged; its change to the specifications is listed as "approval required".
+
 It always writes the JSON report and a job summary. A binding inside the checkout is refused. Nothing runs while any of these checks fails.
 
 These checks hold only while the pull request's code can't act as root on the job's host. An application that mounts the host's Docker socket can, and then it can rewrite the report or read the job's tokens; run such an environment off the job's host (see [Adapting it](../../examples/github/README.md#adapting-it)).

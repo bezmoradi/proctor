@@ -151,10 +151,11 @@ For CI, see [Authoritative mode](docs/guides/ci-github.md) and [`examples/github
 
 [docs/README.md](docs/README.md) lists every page by task:
 
+- **Learn the model:** [Concepts](docs/concepts.md).
 - **Write specifications:** [Writing specifications](docs/guides/specifications.md), [Approved transcripts and logs](docs/guides/approvals.md), [Mutation testing](docs/guides/mutation-testing.md), [Repository drivers](docs/guides/repository-drivers.md).
-- **Look something up:** [commands](docs/reference/cli.md), [configuration](docs/reference/configuration.md), [specification format](docs/reference/specifications.md), [drivers](docs/reference/drivers.md), [reports and exit codes](docs/reference/reports.md), [`proctor diff`](docs/reference/diff.md).
+- **Look something up:** [rules such as EXE-14](docs/reference/rules.md), [commands](docs/reference/cli.md), [configuration](docs/reference/configuration.md), [specification format](docs/reference/specifications.md), [drivers](docs/reference/drivers.md), [reports and exit codes](docs/reference/reports.md), [`proctor diff`](docs/reference/diff.md).
 - **Run it in CI:** [Authoritative mode](docs/guides/ci-github.md) and [`examples/github/`](examples/github/README.md).
-- **Know what it sends:** [Privacy](docs/security-model.md#privacy).
+- **Judge whether to trust it:** [Security model](docs/security-model.md), including [Privacy](docs/security-model.md#privacy).
 - **Work on Proctor:** [Development](docs/development.md) and [Architecture](docs/architecture.md).
 
 ## Author

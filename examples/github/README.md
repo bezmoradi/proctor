@@ -1,6 +1,6 @@
 # Reference GitHub configuration
 
-`proctor.yml` and `CODEOWNERS` are the reference workflow and code-owner file for OD-01 option B. `verify/` is an example of the disposable environment's definitions. The trust test below, from 2026-11-14, ran an earlier form of the workflow in a temporary public repository with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API.
+`proctor.yml` and `CODEOWNERS` are the reference workflow and code-owner file for running Proctor from a workflow in the repository, with its `verdict` job as the required check. `verify/` is an example of the disposable environment's definitions. The trust test below, from 2026-11-14, ran an earlier form of the workflow in a temporary public repository with Proctor 0.0.0-phase0+ee924a9 and a small in-memory users API.
 
 To use them:
 
@@ -90,9 +90,9 @@ The settings above were active, except where a row says so.
 ## Not shown by this test
 
 - **An approved pull request becoming mergeable.** The test had one account, and GitHub doesn't let an author approve their own pull request. A second account in the code-owner team is needed to show `REVIEW_REQUIRED` turning into `CLEAN` after approval, and stale approvals being dismissed by a new push.
-- **Option A, a ruleset-required workflow** (AT-W-11). It needs GitHub Enterprise Cloud.
-- **Merge queues**, `merge_group` runs (§6.3), fork pull requests (AT-W-19), and a missing or unparseable report from a workflow that still runs Proctor (AT-W-18). The workflow now triggers on `merge_group` and its verdict checks the report, but neither has run on GitHub.
-- **The release archive, the disposable environment and its identities** (§16.2 items 3 and 4). The test downloaded a bare `proctor` and started the image with `docker run`. The workflow now downloads the release archive with its drivers, starts `proctor/verify/compose.verify.yaml` from the base commit and gets tokens from the environment's identity provider. Its steps were run on a Mac with a stub identity provider, never on GitHub, and Compose's `up --wait` with the example definition never ran at all.
+- **A ruleset-required workflow** instead of one in the repository (AT-W-11). It needs GitHub Enterprise Cloud.
+- **Merge queues**, `merge_group` runs, fork pull requests (AT-W-19), and a missing or unparseable report from a workflow that still runs Proctor (AT-W-18). The workflow now triggers on `merge_group` and its verdict checks the report, but neither has run on GitHub.
+- **The release archive, the disposable environment and its identities.** The test downloaded a bare `proctor` and started the image with `docker run`. The workflow now downloads the release archive with its drivers, starts `proctor/verify/compose.verify.yaml` from the base commit and gets tokens from the environment's identity provider. Its steps were run on a Mac with a stub identity provider, never on GitHub, and Compose's `up --wait` with the example definition never ran at all.
 - **Earlier attempts** (REP-10, AT-W-04). The workflow changed after this test: each attempt uploads its report as `proctor-report-<attempt>`, a re-run downloads the earlier ones with `pattern: proctor-report-*` and passes them to `--earlier-reports`, and the verify job no longer has `actions: read`. Proctor's side is tested locally with the run identity set by hand. Not yet shown on GitHub: a re-run whose download returns the earlier attempt's artifact, and a verify job that reads the build job's `image` artifact without `actions: read`.
 - **The binding's form.** The test used a binding with `target:`; current Proctor refuses that key, and the workflow now writes `drivers: { http: … }`, `identities` and `disposable: true` instead. That form hasn't run on GitHub yet.
 - **AT-W-01 and AT-W-02 in full.** The build didn't try to replace the pinned binary, and the planted scripts were shown not to run only by the executed binary's digest.

@@ -1,6 +1,24 @@
 # Writing specifications
 
-A specification is a suite of scenarios, and a scenario a list of steps, such as the quick start's `proctor/specs/users.yaml`. A step names a driver's operation in `do`, the identity it acts as, the operation's arguments in `with`, what the answer must hold in `expect`, and the values it `save`s for later steps. A step that observes can be sampled until its expectations hold (`eventually`), or must keep them at every sample (`consistently`) or at none (`never`):
+A specification is a suite of scenarios, and a scenario a list of steps, such as the quick start's `proctor/specs/users.yaml`. A step names a driver's operation in `do`, the identity it acts as, the operation's arguments in `with`, what the answer must hold in `expect`, and the values it `save`s for later steps.
+
+How a scenario's steps run:
+
+```mermaid
+flowchart TB
+  setup["setup steps"] -->|"all pass"| steps["verification steps, in order"]
+  setup -->|"one doesn't pass"| notrun["the scenario's steps don't run: setup_failed"]
+  steps -->|"a step FAILs"| afterfail["later acts don't run: earlier_step_failed; later reads still run"]
+  steps -->|"a step is ERROR"| aftererr["later steps don't run: earlier_step_errored"]
+  steps --> cleanup
+  notrun --> cleanup
+  afterfail --> cleanup
+  aftererr --> cleanup
+  cleanup["cleanup acts, whatever happened"] --> inv["environment invariants, when declared"]
+  inv -->|"don't hold after a scenario that started clean"| blamed["a PASS becomes ERROR: left_state_behind"]
+```
+
+A step that observes can be sampled until its expectations hold (`eventually`), or must keep them at every sample (`consistently`) or at none (`never`):
 
 ```yaml
 - id: activated

@@ -5,6 +5,7 @@ Each topic has one page. Guides say how to do a task; reference pages list every
 ## Start
 
 - [README](../README.md): what Proctor is, how it works, and the quick start.
+- [Concepts](concepts.md): the vocabulary and the model behind the checks: protected inputs, weakenings, acts and state checks, guards, drivers, bindings and modes.
 - [Installation](guides/install.md): install, verify, update, pin a release in CI, and `requires`.
 - [`examples/sample/`](../examples/sample/README.md): a users API checked end to end, to see Proctor working before you adopt it.
 
@@ -26,11 +27,12 @@ Each topic has one page. Guides say how to do a task; reference pages list every
 - [Configuration](reference/configuration.md): `proctor.yaml`, the binding, and environment variables.
 - [Specification format](reference/specifications.md): validation rules, matchers, paths, references and state checks across drivers.
 - [Drivers](reference/drivers.md): each official driver's operations, facts, policy, binding and limits, and the simulators.
-- [Reports and exit codes](reference/reports.md): what each JSON report holds.
+- [Rules](reference/rules.md): every rule ID a message can name, such as EXE-14 or INT-22, what it refuses and its exit code.
+- [Reports and exit codes](reference/reports.md): exit codes, every result reason, and what each JSON report holds.
 - [`proctor diff`](reference/diff.md): every kind of change it lists, and which ones are weakenings.
 
 ## Trust and internals
 
-- [Security model](security-model.md): what Proctor reads, writes and sends.
-- [Architecture](architecture.md): the repository's layout.
+- [Security model](security-model.md): what Proctor enforces, what GitHub and the repository must enforce, what it assumes and doesn't guarantee, and what it reads, writes and sends.
+- [Architecture](architecture.md): how a run flows, the packages and the repository's layout.
 - [Development](development.md): build from source, the self-check, and releasing.

@@ -6,6 +6,36 @@ Exit codes: 0 passed, 1 a scenario failed, 2 an infrastructure error, 3 invalid 
 
 On SIGINT or SIGTERM, `run` starts no new scenario, marks the rest NOT_RUN `aborted`, writes its report with `aborted: true` and exits 2 (1 if a scenario already failed); `mutate` likewise starts no new mutant. A panic inside a scenario makes it ERROR `internal` and the run goes on; a panic anywhere else exits 2 with `reason: internal`, and the report is still written.
 
+## Results and reasons
+
+Each scenario, table case and step is PASS, FAIL, ERROR or NOT_RUN. FAIL means the application didn't do what the specification says; ERROR means the check itself couldn't be completed, such as a timeout or a driver problem; NOT_RUN means nothing was sent. Anything but PASS carries a `reason`, and an ERROR often a `cause` too, such as `timeout`, `invalid_request` or `unsupported_result`. `proctor report failed --report FILE` lists them from a saved report.
+
+| Reason | Means |
+|---|---|
+| `aborted` | An interrupt (Ctrl-C or SIGTERM) stopped the run: what hadn't started is NOT_RUN, and a step it cut short is ERROR with cause `interrupted` |
+| `app_logs` | The [app-log check](../guides/specifications.md#application-logs): FAIL for a line at a failing level that `expect_logs` doesn't list, ERROR when the log can't be read (cause `app_logs_unparsed`, `app_logs_unmapped_level` or `app_logs_unreadable`) |
+| `cleanup_failed` | A cleanup step didn't pass, so a passing scenario became ERROR; a failing scenario stays FAIL |
+| `cleanup_not_needed` | A cleanup step with `unless_passed` didn't run because the step it names passed; it doesn't count against the scenario |
+| `cleanup_unguarded` | A guarded destructive cleanup act on a fixed target didn't run, because an earlier step didn't pass |
+| `configuration_error` | The configuration or a specification is invalid (exit 3), so nothing ran |
+| `disposable_environment_required` | The scenario has `requires: disposable_environment` and the binding doesn't say `disposable: true` (exit 2) |
+| `driver_not_in_base` | Authoritative mode: the scenario uses a repository driver the base commit doesn't have (exit 2) |
+| `earlier_step_failed`, `earlier_step_errored` | An earlier step failed or errored, so this step wasn't sent |
+| `environment_not_ready` | A target didn't report ready within `--ready-timeout`, so no scenario ran (exit 2) |
+| `handle_not_open` | The handle the step names with `on` isn't open, because the step that opens it failed or didn't run |
+| `identity_check_failed` | The [identity check](configuration.md) failed, so no scenario ran (exit 3, or 2 when a request errored) |
+| `internal` | A panic inside Proctor; a scenario it hits is ERROR and the run goes on |
+| `left_state_behind` | An [environment invariant](../guides/specifications.md#environment-invariants) didn't hold after the scenario, which had started clean; a PASS becomes ERROR |
+| `log_not_approved`, `log_changed` | FAIL: the scenario has no approved log yet, or its log differs from the approved one (see [Approved logs](../guides/approvals.md#approved-logs)) |
+| `log_too_large`, `log_not_written`, `log_unusable` | ERROR: the log is over `max_bytes`, the received file couldn't be written, or the approved file couldn't be compared |
+| `missing_saved_value` | The step uses a value an earlier step didn't save, because that step failed or didn't run |
+| `not_started` | The scenario never started; also an integrity violation (exit 4, INT-03) |
+| `secret_in_telemetry` | FAIL: telemetry holds a credential or secret Proctor knows (see [Telemetry](drivers.md#telemetry)) |
+| `setup_failed` | A setup step didn't pass, so the scenario's steps didn't run |
+| `transcript_not_approved`, `transcript_changed` | FAIL: the scenario has no approved transcript yet, or its transcript differs from the approved one (see [Approved transcripts](../guides/approvals.md#approved-transcripts)) |
+| `transcript_too_large`, `transcript_not_written`, `transcript_unusable` | ERROR: the transcript is over `max_bytes`, the received file couldn't be written, or the approved file couldn't be compared |
+| `trust_violation` | A driver's proof failed, such as the read-only check of a database role (DB-04) or a Redis user (REDIS-05), so no scenario ran (exit 4) |
+
 ## Reports
 
 - `run --json` and local `--report`: `result`, `exit_code`, `mode`, `trust.reason`, `provenance` (`proctor_version`, `config`, `sha256`), `run_id`, `target`, `readiness`, `violations`, `drivers[]` (`name`, `official`, `program` and `platform` for a repository driver, `version`, `origin`: `official`, `repository` or `unpinned`, `sha256`, `proofs`, `stderr`, `stderr_dropped_bytes`), `identity_check`, `summary`, `scenarios`, `tables`, `received`, and `aborted` after an interrupt. Every local report, one that stops early included, has `trust` and `summary`.
