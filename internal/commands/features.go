@@ -66,6 +66,7 @@ var features = []string{
 	"matchers.matches_numbers",
 	"matchers.overflow",
 	"matchers.truncated_text",
+	"mode03.identity_required",
 	"mutants.build_check_exit2",
 	"mutants.generate",
 	"mutate",

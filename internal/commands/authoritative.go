@@ -252,8 +252,9 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		ident, err = github.FetchIdentity(ctx, client)
 	}
 	switch {
-	case errors.Is(err, github.ErrNoToken):
 	case err != nil && ctx.Err() != nil:
+	case errors.Is(err, github.ErrNoToken):
+		violate("MODE-03", "the job offers no OIDC token, so the workflow that ran can't be verified; grant the job permissions: id-token: write (a pull request from a fork gets no token, so it can't give an authoritative result)")
 	case err != nil:
 		violate("MODE-03", "the job offers an OIDC token, but it can't be verified: %v", err)
 	default:

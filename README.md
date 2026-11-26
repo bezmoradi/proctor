@@ -244,7 +244,7 @@ In this mode Proctor:
 - takes the base from GitHub's test merge commit, after checking that its second parent is the pull request head, or with `--base` refuses a base that hasn't exactly one merge base with the tested commit (exit 4, INT-09);
 - lists every protected change as "approval required";
 - asks GitHub's API for CODEOWNERS errors at the base;
-- verifies the job's GitHub Actions OIDC token against GitHub's published keys;
+- requires the job's GitHub Actions OIDC token and verifies it against GitHub's published keys, so a job without one, such as a pull request from a fork, can't give an authoritative result (MODE-03);
 - reports whether the workflow that ran differs from the base branch's;
 - refuses to run unless the image the application was started from is the image built from the tested commit;
 - takes each repository driver's `program`, `sha256` and `operations` from the base commit's `proctor.yaml`, and reads its program from `--driver-programs DIR` (default: the checkout); see [Repository drivers](#repository-drivers);
@@ -1184,7 +1184,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 | `CI`, `GITHUB_ACTIONS` | any value turns off the update check; `approve` and `mutate` refuse to run |
 | `GITHUB_REPOSITORY`, `GITHUB_TOKEN` | authoritative mode asks GitHub for CODEOWNERS errors with them; without either, or with no CODEOWNERS file at the base, it exits 4 (INT-11), so it can't pass outside GitHub Actions |
 | `GITHUB_API_URL` | GitHub's API, default `https://api.github.com` |
-| `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | the job's OIDC token (`permissions: id-token: write`); without them `trust.workflow_identity` is `unverified` and `trust.workflow_changed` is `unknown` |
+| `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | the job's OIDC token (`permissions: id-token: write`); without them authoritative mode exits 4 (MODE-03), with `trust.workflow_identity` `unverified` and `trust.workflow_changed` `unknown` |
 | `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` | recorded in the report; they must match the OIDC token |
 | `GITHUB_STEP_SUMMARY` | the file the job summary is appended to |
 
@@ -1256,7 +1256,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 ### Limits and timeouts
 
 - Readiness asks each driver in turn every 250 ms, each attempt bounded by 3 s (5 s for docker and postgres), until `--ready-timeout`; a lasting problem ends the wait at once. A target that isn't ready makes every scenario NOT_RUN `environment_not_ready` (exit 2), and an `app_logs.file` that can't be read, or an `app_logs.otel` receiver that doesn't answer, when the run starts exits 2.
-- The OIDC token must have audience `proctor` and be signed with RS256 by a key of at least 2048 bits, with 60 s of clock skew allowed; a token that doesn't verify, or names another commit, repository, run or attempt, exits 4 (MODE-03).
+- The OIDC token must have audience `proctor` and be signed with RS256 by a key of at least 2048 bits, with 60 s of clock skew allowed; a missing token, one that doesn't verify, and one naming another commit, repository, run or attempt exit 4 (MODE-03).
 - `proctor-sim-http` keeps the newest 10,000 requests and 128 MiB of them (bodies, headers and queries), the first 64 KiB of each body (it reads up to 16 MiB and counts the rest in `body_bytes`), and answers at most 100 requests (12 MiB) per read. A route's and a fault's `delay` are at most 10m, a fault's `for` at most 1h and its `times` at most 10,000; a `file` answer is at most 8 MiB.
 
 ### Reports

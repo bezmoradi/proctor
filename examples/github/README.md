@@ -22,7 +22,7 @@ To use them:
   - downloads the release archive, checks its SHA-256 against the pin right before use, extracts it under `$RUNNER_TEMP` (outside the checkout), checks the archive's own `SHA256SUMS`, and logs the SHA-256 of the `proctor` it runs. Its drivers sit beside it, as INT-17 requires.
   - asks the environment's identity provider for each identity's token, masks it, and passes it to Proctor in an environment variable that the binding names. The binding (mode 0600, under `$RUNNER_TEMP`) holds variable names, never tokens, and marks the environment `disposable: true`.
   - runs Proctor with `--pr-head` for a pull request, or `--base` for a merge group, and uploads the report, also when Proctor failed. Finally it tears the environment down and deletes the binding.
-- **verdict** is the required check. It runs with `if: always()` and no permissions, downloads this attempt's report and fails when any job didn't succeed, or when the report is missing or isn't one JSON object that is an authoritative, passing report (`result: passed`, `exit_code: 0`) for this commit, run and attempt (REP-13).
+- **verdict** is the required check. It runs with `if: always()` and no permissions, downloads this attempt's report and fails when any job didn't succeed, or when the report is missing or isn't one JSON object that is an authoritative, passing report (`result: passed`, `exit_code: 0`) for this commit, run and attempt with a verified workflow identity (`trust.workflow_identity` an object, not `unverified`) (REP-13, MODE-03). A pull request from a fork gets no OIDC token, so Proctor refuses it (exit 4, MODE-03) and the verdict fails.
 
 A merge queue needs `merge_group` in the workflow and the `verdict` check required in the branch protection or ruleset.
 
