@@ -38,6 +38,7 @@ const (
 	ReasonAppLogs             = "app_logs"
 	ReasonCleanupFailed       = "cleanup_failed"
 	ReasonCleanupUnguarded    = "cleanup_unguarded"
+	ReasonCleanupNotNeeded    = "cleanup_not_needed"
 	ReasonHandleNotOpen       = "handle_not_open"
 	ReasonNotDisposable       = "disposable_environment_required"
 	ReasonInternal            = "internal"
@@ -1108,7 +1109,7 @@ func (r *Runner) tableCase(ctx context.Context, p string, sc model.Scenario, run
 	if g.rowFailed == nil {
 		g.rowFailed = map[string]bool{}
 	}
-	r.cleanup(ctx, p, sc, &res, cleanVars, hs, g.ok && !g.rowFailed[sc.Case.Key])
+	r.cleanup(ctx, p, sc, &res, cleanVars, hs, g.ok && !g.rowFailed[sc.Case.Key], g.setup)
 	if res.Result != Pass {
 		g.rowFailed[sc.Case.Key] = true
 	}
@@ -1241,7 +1242,7 @@ func (r *Runner) scenario(ctx context.Context, p string, sc model.Scenario, runI
 	for i, st := range sc.Steps {
 		run(i, st, PhaseVerification)
 	}
-	r.cleanup(ctx, p, sc, &res, vars, hs, true)
+	r.cleanup(ctx, p, sc, &res, vars, hs, true, nil)
 	res.Handles = r.closeHandles(ctx, hs)
 	r.recordTranscript(&res, sc, setupResults(res.Steps), vars)
 	r.keepLogVars(&res, sc, vars)
@@ -1323,16 +1324,21 @@ func notRunScenario(p string, sc model.Scenario, reason string) ScenarioResult {
 	return res
 }
 
-func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *ScenarioResult, vars expr.Vars, hs *handleSet, earlierPassed bool) {
+func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *ScenarioResult, vars expr.Vars, hs *handleSet, earlierPassed bool, shared []StepResult) {
 	if len(sc.Cleanup) == 0 {
 		return
 	}
 	keep := r.wantsTranscript(sc)
 	clean := earlierPassed
+	passed := map[string]bool{}
+	for _, sr := range shared {
+		passed[sr.ID] = sr.Result == Pass
+	}
 	for _, sr := range res.Steps {
 		if sr.Result != Pass {
 			clean = false
 		}
+		passed[sr.ID] = sr.Result == Pass
 	}
 	res.Cleanup = Pass
 	cause := ""
@@ -1342,6 +1348,10 @@ func (r *Runner) cleanup(ctx context.Context, p string, sc model.Scenario, res *
 		switch {
 		case ctx.Err() != nil:
 			sr.Result, sr.Reason, sr.Message = NotRun, ReasonAborted, "the run was interrupted, which stops the drivers, so nothing was sent; what the scenario created may remain"
+		case st.UnlessPassedName() != "" && passed[st.UnlessPassedName()]:
+			sr.Result, sr.Reason, sr.Message = NotRun, ReasonCleanupNotNeeded, fmt.Sprintf("unless_passed %q: that step passed, so this cleanup step wasn't needed and nothing was sent", st.UnlessPassedName())
+			res.Steps = append(res.Steps, sr)
+			continue
 		case reason != "":
 			sr.Result, sr.Reason, sr.Message = NotRun, reason, msg
 		default:

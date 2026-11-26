@@ -366,6 +366,18 @@ type Step struct {
 	Save         map[string]string `yaml:"save"`
 	NoStateCheck string            `yaml:"no_state_check"`
 	Waive        map[string]Waiver `yaml:"waive"`
+	UnlessPassed yaml.Node         `yaml:"unless_passed,omitempty"`
+}
+
+func (s Step) HasUnlessPassed() bool {
+	return s.UnlessPassed.Kind != 0
+}
+
+func (s Step) UnlessPassedName() string {
+	if s.UnlessPassed.Kind != yaml.ScalarNode || s.UnlessPassed.ShortTag() == "!!null" {
+		return ""
+	}
+	return s.UnlessPassed.Value
 }
 
 type Within struct {

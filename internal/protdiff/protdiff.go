@@ -1395,6 +1395,9 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 			d.compare(bs.step, hs.step, true)
 		default:
 			d.compare(bs.step, hs.step, !bs.setup)
+			if bs.cleanup {
+				d.compareUnlessPassed(bs.step.UnlessPassedName(), hs.step.UnlessPassedName())
+			}
 		}
 		sort.SliceStable(d.es, func(i, j int) bool { return d.es[i].What < d.es[j].What })
 		ws = append(ws, d.ws...)
@@ -1406,6 +1409,18 @@ func compareSteps(id string, b, h *model.Scenario) ([]Weakening, []ExpectationCh
 		}
 	}
 	return ws, es, ms
+}
+
+func (d *stepDiff) compareUnlessPassed(b, h string) {
+	switch {
+	case b == h:
+	case b == "":
+		d.weaken("cleanup_made_conditional", 0, "unless_passed %s added; the cleanup step is no longer sent when that step passes", h)
+	case h != "":
+		d.weaken("cleanup_condition_changed", 0, "unless_passed changed from %s to %s; the cleanup step is now skipped whenever %s passes", b, h, h)
+	default:
+		d.change("unless_passed", b, "none")
+	}
 }
 
 func phaseName(l located) string {

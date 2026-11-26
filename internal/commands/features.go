@@ -17,6 +17,7 @@ var features = []string{
 	"browser.origins",
 	"change_kind",
 	"cleanup",
+	"cleanup.unless_passed",
 	"cli",
 	"cli.env_binding",
 	"cli.observe_location",

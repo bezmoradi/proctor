@@ -565,6 +565,39 @@ A scenario or a table can list `cleanup:` acts, which run after its steps whatev
 
 A cleanup step that fails turns a passing scenario into ERROR `cleanup_failed`; a failing scenario stays FAIL, with its `first_failure`, and the cleanup is reported apart (`cleanup` and `cleanup_failure` in the report, a `cleanup <result>` line in the terminal and on the progress line). A cleanup step that needs a value whose step didn't run, or a handle that isn't open, is NOT_RUN with nothing sent. A destructive act on a fixed target that EXE-09 accepts because an earlier step guards it is sent only when every earlier step passed (otherwise NOT_RUN `cleanup_unguarded`), since a guard that failed may have found someone else's data; one that waives EXE-09 is always sent. Cleanup steps only act: a step that observes, `eventually`, `consistently`, `never`, `save`, `no_state_check`, `as` and credential variants are refused there (exit 3), and they need no state check (EXE-07). They run inside the scenario's app-log window and appear in its transcript. After an interrupt the drivers are stopped, so the cleanup is NOT_RUN `aborted`. `proctor diff` lists a removed cleanup step (`cleanup_step_removed`), a verification step moved into cleanup (`step_moved_to_cleanup`) and a loosened cleanup expectation as weakenings.
 
+A teardown kept as steps is evidence, but it doesn't run once an earlier step fails. To free what the scenario created then, add a fallback cleanup step with `unless_passed`, naming the setup or verification step it stands in for:
+
+```yaml
+- id: SES-010
+  name: A started session can be stopped
+  steps:
+    - id: start
+      do: http.request
+      identity: anonymous
+      with: { method: POST, path: /api/sessions }
+      expect: { equal: { $.status: 201 }, present: [$.body.id] }
+      save: { session: $.body.id }
+    - id: stop
+      do: http.request
+      identity: anonymous
+      with: { method: POST, path: "/api/sessions/${session}/stop" }
+      expect: { equal: { $.status: 202, $.body.state: stopping } }
+    - id: stopped
+      do: http.request
+      identity: anonymous
+      with: { method: GET, path: "/api/sessions/${session}" }
+      expect: { equal: { $.status: 200, $.body.state: stopped } }
+  cleanup:
+    - id: stop-fallback
+      unless_passed: stop
+      do: http.request
+      identity: anonymous
+      with: { method: POST, path: "/api/sessions/${session}/stop" }
+      expect: { equal: { $.status: 202 } }
+```
+
+When the named step passed, the cleanup step is NOT_RUN `cleanup_not_needed` and nothing is sent. It doesn't count against the scenario: the scenario keeps its result, `cleanup_failure` stays empty, and later cleanup steps run as if it had passed; the summary's step counts list it as not run. When the named step failed, errored or didn't run, the cleanup step runs under every rule above. In a table, it names a setup step of the table or `case`, the row's own step, and is decided for each row. Validation refuses (exit 3, EXE-14) `unless_passed` outside cleanup, an empty or null one, one naming a cleanup step or no step, and one on a destructive act on a fixed target that an earlier step guards, which `cleanup_unguarded` would hold back whenever `unless_passed` lets it run: target `${run.id}` or a saved value instead. A Proctor older than the `cleanup.unless_passed` feature refuses the key as unknown. `proctor diff` lists adding `unless_passed` to a cleanup step (`cleanup_made_conditional`) and changing the step it names (`cleanup_condition_changed`) as weakenings, since the step then runs less often; a new cleanup step with it isn't one.
+
 ### Streams
 
 `http.open` and `http.frames` read a response that stays open, newline-delimited JSON (NDJSON) or server-sent events (SSE), the way `ws.connect` and `ws.messages` read a WebSocket (HTTP-15):
@@ -1243,6 +1276,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 |---|---|
 | `scenario_removed`, `table_row_removed`, `step_removed`, `setup_step_removed` | removed, with the number of `assertions_lost` (a setup step that became cleanup counts as removed) |
 | `step_moved_to_setup` | a verification step became setup |
+| `cleanup_step_removed`, `step_moved_to_cleanup`, `cleanup_made_conditional`, `cleanup_condition_changed` | a cleanup step was removed; a verification step became cleanup; a cleanup step gained `unless_passed`, or names another step there (see [Cleanup](#cleanup)) |
 | `driver_changed`, `driver_origin_changed` | a step's `do` names another driver; a driver's `official` or `program` changed, or it switched between them |
 | `driver_program_changed` | a repository driver's `sha256` pin was added or changed, so its steps run another program |
 | `operation_now_observes` | a repository driver's operation went from `act` to `observe` |
