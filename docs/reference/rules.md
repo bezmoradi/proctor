@@ -17,7 +17,7 @@ In the Exit column, 3 means invalid input and 4 an integrity violation; `validat
 | INT-08 | A Git error while `proctor diff` reads the commits it compares | 4 |
 | INT-09 | A base and tested commit without exactly one merge base, or a test merge whose parents aren't the base and the pull request head | 4 |
 | INT-11 | More than one CODEOWNERS file; in authoritative mode, a CODEOWNERS error GitHub reports at the base, or no `GITHUB_REPOSITORY` and `GITHUB_TOKEN` to ask with | 4 |
-| INT-12 | A driver with both or neither of `official` and `program`, a step whose `do` names a driver `proctor.yaml` doesn't configure, and a `program` that isn't a clean path inside the repository | 3 |
+| INT-12 | A driver with both or neither of `official` and `program`, a step or invariant whose `do` names a driver or whose `identity` names an identity `proctor.yaml` doesn't configure, and a `program` that isn't a clean path inside the repository | 3 |
 | INT-13 | A symbolic link, or anything but a folder, where protected inputs live (4); a `body_file` that is absolute, holds `..` or `${...}`, ends in `.yaml` or `.yml`, or passes through a symbolic link (3) | 4 or 3 |
 | INT-14 | A protected file with a Git attribute that can hide its diff, such as `diff`, `binary`, `filter` or `export-ignore` | 4 |
 | INT-15 | A specification that doesn't parse as strict YAML into the specification format, a specification or manifest whose `version` isn't 2, and a table case whose `with` or `expect` doesn't parse | 3 |

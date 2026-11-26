@@ -207,6 +207,9 @@ func writeLocalRun(w io.Writer, asJSON bool, rep *integrity.Report, out *runner.
 		if out.Selection != nil {
 			doc["selection"] = out.Selection
 		}
+		if len(out.DirtyStart) > 0 {
+			doc["dirty_at_start"] = out.DirtyStart
+		}
 		if out.Aborted {
 			doc["aborted"] = true
 		}

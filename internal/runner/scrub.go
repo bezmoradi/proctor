@@ -139,6 +139,9 @@ func (r *Runner) scrubOutcome(out *Outcome) {
 		for j := range out.Scenarios[i].LeftStateBehind {
 			r.scrubStep(&out.Scenarios[i].LeftStateBehind[j])
 		}
+		for j := range out.Scenarios[i].InvariantErrors {
+			r.scrubStep(&out.Scenarios[i].InvariantErrors[j])
+		}
 	}
 	for j := range out.DirtyStart {
 		r.scrubStep(&out.DirtyStart[j])

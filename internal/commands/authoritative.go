@@ -66,6 +66,7 @@ type authReport struct {
 	Drivers          []runner.DriverInfo     `json:"drivers"`
 	Target           string                  `json:"target,omitempty"`
 	Readiness        string                  `json:"readiness,omitempty"`
+	DirtyStart       []runner.StepResult     `json:"dirty_at_start,omitempty"`
 	IdentityCheck    *runner.IdentityCheck   `json:"identity_check,omitempty"`
 	Summary          *runner.Summary         `json:"summary,omitempty"`
 	Scenarios        []runner.ScenarioResult `json:"scenarios"`
@@ -549,7 +550,7 @@ func authRun(ctx context.Context, o authOptions, ar *authReport, rep *integrity.
 	}
 	ar.Violations = append(ar.Violations, out.Violations...)
 	ar.Target, ar.Readiness, ar.Scenarios, ar.Tables, ar.Summary = out.Target, out.Readiness, out.Scenarios, out.Tables, &out.Summary
-	ar.IdentityCheck = out.Identity
+	ar.IdentityCheck, ar.DirtyStart = out.Identity, out.DirtyStart
 	ar.Provenance.RunID = out.RunID
 	if out.Drivers != nil {
 		ar.Drivers = out.Drivers

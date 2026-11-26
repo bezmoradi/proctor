@@ -39,6 +39,7 @@ const (
 	ReasonCleanupFailed       = "cleanup_failed"
 	ReasonCleanupUnguarded    = "cleanup_unguarded"
 	ReasonCleanupNotNeeded    = "cleanup_not_needed"
+	ReasonInvariantError      = "invariant_error"
 	ReasonLeftStateBehind     = "left_state_behind"
 	ReasonHandleNotOpen       = "handle_not_open"
 	ReasonNotDisposable       = "disposable_environment_required"
@@ -169,6 +170,7 @@ type ScenarioResult struct {
 	ApprovedLog    *TranscriptResult `json:"approved_log,omitempty"`
 
 	LeftStateBehind []StepResult `json:"left_state_behind,omitempty"`
+	InvariantErrors []StepResult `json:"invariant_errors,omitempty"`
 	DirtySince      string       `json:"dirty_since,omitempty"`
 
 	rec      *scenarioRecord
@@ -724,22 +726,28 @@ func allSteps(sc model.Scenario) []model.Step {
 	return append(append(append([]model.Step{}, sc.Setup...), sc.Steps...), sc.Cleanup...)
 }
 
-func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
-	seenI, seenV := map[string]bool{}, map[[2]string]bool{}
+func (r *Runner) usedSteps() []model.Step {
+	var steps []model.Step
 	for _, f := range r.specs {
 		if f.Spec == nil {
 			continue
 		}
 		for _, sc := range f.Spec.Scenarios {
-			for _, st := range allSteps(sc) {
-				if st.Identity == "" {
-					continue
-				}
-				seenI[st.Identity] = true
-				if st.Variant != "" {
-					seenV[[2]string{st.Identity, st.Variant}] = true
-				}
-			}
+			steps = append(steps, allSteps(sc)...)
+		}
+	}
+	return append(steps, r.cfg.Invariants...)
+}
+
+func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
+	seenI, seenV := map[string]bool{}, map[[2]string]bool{}
+	for _, st := range r.usedSteps() {
+		if st.Identity == "" {
+			continue
+		}
+		seenI[st.Identity] = true
+		if st.Variant != "" {
+			seenV[[2]string{st.Identity, st.Variant}] = true
 		}
 	}
 	idents = sortedKeys(seenI)
@@ -754,22 +762,15 @@ func (r *Runner) usedIdentities() (idents []string, variants [][2]string) {
 
 func (r *Runner) usedValues() [][2]string {
 	seen := map[[2]string]bool{}
-	for _, f := range r.specs {
-		if f.Spec == nil {
-			continue
-		}
-		for _, sc := range f.Spec.Scenarios {
-			for _, st := range allSteps(sc) {
-				for _, v := range []any{st.With, st.Expect} {
-					for _, n := range refsIn(v) {
-						i := strings.LastIndexByte(n, '.')
-						if i <= 0 || i == len(n)-1 || n == expr.RunID || expr.IsSecret(n) {
-							continue
-						}
-						if _, declared := r.cfg.Identities[n[:i]]; declared {
-							seen[[2]string{n[:i], n[i+1:]}] = true
-						}
-					}
+	for _, st := range r.usedSteps() {
+		for _, v := range []any{st.With, st.Expect} {
+			for _, n := range refsIn(v) {
+				i := strings.LastIndexByte(n, '.')
+				if i <= 0 || i == len(n)-1 || n == expr.RunID || expr.IsSecret(n) {
+					continue
+				}
+				if _, declared := r.cfg.Identities[n[:i]]; declared {
+					seen[[2]string{n[:i], n[i+1:]}] = true
 				}
 			}
 		}
@@ -784,18 +785,11 @@ func (r *Runner) usedValues() [][2]string {
 
 func (r *Runner) usedSecrets() []string {
 	seen := map[string]bool{}
-	for _, f := range r.specs {
-		if f.Spec == nil {
-			continue
-		}
-		for _, sc := range f.Spec.Scenarios {
-			for _, st := range allSteps(sc) {
-				for _, v := range []any{st.With, st.Expect} {
-					for _, n := range refsIn(v) {
-						if expr.IsSecret(n) {
-							seen[expr.SecretName(n)] = true
-						}
-					}
+	for _, st := range r.usedSteps() {
+		for _, v := range []any{st.With, st.Expect} {
+			for _, n := range refsIn(v) {
+				if expr.IsSecret(n) {
+					seen[expr.SecretName(n)] = true
 				}
 			}
 		}
@@ -851,8 +845,12 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 	}
 	dirty := ""
 	if stopAll == "" && ctx.Err() == nil {
-		if failed := r.checkInvariants(ctx, out.RunID); len(failed) > 0 {
-			out.DirtyStart = failed
+		failed, errored := r.checkInvariants(ctx, out.RunID)
+		out.DirtyStart = failed
+		switch {
+		case len(errored) > 0:
+			stopAll = ReasonInvariantError
+		case len(failed) > 0:
 			dirty = DirtyAtStart
 		}
 	}
@@ -912,8 +910,17 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				}
 				return res
 			})
-			if ran && ctx.Err() == nil {
+			if ran && ctx.Err() == nil && len(r.cfg.Invariants) > 0 {
+				if table != nil {
+					r.pauseLogs(ctx, table.w)
+				}
 				dirty = r.afterScenario(ctx, &res, out.RunID, dirty)
+				switch {
+				case table != nil:
+					r.resumeLogs(ctx, table.w)
+				case r.logs != nil:
+					r.flushLogs(ctx)
+				}
 			}
 			out.add(p, sc, res)
 			done := Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel, Done: true, Result: res.Result, Cleanup: res.Cleanup, Elapsed: time.Since(began)}

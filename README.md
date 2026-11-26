@@ -28,7 +28,7 @@ Proctor checks that an application still does what people agreed it should do, a
 ## How it works
 
 - **Protected inputs.** The specifications, `proctor.yaml` and the files they name live under `proctor/`. That folder, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, CODEOWNERS and any `protected_paths` are protected inputs: a change to them needs a code owner's approval, and `proctor diff` lists it with weakenings, such as a removed assertion or an added waiver, first.
-- **Local mode**, for development: `proctor validate` checks the specifications without contacting the application, and `proctor run --binding FILE` runs them against an application you started. Every local `RESULT:` line ends `(exit <n>, local, non-authoritative)`.
+- **Local mode**, for development: `proctor validate` checks the specifications without contacting the application, and `proctor run --binding FILE` runs them against an application you started. Every local `RESULT:` line says `local, non-authoritative`.
 - **Authoritative mode**, for the trusted CI job: `proctor run --authoritative` reads every protected input from the tested commit, verifies the job's GitHub Actions identity, lists every protected change as "approval required", and writes the JSON report and job summary that the required check and the reviewers rely on. See [Authoritative mode](docs/guides/ci-github.md).
 
 ## Install

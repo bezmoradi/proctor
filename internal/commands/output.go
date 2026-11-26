@@ -301,10 +301,23 @@ func writeDirtyStart(w io.Writer, out *runner.Outcome) {
 	if len(out.DirtyStart) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "DIRTY    the environment invariants didn't hold before the first scenario; scenarios carry dirty_since until they hold again")
+	if invariantErrored(out.DirtyStart) {
+		fmt.Fprintln(w, "ERROR    the environment invariants couldn't be checked before the first scenario, so no scenario ran (invariant_error)")
+	} else {
+		fmt.Fprintln(w, "DIRTY    the environment invariants didn't hold before the first scenario; scenarios carry dirty_since until they hold again")
+	}
 	for _, st := range out.DirtyStart {
 		writeStepLine(w, st)
 	}
+}
+
+func invariantErrored(steps []runner.StepResult) bool {
+	for _, st := range steps {
+		if st.Result == runner.Error {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupNote(sc runner.ScenarioResult) string {
@@ -359,6 +372,12 @@ func writeSteps(w io.Writer, sc runner.ScenarioResult) {
 	if len(sc.LeftStateBehind) > 0 {
 		fmt.Fprintln(w, "           left state behind: these environment invariants didn't hold after the scenario (left_state_behind)")
 		for _, st := range sc.LeftStateBehind {
+			writeStepLine(w, st)
+		}
+	}
+	if len(sc.InvariantErrors) > 0 {
+		fmt.Fprintln(w, "           invariants not checked: these environment invariants errored or didn't hold after the scenario (invariant_error)")
+		for _, st := range sc.InvariantErrors {
 			writeStepLine(w, st)
 		}
 	}

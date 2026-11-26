@@ -13,8 +13,10 @@ import (
 )
 
 type logWindow struct {
-	mark applogs.Mark
-	err  error
+	mark  applogs.Mark
+	err   error
+	prior []string
+	notes []string
 }
 
 type tableWindow struct {
@@ -28,7 +30,46 @@ func (r *Runner) openLogs() *logWindow {
 		return nil
 	}
 	m, err := r.logs.Mark()
+	if err != nil {
+		err = fmt.Errorf("when the scenario began: %v", err)
+	}
 	return &logWindow{mark: m, err: err}
+}
+
+func (r *Runner) flushLogs(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(r.logWait):
+	}
+}
+
+func (r *Runner) pauseLogs(ctx context.Context, w *logWindow) {
+	if w == nil || w.err != nil {
+		return
+	}
+	r.flushLogs(ctx)
+	win, err := r.logs.Since(w.mark)
+	if err != nil {
+		w.err = fmt.Errorf("before the environment invariants: %v", err)
+		return
+	}
+	w.prior = append(w.prior, win.Lines...)
+	if win.Note != "" {
+		w.notes = append(w.notes, win.Note)
+	}
+}
+
+func (r *Runner) resumeLogs(ctx context.Context, w *logWindow) {
+	if w == nil || w.err != nil {
+		return
+	}
+	r.flushLogs(ctx)
+	m, err := r.logs.Mark()
+	if err != nil {
+		w.err = fmt.Errorf("after the environment invariants: %v", err)
+		return
+	}
+	w.mark = m
 }
 
 func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.LogExpectation, keep bool) *AppLogResult {
@@ -38,20 +79,21 @@ func (r *Runner) closeLogs(ctx context.Context, w *logWindow, expect []model.Log
 	res := &AppLogResult{Check: AppLogCheck, Result: Pass}
 	if w.err != nil {
 		res.Result, res.Cause = Error, CauseAppLogsUnreadable
-		res.Message = fmt.Sprintf("cannot read the application's log when the scenario began: %v", w.err)
+		res.Message = fmt.Sprintf("cannot read the application's log %v", w.err)
 		return res
 	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(r.logWait):
-	}
+	r.flushLogs(ctx)
 	win, err := r.logs.Since(w.mark)
 	if err != nil {
 		res.Result, res.Cause = Error, CauseAppLogsUnreadable
 		res.Message = fmt.Sprintf("cannot read the application's log after the scenario: %v", err)
 		return res
 	}
-	res.Note = win.Note
+	win.Lines = append(w.prior, win.Lines...)
+	if win.Note != "" {
+		w.notes = append(w.notes, win.Note)
+	}
+	res.Note = strings.Join(w.notes, "; ")
 	res.LinesRead = len(win.Lines)
 	index := map[string]int{}
 	seen := make([]int, len(expect))

@@ -10,27 +10,40 @@ import (
 
 const DirtyAtStart = "the start of the run"
 
-func (r *Runner) checkInvariants(ctx context.Context, runID string) []StepResult {
-	var failed []StepResult
+func (r *Runner) checkInvariants(ctx context.Context, runID string) (failed []StepResult, errored []string) {
 	for _, inv := range r.cfg.Invariants {
 		if ctx.Err() != nil {
-			return failed
+			return failed, errored
 		}
 		sr := r.step(ctx, inv, StepResult{ID: inv.ID, Phase: model.InvariantsPhase}, r.baseVars(runID+"-invariants"), newHandleSet())
 		if sr.Result != Pass {
 			failed = append(failed, sr)
 		}
+		if sr.Result == Error {
+			errored = append(errored, inv.ID)
+		}
 	}
-	return failed
+	return failed, errored
 }
 
 func (r *Runner) afterScenario(ctx context.Context, res *ScenarioResult, runID, dirty string) string {
 	if len(r.cfg.Invariants) == 0 {
 		return dirty
 	}
-	failed := r.checkInvariants(ctx, runID)
+	failed, errored := r.checkInvariants(ctx, runID)
 	if ctx.Err() != nil {
 		return dirty
+	}
+	if len(errored) > 0 {
+		res.InvariantErrors = failed
+		if dirty != "" {
+			res.DirtySince = dirty
+		}
+		if res.Result == Pass {
+			res.Result, res.Reason, res.Cause = Error, ReasonInvariantError, ""
+			res.Message = fmt.Sprintf("the environment invariant %s couldn't be checked after this scenario, so whether it left state behind is unknown", strings.Join(errored, ", "))
+		}
+		return ""
 	}
 	if dirty != "" {
 		res.DirtySince = dirty

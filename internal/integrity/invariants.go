@@ -36,6 +36,9 @@ func (r *Report) validateInvariants(c *model.Config) {
 				r.add(Invalid, "INT-12", p, "%s: do names driver %q, which proctor.yaml doesn't configure", where, driver)
 			}
 		}
+		if _, declared := c.Identities[st.Identity]; st.Identity != "" && !declared {
+			r.add(Invalid, "INT-12", p, "%s: identity %q is not declared in proctor.yaml", where, st.Identity)
+		}
 		if st.Expect.Count() == 0 {
 			r.add(Invalid, invariantRule, p, "%s: an invariant must state at least one expectation, the state that must hold after every scenario", where)
 		}
