@@ -28,6 +28,22 @@ A merge queue needs `merge_group` in the workflow and the `verdict` check requir
 
 Because the environment comes from the base, `proctor/verify/` must be on the target branch before `verdict` is required: a pull request whose base has no `proctor/verify/compose.verify.yaml` fails. An application change that needs a new environment fails until the environment change merges, so merge the environment change first in its own pull request, and keep it working with the application version already on the base.
 
+## Adapting it
+
+### An application that controls the runner's Docker
+
+The workflow's trust rests on the pull request's code never running as root on the verify job's host. An application that mounts the host's Docker socket, for example to start a container per session, breaks that: whoever controls the Docker daemon is root on the runner. The pull request's application code, built into the image, can then read the job's tokens, the OIDC request token included, from the runner's processes, replace the verified `proctor` under `$RUNNER_TEMP`, or rewrite the report, so a hostile pull request can make `verdict` pass. Taking the environment from the base doesn't help, because the base's environment itself hands the socket to code from the pull request.
+
+Proctor can't make that host trustworthy, and its report can't tell. Keep the socket away from the job's host: start the environment inside a virtual machine on the runner, or on another machine the job reaches over the network, and run Proctor, its report and `verdict` outside it, with no token of the job inside. The docker driver then reads that machine's daemon. Until then, treat the result as non-authoritative.
+
+### An environment started by scripts
+
+When the environment comes up through scripts, which sign in, write the binding and need the tested files, follow the pattern the workflow uses for repository drivers: take the scripts **from the base commit** into `$RUNNER_TEMP`, outside the checkout, with `git archive "$BASE" -- <scripts folder>`, and run them under `env -i` with only the variables they need, plus one naming the checkout, such as `CHECKOUT="$GITHUB_WORKSPACE"`. The pull request can then change what the scripts read, its application, but not what they do. A change to the scripts takes effect once merged, like a change to `proctor/verify/`.
+
+### Labels that don't name a kind
+
+The workflow runs on `labeled` and `unlabeled` so a `proctor:` label can set the change kind, so any label, even one unrelated to Proctor, starts the whole run again. Don't skip the jobs for such a label: GitHub counts a skipped required check as passing, so a skipped `verdict` would turn a failed commit green. To avoid the cost, move the kind into a workflow of its own that only runs `proctor diff --base "$BASE" --head "$TESTED" --change-kind "$KIND"` (no stack, a few seconds), require its check too, and drop the label triggers and `--change-kind` from this one. The authoritative report then records no `change_kind`, and the kind is checked by `proctor diff` alone.
+
 ## Branch protection
 
 ```json

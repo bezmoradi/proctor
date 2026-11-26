@@ -270,6 +270,8 @@ In this mode Proctor:
 
 It always writes the JSON report and a job summary. A binding inside the checkout is refused. Nothing runs while any of these checks fails.
 
+These checks hold only while the pull request's code can't act as root on the job's host. An application that mounts the host's Docker socket can, and then it can rewrite the report or read the job's tokens; run such an environment off the job's host (see [Adapting it](examples/github/README.md#adapting-it)).
+
 GitHub must be configured so that nothing merges without the check and a code owner's approval:
 
 - CODEOWNERS on the protected folder, all of `.github/`, and the CODEOWNERS file itself;
