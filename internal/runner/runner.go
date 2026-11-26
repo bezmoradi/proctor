@@ -377,6 +377,7 @@ type Options struct {
 	ProtectedRoot string
 	Withheld      map[string]string
 	Described     map[model.StepRef]model.StepInfo
+	Subset        bool
 	Progress      func(Progress)
 	RunID         string
 	Received      ReceivedWriter
@@ -527,7 +528,7 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 			return nil, err
 		}
 	}
-	checkDescribed(cfg, specs, infos, sess.entries(), &probs)
+	checkDescribed(cfg, specs, infos, sess.entries(), opt.Subset, &probs)
 	if err := probs.err(r.scrub); err != nil {
 		sess.close()
 		return nil, err
@@ -542,8 +543,8 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 	return r, nil
 }
 
-func checkDescribed(cfg *model.Config, specs []SpecFile, infos map[model.StepRef]model.StepInfo, entries map[string][]model.PolicyEntry, probs *problems) {
-	rep := &integrity.Report{Config: cfg}
+func checkDescribed(cfg *model.Config, specs []SpecFile, infos map[model.StepRef]model.StepInfo, entries map[string][]model.PolicyEntry, subset bool, probs *problems) {
+	rep := &integrity.Report{Config: cfg, Subset: subset}
 	for _, f := range specs {
 		if f.Spec != nil {
 			rep.Specs = append(rep.Specs, integrity.SpecFile{Path: f.Path, Spec: f.Spec})

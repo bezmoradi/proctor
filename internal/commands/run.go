@@ -147,6 +147,7 @@ func run(o runOptions, stdout, stderr io.Writer) (code int) {
 		se := &runner.SetupError{ExitCode: exitInvalid, Msgs: []string{err.Error()}}
 		return emit(func(w io.Writer, asJSON bool) int { return setupFailed(w, asJSON, rep, se, ctx.Err() != nil) })
 	}
+	opt.Subset = sel != nil
 	rn, err := runner.New(rep.Config, files, b, opt)
 	if err != nil {
 		se := asSetupError(err)

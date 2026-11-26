@@ -149,6 +149,7 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 			}
 			mutantOpt := opt
 			mutantOpt.Checkout = copyDir
+			mutantOpt.Subset = len(picked) > 0
 			rn, err := runner.New(rep.Config, specs, b, mutantOpt)
 			if err != nil {
 				return nil, err
