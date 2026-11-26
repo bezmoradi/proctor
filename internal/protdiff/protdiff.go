@@ -80,8 +80,23 @@ type Result struct {
 	Drivers      []DriverChange      `json:"driver_changes"`
 	Expectations []ExpectationChange `json:"expectation_changes"`
 	Moves        []AssertionMove     `json:"assertion_moves"`
+	Added        []AddedStep         `json:"added_steps,omitempty"`
 
 	Unparsed []string `json:"unparsed,omitempty"`
+}
+
+type AddedStep struct {
+	Table        string   `json:"table,omitempty"`
+	Scenario     string   `json:"scenario,omitempty"`
+	Step         string   `json:"step"`
+	Phase        string   `json:"phase"`
+	Do           string   `json:"do"`
+	Identity     string   `json:"identity,omitempty"`
+	Variant      string   `json:"variant,omitempty"`
+	With         string   `json:"with,omitempty"`
+	Timing       string   `json:"timing,omitempty"`
+	UnlessPassed string   `json:"unless_passed,omitempty"`
+	Expect       []string `json:"expect"`
 }
 
 func (r *Result) Count() int { return len(r.Files) }
@@ -252,6 +267,7 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 	logTables := map[string]bool{}
 	transcriptTables := map[string]bool{}
 	logOptTables := map[string]bool{}
+	addedTables := map[string]bool{}
 	for _, c := range res.Scenarios {
 		b, h := bs[c.ID].typed, hs[c.ID].typed
 		if c.Change == "modified" || c.Modified {
@@ -281,15 +297,18 @@ func Compute(repo *gitrepo.Repo, base, head, configPath string) (*Result, error)
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "scenario_removed", Detail: "the scenario was removed"})
 		case c.Change == "added" && h != nil && h.Case != nil:
 			res.Weakenings = append(res.Weakenings, addedRowWaivers(c.ID, h)...)
+			res.Added = append(res.Added, addedRowSteps(c.ID, h, bs, addedTables)...)
 		case c.Change == "added" && h != nil:
 			for _, st := range append(append(append([]model.Step(nil), h.Setup...), h.Steps...), h.Cleanup...) {
 				res.Weakenings = append(res.Weakenings, addedStepWaivers(c.ID, st, "the scenario is added")...)
 			}
+			res.Added = append(res.Added, addedSteps(c.ID, h, nil, addedTables)...)
 		case (c.Change == "modified" || c.Modified) && b != nil && h != nil:
 			w, e, m := compareSteps(c.ID, b, h)
 			res.Weakenings = append(res.Weakenings, w...)
 			res.Expectations = append(res.Expectations, e...)
 			res.Moves = append(res.Moves, m...)
+			res.Added = append(res.Added, addedSteps(c.ID, h, b, addedTables)...)
 		case c.Change == "modified" || c.Modified:
 			res.Weakenings = append(res.Weakenings, Weakening{Scenario: c.ID, Kind: "not_analysed",
 				Detail: "the scenario changed but one side doesn't decode as a specification; read the file diff"})
@@ -2004,4 +2023,81 @@ func orNone(s string) string {
 		return "(none)"
 	}
 	return s
+}
+
+func addedSteps(id string, h, b *model.Scenario, seen map[string]bool) []AddedStep {
+	had := map[string]bool{}
+	if b != nil {
+		bm, _ := indexSteps(b)
+		for sid := range bm {
+			had[sid] = true
+		}
+	}
+	var out []AddedStep
+	for _, part := range []struct {
+		phase string
+		steps []model.Step
+	}{{"setup", h.Setup}, {"verification", h.Steps}, {"cleanup", h.Cleanup}} {
+		for _, st := range part.steps {
+			if had[st.ID] {
+				continue
+			}
+			if h.Case != nil && part.phase != "verification" {
+				k := h.Case.Key + "\x00" + part.phase + "\x00" + st.ID
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+				out = append(out, describeAdded(h, "", part.phase, st))
+				continue
+			}
+			out = append(out, describeAdded(h, id, part.phase, st))
+		}
+	}
+	return out
+}
+
+func addedRowSteps(id string, h *model.Scenario, base map[string]scenarioVersion, seen map[string]bool) []AddedStep {
+	var out []AddedStep
+	key := h.Case.Key
+	tableIsNew := !seen[key]
+	for _, v := range base {
+		if v.typed != nil && v.typed.Case != nil && v.typed.Case.Key == key {
+			tableIsNew = false
+		}
+	}
+	seen[key] = true
+	if tableIsNew {
+		for _, st := range h.Setup {
+			out = append(out, describeAdded(h, "", "setup", st))
+		}
+	}
+	for _, st := range h.Steps {
+		out = append(out, describeAdded(h, id, "verification", st))
+	}
+	if tableIsNew {
+		for _, st := range h.Cleanup {
+			out = append(out, describeAdded(h, "", "cleanup", st))
+		}
+	}
+	return out
+}
+
+func describeAdded(sc *model.Scenario, id, phase string, st model.Step) AddedStep {
+	a := AddedStep{Scenario: id, Step: st.ID, Phase: phase, Do: st.Do, Identity: st.Identity, Variant: st.Variant,
+		UnlessPassed: st.UnlessPassedName(), Expect: []string{}}
+	if sc.Case != nil {
+		a.Table = sc.Case.Label()
+	}
+	if st.With != nil {
+		a.With = shownWith(st.With)
+	}
+	if t := timingOf(st); t != nil {
+		a.Timing = t.String()
+	}
+	for _, x := range assertionsOf(st.Expect) {
+		a.Expect = append(a.Expect, x.label()+" "+x.shown())
+	}
+	sort.Strings(a.Expect)
+	return a
 }

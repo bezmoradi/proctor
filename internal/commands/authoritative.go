@@ -656,6 +656,8 @@ func unowned(repo *gitrepo.Repo, base, tested string, rep *integrity.Report) []s
 	return out
 }
 
+const summaryAddedLimit = 200
+
 func writeAuthoritative(w io.Writer, ar *authReport, rep *integrity.Report, out *runner.Outcome) {
 	fmt.Fprintf(w, "PROCTOR RUN  (authoritative)\n\n")
 	p := ar.Provenance
@@ -792,6 +794,18 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 			fmt.Fprintf(w, "- %s %s: %s\n", md(d.Kind), code(d.Driver), md(d.Detail))
 		}
 		fmt.Fprintln(w)
+		if added := ar.ProtectedChanges.Added; len(added) > 0 {
+			fmt.Fprintln(w, "### Added steps: read what each one asserts")
+			fmt.Fprintln(w)
+			for i, a := range added {
+				if i == summaryAddedLimit {
+					fmt.Fprintf(w, "- and %d more; see `protected_changes.added_steps` in the report\n", len(added)-i)
+					break
+				}
+				fmt.Fprintf(w, "- %s\n", md(addedLine(a)))
+			}
+			fmt.Fprintln(w)
+		}
 	}
 	for _, v := range ar.Violations {
 		fmt.Fprintf(w, "- integrity violation: %s\n", md(v))

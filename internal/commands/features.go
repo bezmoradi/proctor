@@ -26,6 +26,7 @@ var features = []string{
 	"cli.repository",
 	"cli.unused_entries",
 	"db04.owns_any_object",
+	"diff.added_steps",
 	"diff.driver_program_changed",
 	"diff.scenario_order",
 	"diff.weakenings_first",
