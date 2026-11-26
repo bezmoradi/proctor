@@ -292,6 +292,13 @@ type DriverInfo struct {
 	StderrDropped int64   `json:"stderr_dropped_bytes,omitempty"`
 }
 
+type Selection struct {
+	Only        []string `json:"only,omitempty"`
+	RerunFailed string   `json:"rerun_failed,omitempty"`
+	Selected    int      `json:"selected"`
+	Total       int      `json:"total"`
+}
+
 type Outcome struct {
 	RunID      string           `json:"run_id"`
 	Aborted    bool             `json:"aborted,omitempty"`
@@ -306,6 +313,7 @@ type Outcome struct {
 	ExitCode   int              `json:"exit_code"`
 	Result     string           `json:"result"`
 	Received   string           `json:"received,omitempty"`
+	Selection  *Selection       `json:"selection,omitempty"`
 }
 
 const (

@@ -165,7 +165,18 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	if mode != "authoritative" {
 		writeDrivers(w, out.Drivers)
 	}
-	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d\n\n", len(rep.Specs), out.Summary.Scenarios)
+	fmt.Fprintf(w, "Specifications:  %d   Scenarios: %d\n", len(rep.Specs), out.Summary.Scenarios)
+	if sel := out.Selection; sel != nil {
+		var how []string
+		if len(sel.Only) > 0 {
+			how = append(how, "--only "+safe(strings.Join(sel.Only, ",")))
+		}
+		if sel.RerunFailed != "" {
+			how = append(how, "--rerun-failed "+safe(sel.RerunFailed))
+		}
+		fmt.Fprintf(w, "Selection:       %d of %d scenarios (%s): a partial run, never a full pass\n", sel.Selected, sel.Total, strings.Join(how, ", "))
+	}
+	fmt.Fprintln(w)
 	for _, v := range out.Violations {
 		fmt.Fprintf(w, "INTEGRITY %s\n", safe(v))
 	}
@@ -222,6 +233,10 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	}
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
 		s.Scenarios, s.Passed, s.Failed, s.Errors, s.NotRun, s.Assertions)
+	if sel := out.Selection; sel != nil {
+		fmt.Fprintf(w, "RESULT: %s (exit %d, %s; %d of %d scenarios ran)\n", strings.ToUpper(out.Result), out.ExitCode, mode, sel.Selected, sel.Total)
+		return
+	}
 	fmt.Fprintf(w, "RESULT: %s (exit %d, %s)\n", strings.ToUpper(out.Result), out.ExitCode, mode)
 }
 

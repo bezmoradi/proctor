@@ -93,6 +93,8 @@ var features = []string{
 	"report.summary_fields",
 	"requires",
 	"requires.disposable_environment",
+	"run.only",
+	"run.rerun_failed",
 	"sim_http.tls",
 	"sqs.peek_hold",
 	"sqs.peek_redrive_refused",

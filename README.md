@@ -231,6 +231,7 @@ For CI, see [`examples/github/`](examples/github/README.md).
 | `proctor integrity --commit REV` | Integrity checks on a commit, read from Git's object database: symlinks, submodules, LFS pointers, diff-hiding attributes, unlisted specifications (INT-05), more than one CODEOWNERS | 0, 3, 4 |
 | `proctor diff --base REV --head REV [--change-kind KIND]` | Every changed protected file and scenario (`reordered` ones too), with weakenings (removed assertions, waivers, steps moved into setup) printed first; with a kind, also whether the changes match it (see [Change kind](#change-kind)) | 0, 3 an unknown kind or a folder outside Git, 4 a Git error, a base and head without exactly one merge base (INT-09), or a kind mismatch |
 | `proctor run --binding FILE` | Local mode: runs the working tree's specifications against a running application | 0 to 4 |
+| `proctor run --binding FILE --only ID[,ID…]` or `--rerun-failed REPORT` | Local mode only: runs just the named scenarios, tables, table cases or specification ids, or those that didn't pass in a saved JSON report, both together if given. The run is partial: the header and the `RESULT` line say how many of how many ran, the report has `selection`, and its `result` is `partial` when all of them passed (exit 0). An unknown id, or a report with nothing to run again, exits 3; `--authoritative` refuses both (exit 3) | 0 to 4 |
 | `proctor run --authoritative ...` | For the trusted CI job: see below | 0 to 4 |
 | `proctor approve [--received DIR] [--all \| IDS] [--yes]` | Local mode only: shows each received transcript's or log's diff from the approved one and, when you answer `y`, writes it under `proctor/approved/`. Refused in CI, without a terminal unless `--yes`, and when the specifications changed since the run. See [Approved transcripts](#approved-transcripts) and [Approved logs](#approved-logs) | 0, 2, 3 |
 | `proctor logs normalize [--field K=V]… FILE` | Prints a log file's lines as an approved log shows them, to stdout only: only the fields `app_logs.approved` lists, scrubbed. Reads only `proctor.yaml` and the file, writes nothing, contacts nothing. See [Approved logs](#approved-logs) | 0, 2, 3 |
@@ -1181,6 +1182,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 | `diff`, `run`: `--change-kind-source` | `flag` | `flag`, or `label` when the workflow read a `proctor:` label |
 | `run`, `mutate`: `--ready-timeout` | `30s` | how long to wait for every driver to report its target ready |
 | `run`, `mutate`: `--no-progress` | | no progress line on stderr as each scenario finishes |
+| `run`: `--only`, `--rerun-failed` | | local mode only: run a selection, reported as partial; see [Commands](#commands) |
 | `run --report FILE` | | in local mode, also writes the `--json` document, with mode 0600 |
 | `run --commit REV` | `HEAD` | with `--authoritative`: the tested commit |
 | `run --base REV` | | with `--authoritative`: the base, when the head is tested directly, with exactly one merge base with the tested commit (exit 4, INT-09); give `--pr-head` or `--base`, not both and not neither (exit 3) |
