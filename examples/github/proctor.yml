@@ -38,7 +38,7 @@ jobs:
             [(. // [])[] | select(type == "string" and (ascii_downcase | startswith("proctor:")))]
             | if length > 1 then "several"
               elif length == 0 then "none"
-              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0]] // "unknown"
+              else {"proctor:refactor": "refactor", "proctor:docs": "docs", "proctor:fix": "fix", "proctor:feature": "feature"}[.[0] | ascii_downcase] // "unknown"
               end')
           case "$kind" in
             none) kind="" ;;
