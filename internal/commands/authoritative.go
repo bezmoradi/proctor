@@ -86,20 +86,21 @@ type authTrust struct {
 }
 
 type authProvenance struct {
-	Repository     string              `json:"repository"`
-	TestedCommit   string              `json:"tested_commit"`
-	Parents        []string            `json:"parents"`
-	PRHead         string              `json:"pr_head,omitempty"`
-	Base           string              `json:"base"`
-	Image          *model.BindingImage `json:"image"`
-	SHA256         map[string]string   `json:"sha256"`
-	ProctorVersion string              `json:"proctor_version"`
-	Environment    string              `json:"environment"`
-	CIRunID        string              `json:"ci_run_id,omitempty"`
-	CIRunAttempt   string              `json:"ci_run_attempt,omitempty"`
-	RunID          string              `json:"run_id,omitempty"`
-	StartedAt      string              `json:"started_at"`
-	EndedAt        string              `json:"ended_at"`
+	Repository     string                         `json:"repository"`
+	TestedCommit   string                         `json:"tested_commit"`
+	Parents        []string                       `json:"parents"`
+	PRHead         string                         `json:"pr_head,omitempty"`
+	Base           string                         `json:"base"`
+	Image          *model.BindingImage            `json:"image"`
+	Images         map[string]*model.BindingImage `json:"images,omitempty"`
+	SHA256         map[string]string              `json:"sha256"`
+	ProctorVersion string                         `json:"proctor_version"`
+	Environment    string                         `json:"environment"`
+	CIRunID        string                         `json:"ci_run_id,omitempty"`
+	CIRunAttempt   string                         `json:"ci_run_attempt,omitempty"`
+	RunID          string                         `json:"run_id,omitempty"`
+	StartedAt      string                         `json:"started_at"`
+	EndedAt        string                         `json:"ended_at"`
 }
 
 func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writer) int {
@@ -213,15 +214,8 @@ func runAuthoritative(ctx context.Context, o authOptions, stdout, stderr io.Writ
 		ar.Provenance.SHA256["binding"] = hex.EncodeToString(sum[:])
 		ar.Provenance.Environment = b.Environment
 		ar.Provenance.Image = b.Image
-
-		switch {
-		case b.Image == nil || b.Image.BuiltDigest == "" || b.Image.RunningDigest == "":
-			violate("REP-11", "the binding must give image.built_digest and image.running_digest")
-		case !digestPattern.MatchString(b.Image.BuiltDigest) || !digestPattern.MatchString(b.Image.RunningDigest):
-			violate("REP-11", "image digests must be sha256: followed by 64 lowercase hex digits")
-		case b.Image.BuiltDigest != b.Image.RunningDigest:
-			violate("REP-11", "the running application was started from %s, not from the built image %s", b.Image.RunningDigest, b.Image.BuiltDigest)
-		}
+		ar.Provenance.Images = b.Images
+		checkImages(&b, violate)
 	}
 	if ar.Provenance.Environment == "" {
 		ar.Provenance.Environment = "unnamed"
@@ -826,5 +820,41 @@ func writeSummary(w io.Writer, ar *authReport, config string) {
 		for _, s := range ar.Scenarios {
 			fmt.Fprintf(w, "| %s | %s |\n", md(s.ID), md(string(s.Result)))
 		}
+	}
+}
+
+var imageName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
+
+func checkImages(b *model.Binding, violate func(rule, format string, args ...any)) {
+	if b.Image == nil && len(b.Images) == 0 {
+		violate("REP-11", "the binding must give image.built_digest and image.running_digest, or images.<service>.built_digest and running_digest for each image the environment runs")
+		return
+	}
+	check := func(key string, im *model.BindingImage) {
+		switch {
+		case im == nil || im.BuiltDigest == "" || im.RunningDigest == "":
+			violate("REP-11", "the binding must give %s.built_digest and %s.running_digest", key, key)
+		case !digestPattern.MatchString(im.BuiltDigest) || !digestPattern.MatchString(im.RunningDigest):
+			violate("REP-11", "%s digests must be sha256: followed by 64 lowercase hex digits", key)
+		case im.BuiltDigest != im.RunningDigest && key == "image":
+			violate("REP-11", "the running application was started from %s, not from the built image %s", im.RunningDigest, im.BuiltDigest)
+		case im.BuiltDigest != im.RunningDigest:
+			violate("REP-11", "%s: the running container was started from %s, not from the built image %s", key, im.RunningDigest, im.BuiltDigest)
+		}
+	}
+	if b.Image != nil {
+		check("image", b.Image)
+	}
+	names := make([]string, 0, len(b.Images))
+	for name := range b.Images {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !imageName.MatchString(name) {
+			violate("REP-11", "images: %q isn't a service name (lower-case letters, digits, '.', '_' and '-', at most 63)", name)
+			continue
+		}
+		check("images."+name, b.Images[name])
 	}
 }

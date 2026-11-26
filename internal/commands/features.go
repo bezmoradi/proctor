@@ -80,6 +80,7 @@ var features = []string{
 	"redaction.headers",
 	"redis",
 	"relations",
+	"rep11.images",
 	"rep13.aborted_field",
 	"rep13.sigterm",
 	"rep14.panic_internal",
