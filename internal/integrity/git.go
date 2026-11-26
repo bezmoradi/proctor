@@ -213,7 +213,7 @@ func forbiddenAttr(a string) bool {
 }
 
 func (r *Report) CheckUnlisted(paths []string, err error) {
-	if r.ProtectedRoot == "" {
+	if r.ProtectedRoot == "" || r.Manifest == nil {
 		return
 	}
 	if err != nil {

@@ -90,6 +90,7 @@ var features = []string{
 	"report.local_label",
 	"report.status_response",
 	"report.summary_fields",
+	"requires",
 	"requires.disposable_environment",
 	"sim_http.tls",
 	"sqs.peek_hold",

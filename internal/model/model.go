@@ -16,6 +16,7 @@ var HandleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 type Config struct {
 	Version         int                     `yaml:"version"`
+	Requires        *Requirements           `yaml:"requires"`
 	Project         string                  `yaml:"project"`
 	Manifest        string                  `yaml:"manifest"`
 	ProtectedOwners []string                `yaml:"protected_owners"`
@@ -34,6 +35,11 @@ type Config struct {
 	IdentityCheck   *IdentityCheck          `yaml:"identity_check"`
 
 	files ProtectedFiles
+}
+
+type Requirements struct {
+	Proctor  string   `yaml:"proctor"`
+	Features []string `yaml:"features"`
 }
 
 type IdentityCheck struct {

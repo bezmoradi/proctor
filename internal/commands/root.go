@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"proctor/internal/integrity"
 	"proctor/internal/runner"
 )
 
@@ -50,6 +51,7 @@ func addCommon(cmd *cobra.Command, c *common) {
 
 func Execute(args []string, stdout, stderr io.Writer) int {
 	runner.CoreVersion = Version
+	integrity.Running = integrity.Build{Version: Version, Features: features}
 	u := &updateCheck{}
 	root := newRootCmd(stdout, stderr, u)
 	root.SetArgs(args)

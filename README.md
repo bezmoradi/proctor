@@ -96,9 +96,22 @@ gh attestation verify "$name.tar.gz" -R bezmoradi/proctor \
 tar -xzf "$name.tar.gz" && (cd "$name" && shasum -a 256 -c SHA256SUMS)
 ```
 
+
 Keep `proctor` and its `proctor-driver-*` programs in one folder: `proctor` refuses a driver whose checksum it doesn't hold (exit 4, INT-17); a driver kept in your repository is pinned in `proctor.yaml` instead (see [Repository drivers](#repository-drivers)).
 
 To build from source, see [Development](#development).
+
+### Requirements
+
+`proctor.yaml` can name the Proctor its specifications need, so an older one is refused before it reads them:
+
+```yaml
+requires:
+  proctor: ">=0.5.0"
+  features: [cleanup, cleanup.unless_passed, matchers.matches]
+```
+
+Every command that reads the configuration checks it first and exits 3 (INT-22) naming what's missing: a version below `proctor` (`>=` and a version; a development build counts as the version it was built from), or a feature this build's `proctor version --features` doesn't list. With `features`, validation also refuses a specification set that uses a feature the list leaves out, naming where it's used, so the list can't fall behind. It knows the features that have a key of their own: `cleanup`, `cleanup.unless_passed`, `transcripts`, `approved_logs`, `app_logs`, `mutate`, `relations`, `invariants`, `policy_from`, `auth04.identity_check`, `requires.disposable_environment`, `step.timeout`, `waive.rows`, `tables.covers`, `table.time`, `matchers.matches`, `matchers.excludes`, `matchers.differs`, `drivers.repository`, and the `browser`, `cli`, `docker`, `otel`, `redis` and `stub` drivers. A Proctor older than the `requires` feature refuses the key as unknown (exit 3).
 
 ## Quick start
 
@@ -1192,6 +1205,7 @@ The protocol is the Go module `github.com/bezmoradi/proctor/protocol`, which nee
 
 | Key | Meaning |
 |---|---|
+| `requires` | `proctor: ">=X.Y.Z"` and `features: [...]`, checked before anything else (INT-22, see [Requirements](#requirements)) |
 | `protected_paths` | more paths to protect besides `proctor/`, `.github/`, `.gitattributes`, `.gitmodules`, `.lfsconfig` and CODEOWNERS; an entry ending in `/` is a folder |
 | `protected_owners` | authoritative mode lists each protected file whose CODEOWNERS rule at the base names none of these owners as `UNOWNED` and in `trust.unowned_protected_paths`, reported only (OD-16); without the key every protected file is listed |
 | `drivers.<name>.program` | a [repository driver](#repository-drivers)'s program, a clean path from the repository root to `proctor-driver-<name>` under a protected folder; instead of `official` |
