@@ -88,6 +88,7 @@ var features = []string{
 	"report.earlier_attempts",
 	"report.first_failure",
 	"report.local_label",
+	"report.show",
 	"report.status_response",
 	"report.summary_fields",
 	"requires",

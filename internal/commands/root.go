@@ -105,6 +105,7 @@ Exit codes: 0 passed, 1 failed, 2 error, 3 invalid, 4 integrity violation.`,
 		newLogsCmd(stdout, stderr),
 		newMutateCmd(stdout, stderr),
 		newMutantsCmd(stdout, stderr),
+		newReportCmd(stdout, stderr),
 		newVersionCmd(stdout),
 	)
 	return root
