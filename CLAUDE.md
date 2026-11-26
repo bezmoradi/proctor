@@ -2,12 +2,15 @@
 
 ## Requirements
 
-`README.md` is the documentation for users and the source of truth for how Proctor behaves. Keep it short: a quick reference, not a spec.
+`docs/` is the documentation for users and the source of truth for how Proctor behaves. Each topic has one page, listed in `docs/README.md`: how-to pages under `docs/guides/`, lookup pages under `docs/reference/`. Say each thing once, on the page that owns it, and link to it from elsewhere. `README.md` is the landing page: what Proctor is, how it works, installing and the quick start.
 
 Every change updates, in the same piece of work:
 
-- `README.md`, with what users need;
+- the `docs/` page that owns the topic, with what users need, plus `docs/reference/rules.md` for a new or changed rule ID, `docs/reference/reports.md` for a new result reason or report field, and `docs/reference/diff.md` for a new `proctor diff` kind;
+- `README.md` only when what it covers changes;
 - `internal/commands/features.go`, for a new feature, so `proctor version --features` lists it.
+
+CI's Markdown and link checks cover every tracked `.md` file, so a moved heading must take its links with it.
 
 ## Code rules
 
