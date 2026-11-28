@@ -2,7 +2,7 @@
 
 ## http
 
-- `http.request`: `method` (`GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`), `path`, `query`, `headers`, a body and `trace` (true sends a fresh sampled `traceparent`); fact `status`, `headers`, `header_lists` (each value list split at commas), `body` or `body_text`, `body_truncated`, and `body_invalid`, why a body that looks or claims to be JSON wasn't read as JSON, and with `trace: true` `trace_id`. Binding `base_url`, `user_agent` (required) and `ready_path`.
+- `http.request`: `method` (`GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`), `path`, `query`, `headers`, a body, `trace` (true sends a fresh sampled `traceparent`) and `host` (see [Host names and cookies](#host-names-and-cookies)), and optionally `as` or `on` for a cookie jar; fact `status`, `headers`, `header_lists` (each value list split at commas), `set_cookies` (see [Host names and cookies](#host-names-and-cookies)), `body` or `body_text`, `body_truncated`, and `body_invalid`, why a body that looks or claims to be JSON wasn't read as JSON, and with `trace: true` `trace_id`. Binding `base_url`, `user_agent` (required), `ready_path` and `virtual_hosts`.
 - http limits: a response body over 10 MiB is ERROR `response_too_large`; redirects aren't followed, proxies are ignored and compression is off; a `HEAD` step asserts only status and headers; specifications can't set `Host`, `User-Agent`, `Authorization`, `Proxy-Authorization`, `Cookie`, `Content-Length`, `Transfer-Encoding` or `Connection`; a path with `?`, `#`, `\`, a space, a control character, `%2F`, `%5C` or a `.` or `..` segment is refused; a header name with capital letters in an expectation is refused, since facts hold them in lower case (HTTP-08); `set-cookie` is redacted.
 
 A body that claims to be JSON but isn't valid JSON, or has a duplicate key, is kept as `$.body_text` with the reason in `$.body_invalid`, and every assertion on a `$.body` path then fails, `absent` and `never` included (HTTP-10).
@@ -20,7 +20,7 @@ An http request sends at most one body: `body` (JSON), `body_text` (text as writ
 ```
 
 - `body_base64` is standard base64 with `=` padding; spaces and line breaks are ignored, so a long value can be a YAML block. Validation refuses invalid base64, an empty body and more than 8 MiB.
-- `body_fill` repeats a pattern of 1 to 64 bytes, `pattern` as text or `pattern_base64` for any bytes, to exactly `bytes`. The driver streams it, so a 1 GiB fill never sits in memory.
+- `body_fill` repeats a pattern of 1 to 64 bytes, `pattern` as text or `pattern_base64` for any bytes, to exactly `bytes`. The driver streams it, so a 1 GiB fill never sits in memory, and hashes it for the report while the request is sent; when the answer arrives but the hash isn't done by the step's deadline, the step is ERROR `timeout` and the driver keeps running.
 - `body_file` is a file inside `proctor/`, named relative to it, of 1 byte to 8 MiB. Its path can't be absolute, hold `..` or `${...}`, or end in `.yaml` or `.yml`, and neither the file nor a folder above it can be a symbolic link, even one that stays inside `proctor/` (INT-13). Proctor reads it from the commit or working tree it validates, records its sha256 in the report's `provenance.sha256`, reads it again before the step and refuses the step, sending nothing, if its bytes changed since validation.
 
 These three need a `Content-Type` in `headers`. Every body is bounded by `max_body_bytes` in the http driver's policy (16 MiB when absent, at most 1 GiB); validation refuses one of these three over it, and a `body` or `body_text` over it is ERROR when sent, since its size is known only once values are inserted:
@@ -71,6 +71,48 @@ policy:
 Such a request still acts and needs its state check. Its target is its path and its body, so it is fixed unless one of them refers to `${run.id}` or a saved value. Entries take only method POST and a path without a query string, and can't also be in `reads`. `proctor diff` lists an added entry as `destructive_declared` and a removed one as a `destructive_removed` weakening.
 
 Every entry must be used by a step of the listed specifications, or `validate` and `run` fail with exit 3 (HTTP-12), so an entry left behind after a route is renamed can't quietly apply to a route added later on its path. A `reads` or `destructive` entry is used when some step, a table's row included, sends that request. A `shows` path is used when, in one scenario, a read that shows it checks an act on that path: after the act as its state check (not necessarily the first one), or before a destructive act on a fixed target as its guard, with an expectation and an outcome that reads state. Drivers sharing a policy through `policy_from` share its uses.
+
+## Host names and cookies
+
+An application that serves each resource at a host name of its own, such as `http://<id>.localhost:8080`, behind a one-time code exchanged for a cookie, is checked with `host`, `virtual_hosts` and a cookie jar.
+
+```yaml
+# binding
+drivers:
+  http:
+    base_url: http://127.0.0.1:8080
+    user_agent: proctor-e2e
+    virtual_hosts: ['[0-9a-f]{16}\.localhost']
+```
+
+```yaml
+steps:
+  - id: open-box
+    do: http.request
+    identity: alice
+    with: { method: POST, path: /api/boxes }
+    expect: { equal: { $.status: 201 }, present: [$.body.url] }
+    save:
+      box: $.body.id
+      code: { from: $.body.url, capture: "[?&]code=([0-9a-f]+)" }
+  - id: sign-in
+    do: http.request
+    as: tab
+    with: { method: GET, host: "${box}.localhost", path: /, query: { code: "${code}" } }
+    expect: { equal: { $.status: 303 }, present: [$.headers.set-cookie] }
+  - id: page
+    do: http.request
+    on: tab
+    with: { method: GET, host: "${box}.localhost", path: / }
+    expect: { equal: { $.status: 200 }, contains: { $.body_text: "${box}" } }
+```
+
+- `host` names the host the request is for, in lower case, with no scheme, port or path; it may use saved values. It must match one of the binding's `virtual_hosts`, RE2 patterns matched against the whole name, or the step is refused (HTTP-05): at validation when the binding is known and `host` holds no saved value, otherwise when it's sent, with nothing sent. The driver still connects to `base_url`'s address and port, with its scheme and path prefix; only the host name in the request, and for HTTPS the TLS server name the certificate is checked against, change. Without `virtual_hosts`, a step with `host` is refused, and a specification still can't set the `Host` header.
+- `http.open` takes `host` too.
+- A request's target for EXE-07 and EXE-09 includes its `host`: a read on another host doesn't check a write's state, and a `host` from `${run.id}` or a saved value makes the target scoped to the run. The policy's `reads` and `destructive` entries are matched by method and path, whatever the host. A `shows` entry matches a GET without `host` unless it gives `host` too, written like a step's with `{}` for a reference, such as `{ host: "{}.localhost", path: /, acts: [/api/boxes] }`.
+- `as: <name>` on an `http.request` opens a cookie jar for the rest of the scenario: the request is sent with no cookies, and the jar keeps what its response sets. A later `http.request` with `on: <name>` sends the cookies the jar holds for its URL, by the usual cookie rules (domain, path, expiry; a `Secure` cookie only over HTTPS), and keeps what its response sets. The jar is closed with the scenario, so no cookie carries into another scenario. `as` and `on` stay optional on `http.request`, can't be used together, and `http.frames` and `http.open` don't take a jar.
+- Specifications still can't set `Cookie` (AUTH-02) or read a cookie's value: `set-cookie` is redacted in facts, and the `Cookie` header the jar sends is hidden in the report's request excerpt.
+- A response that sets cookies has `$.set_cookies`, one entry per cookie in the order sent, with its `name`, `host_only` (no `Domain`), `secure`, `http_only` and `partitioned`, and, when given, `domain`, `path`, `expires` (as written), `max_age` (0 for a zero or negative one) and `same_site` (`Strict`, `Lax`, `None`, or `unrecognized`). It never holds the value, so `equal: { "$.set_cookies[0].http_only": true, "$.set_cookies[0].same_site": Strict, "$.set_cookies[0].host_only": true }` checks how a cookie is set without exposing it. A `Set-Cookie` line the driver can't read as a cookie isn't listed. `http.open` has it too. Approved transcripts of responses that set cookies gain this field, so approve them again.
 
 ## Streams
 

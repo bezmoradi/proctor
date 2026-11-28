@@ -142,6 +142,27 @@ func writeDrivers(w io.Writer, drivers []runner.DriverInfo) {
 	}
 }
 
+func writeRestarts(w io.Writer, out *runner.Outcome) {
+	stopped := 0
+	for _, sc := range out.Scenarios {
+		if sc.Reason == runner.ReasonDriverStopped {
+			stopped++
+		}
+	}
+	for _, d := range out.Drivers {
+		for _, rs := range d.Restarts {
+			if rs.Result == runner.RestartDone {
+				fmt.Fprintf(w, "\nDriver %s stopped at %s and was started again before %s.\n", safe(d.Name), safe(rs.After), safe(rs.Before))
+				continue
+			}
+			fmt.Fprintf(w, "\nDriver %s stopped at %s and couldn't be started again: %s\n", safe(d.Name), safe(rs.After), safe(rs.Message))
+		}
+	}
+	if stopped > 0 {
+		fmt.Fprintf(w, "%d not run: driver_stopped, since they use a driver that couldn't be started again.\n", stopped)
+	}
+}
+
 func programOf(d runner.DriverInfo) string {
 	if d.Program != "" {
 		return d.Program
@@ -233,6 +254,7 @@ func writeRun(w io.Writer, rep *integrity.Report, out *runner.Outcome, mode stri
 	if out.Aborted {
 		fmt.Fprintln(w, "\n"+abortedNote)
 	}
+	writeRestarts(w, out)
 	fmt.Fprintf(w, "\nScenarios: %d   passed %d   failed %d   errors %d   not run %d   assertions %d\n",
 		s.Scenarios, s.Passed, s.Failed, s.Errors, s.NotRun, s.Assertions)
 	if sel := out.Selection; sel != nil {

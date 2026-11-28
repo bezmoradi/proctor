@@ -5,15 +5,17 @@ import (
 )
 
 func (d *driver) validateOpen(p protocol.ValidateParams) protocol.ValidateResult {
-	v := &validation{r: protocol.ValidateResult{Kind: protocol.KindAct, Problems: []protocol.Problem{}, Refs: []string{}}}
+	v := &validation{d: d, r: protocol.ValidateResult{Kind: protocol.KindAct, Problems: []protocol.Problem{}, Refs: []string{}}}
 	args, isObject := p.Args.(map[string]any)
 	if !isObject {
 		v.add("EXE-01", "$.with", "with must be an object with path")
 		args = map[string]any{}
 	}
 	v.r.Refs = uniqueSorted(refNames(args))
+	host := v.checkHost(args)
+	v.onlyInBodyOrHeaders("$.with.host", args[hostArg])
 	if path, ok := args["path"].(string); ok {
-		v.r.Targets = []string{template(path)}
+		v.r.Targets = []string{template(hostTarget(host) + path)}
 		if err := checkRequestPath(path); err != nil {
 			v.add("HTTP-05", "$.with.path", "%v", err)
 		}

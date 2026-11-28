@@ -197,6 +197,8 @@ func (r *Report) CheckMutantFiles(repoDir string, src Source, state func(p strin
 	usable := map[string]bool{}
 	checked := map[string]bool{}
 	for _, mu := range r.Mutants {
+		byFile := map[string][]int{}
+		var order []string
 		for j, e := range mu.Edits {
 			if checkRelPath(e.File) != nil || Protected(e.File, r.ProtectedRoot, r.Config.ProtectedPaths) {
 				continue
@@ -215,16 +217,26 @@ func (r *Report) CheckMutantFiles(repoDir string, src Source, state func(p strin
 					usable[e.File] = true
 				}
 			}
-			if !lines || e.Line == nil || *e.Line < 1 || e.Find == "" || !usable[e.File] {
+			if !lines || e.Find == "" || e.Times() < 1 || e.Line != nil && *e.Line < 1 || !usable[e.File] {
 				continue
 			}
-			data, ok, err := src.ReadFile(e.File)
+			if byFile[e.File] == nil {
+				order = append(order, e.File)
+			}
+			byFile[e.File] = append(byFile[e.File], j)
+		}
+		for _, f := range order {
+			data, ok, err := src.ReadFile(f)
 			if err != nil || !ok {
-				r.add(Invalid, "MUT-01", r.MutantsPath, "mutant %s: edits[%d]: cannot read %s to check its line", mu.ID, j, e.File)
+				r.add(Invalid, "MUT-01", r.MutantsPath, "mutant %s: cannot read %s to check its edits", mu.ID, f)
 				continue
 			}
-			if _, err := model.LocateAtLine(string(data), e.Find, *e.Line); err != nil {
-				r.add(Invalid, "MUT-01", r.MutantsPath, "mutant %s: edits[%d]: %s: %v", mu.ID, j, e.File, err)
+			var es []model.Edit
+			for _, j := range byFile[f] {
+				es = append(es, mu.Edits[j])
+			}
+			if _, err := model.ApplyEdits(string(data), es, byFile[f]); err != nil {
+				r.add(Invalid, "MUT-01", r.MutantsPath, "mutant %s: %s: %v", mu.ID, f, err)
 			}
 		}
 	}

@@ -227,12 +227,30 @@ func (c *policyCheck) showsList(raw any, out map[string][]string) {
 			continue
 		}
 		for _, k := range sortedKeys(entry) {
-			if k != "path" && k != actsKey {
-				c.bad("%s: unknown key %q; an entry has only path and acts", at, k)
+			if k != "path" && k != actsKey && k != hostArg {
+				c.bad("%s: unknown key %q; an entry has only path, acts and host", at, k)
 			}
 		}
 		path, pathIsText := entry["path"].(string)
 		ok := true
+		host := ""
+		if raw, has := entry[hostArg]; has {
+			h, isText := raw.(string)
+			switch {
+			case !isText:
+				c.bad("%s: host must be a host name as text, with %s where a step's host has a reference, not %s", at, anyValue, show(raw))
+				ok = false
+			case strings.Contains(h, "${"):
+				c.bad("%s: host %q has a ${...} reference; write %s where a step's host has one", at, h, anyValue)
+				ok = false
+			default:
+				if err := validHostName(strings.ReplaceAll(h, anyValue, "x")); err != nil {
+					c.bad("%s: %v", at, err)
+					ok = false
+				}
+				host = h
+			}
+		}
 		switch {
 		case !pathIsText:
 			c.bad("%s: path must be text starting with /, not %s", at, show(entry["path"]))
@@ -252,12 +270,13 @@ func (c *policyCheck) showsList(raw any, out map[string][]string) {
 		if !ok || !actsOK {
 			continue
 		}
-		if j, dup := first[path]; dup {
-			c.bad("%s repeats the path of %s[%d] (%s)", at, showsKey, j, path)
+		key := hostTarget(host) + path
+		if j, dup := first[key]; dup {
+			c.bad("%s repeats the host and path of %s[%d] (%s)", at, showsKey, j, key)
 			continue
 		}
-		first[path] = i
-		out[path] = acts
+		first[key] = i
+		out[key] = acts
 	}
 }
 

@@ -43,7 +43,7 @@ func newMutateCmd(stdout, stderr io.Writer) *cobra.Command {
 	addCommon(cmd, &o.common)
 	f := cmd.Flags()
 	f.StringVar(&o.only, "only", "", "run only these mutants, by id, comma-separated (the baseline always runs)")
-	f.StringVar(&o.scenarios, "scenarios", "", "run only these scenarios or table cases, by id, comma-separated")
+	f.StringVar(&o.scenarios, "scenarios", "", "run only these scenarios, tables, table cases or specifications, by id, comma-separated, in file order")
 	f.StringVar(&o.report, "report", "", "where to write the JSON report, with mode 0600")
 	f.BoolVar(&o.keepGoing, "keep-going", false, "go on to the next mutant after an up script fails (never after a down script fails or an up script times out)")
 	f.DurationVar(&o.upTimeout, "up-timeout", 45*time.Minute, "time limit for each run of the up script")
@@ -142,12 +142,18 @@ func mutateRun(o mutateOptions, stdout, stderr io.Writer) (code int) {
 		RepoDir: repo.Dir(), Files: files, Mutants: mutants,
 		Up: filepath.Join(repo.Dir(), filepath.FromSlash(up)), Down: filepath.Join(repo.Dir(), filepath.FromSlash(down)),
 		UpTimeout: o.upTimeout, DownTimeout: o.downTimeout, KeepGoing: o.keepGoing, Output: output, Log: stderr,
-		Scenarios: func(ctx context.Context, copyDir string) (*runner.Outcome, error) {
+		Scenarios: func(ctx context.Context, copyDir string, written map[string]string) (*runner.Outcome, error) {
 			b, err := readBinding(m.Binding)
 			if err != nil {
 				return nil, err
 			}
 			mutantOpt := opt
+			mutantOpt.LookupEnv = func(name string) (string, bool) {
+				if v, ok := written[name]; ok {
+					return v, true
+				}
+				return os.LookupEnv(name)
+			}
 			mutantOpt.Checkout = copyDir
 			mutantOpt.Subset = len(picked) > 0
 			rn, err := runner.New(rep.Config, specs, b, mutantOpt)
@@ -311,35 +317,25 @@ func selectMutation(rep *integrity.Report, only, picked []string) ([]model.Mutan
 	if len(picked) == 0 {
 		return mutants, specs, nil
 	}
-	known := map[string]bool{}
-	for _, id := range rep.ScenarioIDs {
-		known[id] = true
+	selected, _, err := selectScenarios(rep, picked, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("--scenarios: %v", err)
 	}
 	want := map[string]bool{}
-	for _, id := range picked {
-		if !known[id] {
-			return nil, nil, fmt.Errorf("--scenarios names %q, which isn't a scenario or table case of the listed specifications", id)
+	var out []runner.SpecFile
+	for _, f := range selected {
+		for _, sc := range f.Spec.Scenarios {
+			want[sc.ID] = true
 		}
-		want[id] = true
+		if len(f.Spec.Scenarios) > 0 {
+			out = append(out, f)
+		}
 	}
 	for _, m := range mutants {
 		for _, id := range m.KilledBy {
 			if !want[id] {
 				return nil, nil, fmt.Errorf("mutant %s has killed_by %s, which --scenarios leaves out; select it too, or leave the mutant out with --only", m.ID, id)
 			}
-		}
-	}
-	var out []runner.SpecFile
-	for _, f := range specs {
-		cp := *f.Spec
-		cp.Scenarios = nil
-		for _, sc := range f.Spec.Scenarios {
-			if want[sc.ID] {
-				cp.Scenarios = append(cp.Scenarios, sc)
-			}
-		}
-		if len(cp.Scenarios) > 0 {
-			out = append(out, runner.SpecFile{Path: f.Path, Spec: &cp})
 		}
 	}
 	return mutants, out, nil

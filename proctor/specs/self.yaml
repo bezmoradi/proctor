@@ -93,7 +93,7 @@ scenarios:
         expect:
           equal: { $.exit_code: 0, $.stdout_truncated: false }
           matches:
-            $.stdout_text: "(?ms).*^cleanup\\.unless_passed$.*^diff\\.added_steps$.*^int05\\.validate_unlisted$.*^invariants$.*^mode03\\.identity_required$.*^rep11\\.images$.*^report\\.show$.*^requires$.*^run\\.only$.*^run\\.rerun_failed$.*"
+            $.stdout_text: "(?ms).*^approvals\\.not_compared$.*^cleanup\\.eventually$.*^cleanup\\.unless_passed$.*^diff\\.added_steps$.*^drivers\\.restart$.*^http\\.body_fill_fast$.*^http\\.cookies$.*^http\\.set_cookies$.*^http\\.virtual_hosts$.*^int05\\.validate_unlisted$.*^invariants$.*^mode03\\.identity_required$.*^mutants\\.validate_edits$.*^mutate\\.env_file$.*^mutate\\.scenarios_selection$.*^progress\\.revised_results$.*^rep11\\.images$.*^report\\.show$.*^requires$.*^run\\.only$.*^run\\.rerun_failed$.*^save\\.capture$.*^save\\.secret$.*"
 
   - id: SELF-008
     name: validate and integrity refuse a specification file the manifest doesn't list
@@ -132,7 +132,7 @@ scenarios:
           contains: { $.stdout_text: "scenario Q-002 uses cleanup, but requires.features doesn't list it" }
 
   - id: SELF-011
-    name: validation refuses an invariant that saves or names an undeclared identity, and unless_passed outside cleanup
+    name: validation refuses an invariant that saves or names an undeclared identity, unless_passed outside cleanup, a capture without exactly one group and consistently in cleanup
     steps:
       - id: validate
         do: cli.run
@@ -141,6 +141,18 @@ scenarios:
           equal: { $.exit_code: 3 }
           matches:
             $.stdout_text: "(?s).*INV-01  [^\\n]*invariants\\[0\\] \\(saves\\): save can't be used in an invariant.*INT-12  [^\\n]*invariants\\[1\\] \\(stranger\\): identity \"nobody\" is not declared.*EXE-14  [^\\n]*scenario V-001 steps\\[0\\] \\(ok\\): unless_passed is only for cleanup steps.*"
+      - id: capture
+        do: cli.run
+        with: { command: validate-invalid }
+        expect:
+          equal: { $.exit_code: 3 }
+          contains: { $.stdout_text: "EXE-02  proctor/environments/selfcheck/invalid/specs/invalid.yaml: scenario V-002 steps[0] (read): save out: capture \"(o)(k)\" has 2 groups; it needs exactly one" }
+      - id: cleanup-holds
+        do: cli.run
+        with: { command: validate-invalid }
+        expect:
+          equal: { $.exit_code: 3 }
+          contains: { $.stdout_text: "EXE-14  proctor/environments/selfcheck/invalid/specs/invalid.yaml: scenario V-002 cleanup[0] (hold): consistently and never can't be used in cleanup" }
 
   - id: SELF-012
     name: a run applies unless_passed, blames the scenario that leaves state behind, and marks the next one dirty

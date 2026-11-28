@@ -364,22 +364,22 @@ func (e LogExpectation) Key() string {
 }
 
 type Step struct {
-	ID           string            `yaml:"id"`
-	Do           string            `yaml:"do"`
-	Identity     string            `yaml:"identity"`
-	Variant      string            `yaml:"variant"`
-	As           string            `yaml:"as"`
-	On           string            `yaml:"on"`
-	With         any               `yaml:"with"`
-	Expect       *Expect           `yaml:"expect"`
-	Eventually   *Within           `yaml:"eventually"`
-	Consistently *Window           `yaml:"consistently"`
-	Never        *Window           `yaml:"never"`
-	Timeout      string            `yaml:"timeout,omitempty"`
-	Save         map[string]string `yaml:"save"`
-	NoStateCheck string            `yaml:"no_state_check"`
-	Waive        map[string]Waiver `yaml:"waive"`
-	UnlessPassed yaml.Node         `yaml:"unless_passed,omitempty"`
+	ID           string              `yaml:"id"`
+	Do           string              `yaml:"do"`
+	Identity     string              `yaml:"identity"`
+	Variant      string              `yaml:"variant"`
+	As           string              `yaml:"as"`
+	On           string              `yaml:"on"`
+	With         any                 `yaml:"with"`
+	Expect       *Expect             `yaml:"expect"`
+	Eventually   *Within             `yaml:"eventually"`
+	Consistently *Window             `yaml:"consistently"`
+	Never        *Window             `yaml:"never"`
+	Timeout      string              `yaml:"timeout,omitempty"`
+	Save         map[string]SaveFrom `yaml:"save"`
+	NoStateCheck string              `yaml:"no_state_check"`
+	Waive        map[string]Waiver   `yaml:"waive"`
+	UnlessPassed yaml.Node           `yaml:"unless_passed,omitempty"`
 }
 
 func (s Step) HasUnlessPassed() bool {
@@ -588,6 +588,7 @@ type StepInfo struct {
 	StateCheck               bool
 	NoStateChange            bool
 	OpensHandle, UsesHandle  bool
+	HandleOptional           bool
 	Targets, Shows           []string
 	ExactTargets             []string
 	Refs                     []string

@@ -49,8 +49,9 @@ func canonicalStep(st *Step, where string) []Problem {
 		probs = append(probs, Problem{Rule: pathSpellingRule, Message: where + ": " + fmt.Sprintf(format, args...)})
 	}
 	for name, p := range st.Save {
-		if c, ok := expr.Canonical(p); ok {
-			st.Save[name] = c
+		if c, ok := expr.Canonical(p.From); ok {
+			p.From = c
+			st.Save[name] = p
 		}
 	}
 	ex := st.Expect

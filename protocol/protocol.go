@@ -141,19 +141,20 @@ type HelloResult struct {
 }
 
 type Operation struct {
-	Name        string            `json:"name"`
-	Kind        string            `json:"kind"`
-	ArgsSchema  any               `json:"args_schema"`
-	FactSchema  any               `json:"fact_schema"`
-	OpensHandle bool              `json:"opens_handle"`
-	UsesHandle  bool              `json:"uses_handle"`
-	Credential  string            `json:"credential"`
-	Escape      map[string]string `json:"escape,omitempty"`
-	Redact      []string          `json:"redact,omitempty"`
-	Data        []string          `json:"data,omitempty"`
-	Files       []string          `json:"files,omitempty"`
-	Accumulates bool              `json:"accumulates,omitempty"`
-	Scan        []string          `json:"scan,omitempty"`
+	Name           string            `json:"name"`
+	Kind           string            `json:"kind"`
+	ArgsSchema     any               `json:"args_schema"`
+	FactSchema     any               `json:"fact_schema"`
+	OpensHandle    bool              `json:"opens_handle"`
+	UsesHandle     bool              `json:"uses_handle"`
+	HandleOptional bool              `json:"handle_optional,omitempty"`
+	Credential     string            `json:"credential"`
+	Escape         map[string]string `json:"escape,omitempty"`
+	Redact         []string          `json:"redact,omitempty"`
+	Data           []string          `json:"data,omitempty"`
+	Files          []string          `json:"files,omitempty"`
+	Accumulates    bool              `json:"accumulates,omitempty"`
+	Scan           []string          `json:"scan,omitempty"`
 }
 
 type FileInfo struct {
@@ -261,6 +262,7 @@ type CallParams struct {
 	Args       any             `json:"args"`
 	Credential *Credential     `json:"credential"`
 	Handle     string          `json:"handle,omitempty"`
+	Open       bool            `json:"open,omitempty"`
 	DeadlineMS int64           `json:"deadline_ms"`
 	Files      map[string]File `json:"files,omitempty"`
 }

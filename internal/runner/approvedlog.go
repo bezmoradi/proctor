@@ -168,6 +168,9 @@ func (r *Runner) compareLog(a *model.Approval, owner string, rec *logRecord, set
 	if a.Found {
 		lr.ApprovedSHA256 = a.SHA256
 	}
+	if notCompared(lr, logKind.noun) {
+		return
+	}
 	switch {
 	case len(probs) > 0:
 		fail(Error, ReasonLogUnusable, TranscriptUnusable, "app_logs.approved.scrub is invalid: "+strings.Join(probs, "; "))

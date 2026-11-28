@@ -90,7 +90,7 @@ func (r *Runner) closeHandles(ctx context.Context, hs *handleSet) []HandleRecord
 		cancel()
 		if err != nil {
 			if brokenClient(err) {
-				ref.h.dead = true
+				r.markDead(ref.h)
 			}
 			pe := asProtocolError(err)
 			rec.Close, rec.Message = HandleFailed, pe.Data.Cause+": "+pe.Message

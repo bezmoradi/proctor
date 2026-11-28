@@ -48,6 +48,7 @@ const (
 	ReasonNotStarted          = "not_started"
 	ReasonSecretInTelemetry   = "secret_in_telemetry"
 	ReasonDriverNotInBase     = "driver_not_in_base"
+	ReasonDriverStopped       = "driver_stopped"
 )
 
 const (
@@ -286,16 +287,17 @@ type Proof struct {
 }
 
 type DriverInfo struct {
-	Name          string  `json:"name"`
-	Official      string  `json:"official"`
-	Program       string  `json:"program,omitempty"`
-	Platform      string  `json:"platform,omitempty"`
-	Version       string  `json:"version"`
-	Origin        string  `json:"origin"`
-	SHA256        string  `json:"sha256"`
-	Proofs        []Proof `json:"proofs,omitempty"`
-	Stderr        string  `json:"stderr,omitempty"`
-	StderrDropped int64   `json:"stderr_dropped_bytes,omitempty"`
+	Name          string          `json:"name"`
+	Official      string          `json:"official"`
+	Program       string          `json:"program,omitempty"`
+	Platform      string          `json:"platform,omitempty"`
+	Version       string          `json:"version"`
+	Origin        string          `json:"origin"`
+	SHA256        string          `json:"sha256"`
+	Proofs        []Proof         `json:"proofs,omitempty"`
+	Stderr        string          `json:"stderr,omitempty"`
+	StderrDropped int64           `json:"stderr_dropped_bytes,omitempty"`
+	Restarts      []DriverRestart `json:"restarts,omitempty"`
 }
 
 type Selection struct {
@@ -391,6 +393,7 @@ type Progress struct {
 	Result       Result
 	Cleanup      Result
 	Elapsed      time.Duration
+	Reason       string
 }
 
 func (o Options) withDefaults(cfg *model.Config) (Options, error) {
@@ -457,6 +460,8 @@ type Runner struct {
 	logLoose bool
 	logOTel  bool
 	logWait  time.Duration
+	at       string
+	atStep   string
 }
 
 func defaultNote(tl *model.TimeLimits) string {
@@ -523,6 +528,9 @@ func New(cfg *model.Config, specs []SpecFile, b *model.Binding, opt Options) (*R
 	infos := opt.Described
 	if infos == nil {
 		infos, err = sess.describe(context.Background(), specs)
+		if err == nil {
+			err = sess.describeInvariants(context.Background(), cfg, infos)
+		}
 		if err != nil {
 			sess.close()
 			return nil, err
@@ -856,6 +864,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 		}
 	}
 	groups := map[string]*tableGroup{}
+	var shown []Progress
 	total, n := 0, 0
 	for _, f := range r.specs {
 		if f.Spec != nil {
@@ -876,6 +885,13 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				tableLabel = sc.Case.Label()
 			}
 			r.progress(Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel})
+			r.at, r.atStep = sc.ID, ""
+			if tableLabel != "" {
+				r.at = tableLabel + "/" + sc.ID
+			}
+			if stopAll == "" && !sameTable(f.Spec.Scenarios, i, i-1) {
+				r.revive(ctx, r.at)
+			}
 			ran := false
 			res := guarded(p, sc, func() (res ScenarioResult) {
 				switch {
@@ -887,6 +903,11 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 					res = notRunScenario(p, sc, r.withheld(sc))
 				case sc.Requires == model.RequiresDisposableEnvironment && !r.b.Disposable:
 					res = notRunScenario(p, sc, ReasonNotDisposable)
+				case r.stoppedDriver(sc) != nil:
+					res = notRunScenario(p, sc, ReasonDriverStopped)
+					for k := range res.Steps {
+						res.Steps[k].Message = stoppedMessage(r.stoppedDriver(sc))
+					}
 				case sc.Case != nil:
 					key := p + "\x00" + sc.Case.GroupKey
 					if groups[key] == nil {
@@ -912,6 +933,9 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 				return res
 			})
 			if ran && ctx.Err() == nil && len(r.cfg.Invariants) > 0 {
+				if !sameTable(f.Spec.Scenarios, i, i+1) {
+					r.revive(ctx, "invariants after "+r.at)
+				}
 				if table != nil {
 					r.pauseLogs(ctx, table.w)
 				}
@@ -926,6 +950,7 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			out.add(p, sc, res)
 			done := Progress{Index: n, Total: total, ID: sc.ID, Table: tableLabel, Done: true, Result: res.Result, Cleanup: res.Cleanup, Elapsed: time.Since(began)}
 			if table == nil {
+				shown = append(shown, done)
 				r.progress(done)
 				continue
 			}
@@ -941,18 +966,26 @@ func (r *Runner) Run(ctx context.Context) *Outcome {
 			}
 			for j, ev := range table.done {
 				ev.Result = out.Scenarios[table.rows[j]].Result
+				shown = append(shown, ev)
 				r.progress(ev)
 			}
 			table = nil
 		}
 	}
 	out.Aborted = ctx.Err() != nil
+	r.noteRestarts(out)
 	r.sess.close()
 	out.Drivers = r.sess.infos()
 	out.checkStarted(r.specs)
 	own := ownResults(out)
 	r.applyTranscripts(out)
 	r.applyApprovedLogs(out, own)
+	for i, ev := range shown {
+		if i < len(own) && out.Scenarios[i].Result != own[i] {
+			ev.Result, ev.Reason = out.Scenarios[i].Result, out.Scenarios[i].Reason
+			r.progress(ev)
+		}
+	}
 	out.finish()
 	r.scrubOutcome(out)
 	out.Summary.IntegrityViolations = append([]string{}, out.Violations...)
@@ -1043,82 +1076,106 @@ func (r *Runner) waitReady(ctx context.Context) string {
 	rctx, cancel := context.WithTimeout(ctx, r.opt.ReadyTimeout)
 	defer cancel()
 	for _, h := range r.sess.ordered() {
-		last := "no answer"
-		for {
-			var res protocol.ReadyResult
-			cctx, ccancel := context.WithTimeout(rctx, r.opt.CallTimeout+callMargin)
-			err := h.client.Call(cctx, protocol.MethodReady, protocol.Empty{}, &res)
-			ccancel()
-			if err == nil && res.Ready {
-				break
-			}
-			if err != nil {
-				pe := asProtocolError(err)
-				switch {
-				case pe.Data.Lasting:
-					return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, pe.Message)
-				case rctx.Err() != nil && ctx.Err() == nil:
-					return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
-				case brokenClient(err):
-					return fmt.Sprintf("driver %s: %s", h.name, pe.Message)
-				}
-				last = pe.Data.Cause + ": " + pe.Message
-			} else {
-				if res.Lasting {
-					return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, res.Detail)
-				}
-				last = res.Detail
-				if last == "" {
-					last = "the driver reports it isn't ready"
-				}
-			}
-			select {
-			case <-rctx.Done():
-				if ctx.Err() != nil {
-					return fmt.Sprintf("driver %s: the run was interrupted while waiting: %s", h.name, last)
-				}
-				return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
-			case <-time.After(readyPause):
-			}
+		if msg := r.readyWithin(ctx, rctx, h); msg != "" {
+			return msg
 		}
 	}
 	return ""
 }
 
+func (r *Runner) readyHost(ctx context.Context, h *host) string {
+	rctx, cancel := context.WithTimeout(ctx, r.opt.ReadyTimeout)
+	defer cancel()
+	return r.readyWithin(ctx, rctx, h)
+}
+
+func (r *Runner) readyWithin(ctx, rctx context.Context, h *host) string {
+	last := "no answer"
+	for {
+		var res protocol.ReadyResult
+		cctx, ccancel := context.WithTimeout(rctx, r.opt.CallTimeout+callMargin)
+		err := h.client.Call(cctx, protocol.MethodReady, protocol.Empty{}, &res)
+		ccancel()
+		if err == nil && res.Ready {
+			return ""
+		}
+		if err != nil {
+			pe := asProtocolError(err)
+			switch {
+			case pe.Data.Lasting:
+				return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, pe.Message)
+			case rctx.Err() != nil && ctx.Err() == nil:
+				return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
+			case brokenClient(err):
+				return fmt.Sprintf("driver %s: %s", h.name, pe.Message)
+			}
+			last = pe.Data.Cause + ": " + pe.Message
+		} else {
+			if res.Lasting {
+				return fmt.Sprintf("driver %s: %s; not retried, because waiting won't fix it", h.name, res.Detail)
+			}
+			last = res.Detail
+			if last == "" {
+				last = "the driver reports it isn't ready"
+			}
+		}
+		select {
+		case <-rctx.Done():
+			if ctx.Err() != nil {
+				return fmt.Sprintf("driver %s: the run was interrupted while waiting: %s", h.name, last)
+			}
+			return fmt.Sprintf("driver %s: not ready after %s: %s", h.name, r.opt.ReadyTimeout, last)
+		case <-time.After(readyPause):
+		}
+	}
+}
+
 func (r *Runner) prove(ctx context.Context) ([]string, string) {
 	var out []string
 	for _, h := range r.sess.ordered() {
-		var res protocol.ProveResult
-		cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
-		err := h.client.Call(cctx, protocol.MethodProve, protocol.Empty{}, &res)
-		cancel()
-		if err != nil {
-			pe := asProtocolError(err)
-			return nil, fmt.Sprintf("driver %s: proving its guarantees: %s: %s", h.name, pe.Data.Cause, pe.Message)
+		proofs, violations, msg := r.proveHost(ctx, h)
+		if msg != "" {
+			return nil, msg
 		}
-		const shown = 50
-		failed := 0
-		for _, p := range res.Proofs {
-			h.proofs = append(h.proofs, Proof{Name: p.Name, Status: p.Status, Detail: p.Detail})
-			switch p.Status {
-			case protocol.ProofProven, protocol.ProofUnproven:
-				continue
-			}
-			failed++
-			if failed > shown {
-				continue
-			}
-			if p.Status == protocol.ProofFailed {
-				out = append(out, fmt.Sprintf("driver %s: proof %s failed: %s", h.name, p.Name, p.Detail))
-			} else {
-				out = append(out, fmt.Sprintf("driver %s: proof %s has unknown status %q, counted as failed: %s", h.name, p.Name, p.Status, p.Detail))
-			}
-		}
-		if failed > shown {
-			out = append(out, fmt.Sprintf("driver %s: and %d more failed proofs", h.name, failed-shown))
-		}
+		h.proofs = append(h.proofs, proofs...)
+		out = append(out, violations...)
 	}
 	return out, ""
+}
+
+func (r *Runner) proveHost(ctx context.Context, h *host) ([]Proof, []string, string) {
+	var res protocol.ProveResult
+	cctx, cancel := context.WithTimeout(ctx, r.opt.CallTimeout+callMargin)
+	err := h.client.Call(cctx, protocol.MethodProve, protocol.Empty{}, &res)
+	cancel()
+	if err != nil {
+		pe := asProtocolError(err)
+		return nil, nil, fmt.Sprintf("driver %s: proving its guarantees: %s: %s", h.name, pe.Data.Cause, pe.Message)
+	}
+	const shown = 50
+	var proofs []Proof
+	var out []string
+	failed := 0
+	for _, p := range res.Proofs {
+		proofs = append(proofs, Proof{Name: p.Name, Status: p.Status, Detail: p.Detail})
+		switch p.Status {
+		case protocol.ProofProven, protocol.ProofUnproven:
+			continue
+		}
+		failed++
+		if failed > shown {
+			continue
+		}
+		if p.Status == protocol.ProofFailed {
+			out = append(out, fmt.Sprintf("driver %s: proof %s failed: %s", h.name, p.Name, p.Detail))
+		} else {
+			out = append(out, fmt.Sprintf("driver %s: proof %s has unknown status %q, counted as failed: %s", h.name, p.Name, p.Status, p.Detail))
+		}
+	}
+	if failed > shown {
+		out = append(out, fmt.Sprintf("driver %s: and %d more failed proofs", h.name, failed-shown))
+	}
+	return proofs, out, ""
 }
 
 type tableGroup struct {

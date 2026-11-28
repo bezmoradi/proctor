@@ -39,14 +39,16 @@ type requestArgs struct {
 	BodyFill   any            `json:"body_fill"`
 	BodyFile   any            `json:"body_file"`
 	Trace      *bool          `json:"trace"`
+	Host       string         `json:"host"`
 }
 
 type outgoing struct {
-	req    *http.Request
-	target string
-	body   []byte
-	raw    *rawBody
-	trace  string
+	req     *http.Request
+	target  string
+	body    []byte
+	raw     *rawBody
+	rawNote string
+	trace   string
 }
 
 func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.CallResult, error) {
@@ -67,9 +69,22 @@ func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.Call
 	default:
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "the http driver has no operation %q", p.Op)
 	}
-	if p.Handle != "" {
-		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%s runs on no handle", opRequest)
+	client, opened, err := d.clientFor(p)
+	if err != nil {
+		return protocol.CallResult{}, err
 	}
+	res, err := d.request(ctx, p, client)
+	if opened != "" {
+		if err != nil {
+			d.jars.close(opened)
+		} else {
+			res.Handle = opened
+		}
+	}
+	return res, err
+}
+
+func (d *driver) request(ctx context.Context, p protocol.CallParams, client *http.Client) (protocol.CallResult, error) {
 	var a requestArgs
 	if err := protocol.Decode(p.Args, &a); err != nil {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "request: %v", err)
@@ -79,7 +94,7 @@ func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.Call
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%v", err)
 	}
 	start := time.Now()
-	resp, err := d.client.Do(out.req)
+	resp, err := client.Do(out.req)
 	if err != nil {
 		return protocol.CallResult{}, protocol.Errorf(requestCause(err), "%s %s: request failed: %v", a.Method, out.target, err)
 	}
@@ -91,6 +106,11 @@ func (d *driver) Call(ctx context.Context, p protocol.CallParams) (protocol.Call
 	}
 	if len(body) > maxBodyBytes {
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseResponseTooLarge, "%s %s -> %d: the response body is larger than %d bytes", a.Method, out.target, resp.StatusCode, maxBodyBytes)
+	}
+	if out.raw != nil {
+		if out.rawNote, err = out.raw.describe(ctx); err != nil {
+			return protocol.CallResult{}, protocol.Errorf(protocol.CauseTimeout, "%s %s -> %d: the answer came, but the %s's sha256 for the report wasn't ready before the deadline: %v", a.Method, out.target, resp.StatusCode, formFill, err)
+		}
 	}
 	f := fact(resp, body)
 	if out.trace != "" {
@@ -123,8 +143,15 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 		}
 		q.Set(k, val)
 	}
+	origin, err := d.targetBase(a.Host)
+	if err != nil {
+		return out, err
+	}
 	out.target = a.Path
-	u := d.join(a.Path)
+	if a.Host != "" {
+		out.target = "//" + a.Host + a.Path
+	}
+	u := origin + d.basePath() + a.Path
 	if len(q) > 0 {
 		out.target += "?" + q.Encode()
 		u += "?" + q.Encode()
@@ -142,7 +169,7 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 	if forms > 0 && a.Method == http.MethodHead {
 		return out, errors.New("a HEAD request can't send a body")
 	}
-	raw, err := buildRawBody(a, files)
+	raw, err := buildRawBody(ctx, a, files)
 	if err != nil {
 		return out, err
 	}
@@ -183,7 +210,11 @@ func (d *driver) build(ctx context.Context, a requestArgs, cred *protocol.Creden
 			req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(f.reader()), nil }
 		}
 	}
-	if req.URL.Scheme != d.base.Scheme || req.URL.Host != d.base.Host || !strings.HasPrefix(req.URL.EscapedPath(), d.basePath()+"/") {
+	wantHost := d.base.Host
+	if a.Host != "" {
+		wantHost = d.hostPort(a.Host)
+	}
+	if req.URL.Scheme != d.base.Scheme || req.URL.Host != wantHost || !strings.HasPrefix(req.URL.EscapedPath(), d.basePath()+"/") {
 		return out, fmt.Errorf("request URL %s leaves the target (HTTP-05)", u)
 	}
 	if a.Body != nil {
@@ -322,6 +353,9 @@ func fact(resp *http.Response, body []byte) map[string]any {
 		lists[name] = parts
 	}
 	f := map[string]any{"status": resp.StatusCode, "headers": headers, "header_lists": lists}
+	if cs := setCookies(resp); len(cs) > 0 {
+		f["set_cookies"] = cs
+	}
 	if len(body) == 0 {
 		return f
 	}
@@ -371,7 +405,7 @@ func requestExcerpt(out outgoing) string {
 	switch {
 	case out.raw != nil:
 		sb.WriteString("\n")
-		sb.WriteString(out.raw.describe())
+		sb.WriteString(out.rawNote)
 	case len(out.body) > 0:
 		sb.WriteString("\n")
 		sb.WriteString(excerpt(out.body))

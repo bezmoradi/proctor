@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -116,14 +117,21 @@ func parseFill(raw any) (fill, error) {
 	return fill{size: size, pattern: pattern}, nil
 }
 
+const fillTile = 32 << 10
+
 func (f fill) reader() io.Reader {
-	return &fillReader{pattern: f.pattern, left: f.size}
+	tile := f.pattern
+	if len(tile) < fillTile {
+		tile = bytes.Repeat(f.pattern, (fillTile+len(f.pattern)-1)/len(f.pattern))
+	}
+	return &fillReader{tile: tile, period: len(f.pattern), left: f.size}
 }
 
 type fillReader struct {
-	pattern []byte
-	at      int
-	left    int64
+	tile   []byte
+	period int
+	at     int
+	left   int64
 }
 
 func (r *fillReader) Read(b []byte) (int, error) {
@@ -135,18 +143,53 @@ func (r *fillReader) Read(b []byte) (int, error) {
 	}
 	n := 0
 	for n < len(b) {
-		c := copy(b[n:], r.pattern[r.at:])
+		c := copy(b[n:], r.tile[r.at:])
 		n += c
-		r.at = (r.at + c) % len(r.pattern)
+		r.at = (r.at + c) % r.period
 	}
 	r.left -= int64(n)
 	return n, nil
 }
 
-func (f fill) sum() string {
-	h := sha256.New()
-	_, _ = io.Copy(h, f.reader())
-	return hex.EncodeToString(h.Sum(nil))
+type fillSum struct {
+	done chan struct{}
+	hex  string
+	err  error
+}
+
+func (f fill) startSum(ctx context.Context) *fillSum {
+	s := &fillSum{done: make(chan struct{})}
+	go func() {
+		defer close(s.done)
+		h := sha256.New()
+		if _, err := io.Copy(h, ctxReader{ctx: ctx, r: f.reader()}); err != nil {
+			s.err = err
+			return
+		}
+		s.hex = hex.EncodeToString(h.Sum(nil))
+	}()
+	return s
+}
+
+func (s *fillSum) wait(ctx context.Context) (string, error) {
+	select {
+	case <-s.done:
+		return s.hex, s.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(b []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(b)
 }
 
 func sum(b []byte) string {
@@ -230,9 +273,10 @@ type rawBody struct {
 	size   int64
 	note   string
 	fill   *fill
+	sum    *fillSum
 }
 
-func buildRawBody(a requestArgs, files map[string]protocol.File) (*rawBody, error) {
+func buildRawBody(ctx context.Context, a requestArgs, files map[string]protocol.File) (*rawBody, error) {
 	switch {
 	case a.BodyBase64 != nil:
 		b, err := decodeBase64(a.BodyBase64)
@@ -245,7 +289,7 @@ func buildRawBody(a requestArgs, files map[string]protocol.File) (*rawBody, erro
 		if err != nil {
 			return nil, fmt.Errorf("%s %v", formFill, err)
 		}
-		return &rawBody{reader: f.reader(), size: f.size, fill: &f}, nil
+		return &rawBody{reader: f.reader(), size: f.size, fill: &f, sum: f.startSum(ctx)}, nil
 	case a.BodyFile != nil:
 		f, ok := files[bodyFileArg]
 		if !ok {
@@ -259,11 +303,15 @@ func buildRawBody(a requestArgs, files map[string]protocol.File) (*rawBody, erro
 	return nil, nil
 }
 
-func (b *rawBody) describe() string {
-	if b.fill != nil {
-		return fmt.Sprintf("[%s: %d bytes, %s repeated, sha256 %s]", formFill, b.size, shownPattern(b.fill.pattern), b.fill.sum())
+func (b *rawBody) describe(ctx context.Context) (string, error) {
+	if b.fill == nil {
+		return b.note, nil
 	}
-	return b.note
+	h, err := b.sum.wait(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("[%s: %d bytes, %s repeated, sha256 %s]", formFill, b.size, shownPattern(b.fill.pattern), h), nil
 }
 
 func rawTarget(args map[string]any, files map[string]protocol.FileInfo) string {

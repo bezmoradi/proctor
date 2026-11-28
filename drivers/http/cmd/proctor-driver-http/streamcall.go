@@ -20,6 +20,7 @@ const (
 
 type openArgs struct {
 	Path    string         `json:"path"`
+	Host    string         `json:"host"`
 	Query   map[string]any `json:"query"`
 	Headers map[string]any `json:"headers"`
 	Format  string         `json:"format"`
@@ -61,7 +62,7 @@ func (d *driver) open(ctx context.Context, p protocol.CallParams) (protocol.Call
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%s: format %q must be %s or %s", opOpen, a.Format, formatNDJSON, formatSSE)
 	}
 	sctx, cancel := context.WithCancel(context.Background())
-	out, err := d.build(sctx, requestArgs{Method: http.MethodGet, Path: a.Path, Query: a.Query, Headers: a.Headers}, p.Credential, nil)
+	out, err := d.build(sctx, requestArgs{Method: http.MethodGet, Path: a.Path, Host: a.Host, Query: a.Query, Headers: a.Headers}, p.Credential, nil)
 	if err != nil {
 		cancel()
 		return protocol.CallResult{}, protocol.Errorf(protocol.CauseInvalidRequest, "%s: %v", opOpen, err)
