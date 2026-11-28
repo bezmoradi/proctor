@@ -272,11 +272,11 @@ func (r *Report) describe(p string, sc *model.Scenario, info map[model.StepRef]m
 					r.add(Invalid, "EXE-03", p, "%s: every step must state at least one expectation", where)
 				}
 			}
-			if in.Kind == kindAct && hasTime(st) && !at.cleanup {
+			if in.Kind == kindAct && hasTime(st) && (!at.cleanup || st.Eventually != nil) {
 				r.add(Invalid, "TIME-11", p, "%s: eventually, consistently and never are only for steps that observe; this step acts", where)
 			}
-			if in.Kind == kindObserve && at.cleanup {
-				r.add(Invalid, "EXE-14", p, "%s: this step observes, and cleanup takes only acts; an observation's expectations are checks of the scenario, so they belong in steps, where a mismatch fails it", where)
+			if in.Kind == kindObserve && at.cleanup && !hasTime(st) {
+				r.add(Invalid, "EXE-14", p, "%s: this step observes without eventually; in cleanup a step acts, or observes with eventually to wait until an act took effect (such as a stop before a delete), since an observation's other expectations are checks of the scenario, which belong in steps, where a mismatch fails it", where)
 			}
 			if at.cleanup && st.HasUnlessPassed() && in.Kind == kindAct && CleanupNeedsGuard(sc, at.ref.Index, in, true) {
 				r.add(Invalid, "EXE-14", p, "%s: this step acts destructively on a fixed target, so it's sent only when every earlier step passed (cleanup_unguarded), and unless_passed skips it exactly then, so it could never be sent; target ${run.id} or a value saved earlier in the scenario instead", where)
@@ -305,13 +305,13 @@ func (r *Report) checkHandleUse(p, where string, st *model.Step, in model.StepIn
 	switch {
 	case st.As != "" && !in.OpensHandle:
 		r.add(Invalid, "HND-05", p, "%s: as %q: operation %s doesn't open a handle, so the step can't name one", where, st.As, st.Do)
-	case st.As == "" && in.OpensHandle:
+	case st.As == "" && in.OpensHandle && !in.HandleOptional:
 		r.add(Invalid, "HND-05", p, "%s: operation %s opens a handle; name it with as, so later steps can use it with on", where, st.Do)
 	}
 	switch {
 	case st.On != "" && !in.UsesHandle:
 		r.add(Invalid, "HND-06", p, "%s: on %q: operation %s doesn't use a handle, so the step can't name one", where, st.On, st.Do)
-	case st.On == "" && in.UsesHandle:
+	case st.On == "" && in.UsesHandle && !in.HandleOptional:
 		r.add(Invalid, "HND-06", p, "%s: operation %s works on a handle; name the handle with on, as opened by an earlier step's as", where, st.Do)
 	}
 }

@@ -247,7 +247,7 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 		}
 	}
 	r.checkIdentity(p, where, at, c)
-	if !at.cleanup {
+	if !at.cleanup || st.Consistently == nil && st.Never == nil {
 		r.checkTime(p, where, st, tableChecked)
 	}
 	if !tableChecked {
@@ -270,8 +270,13 @@ func (r *Report) validateStep(p string, at stepAt, sc *model.Scenario, c *model.
 		} else if saved[name] {
 			r.add(Invalid, "EXE-02", p, "%s: %q is already saved by an earlier step", where, name)
 		}
-		if _, err := expr.ParsePath(st.Save[name]); err != nil {
+		if _, err := expr.ParsePath(st.Save[name].From); err != nil {
 			r.add(Invalid, "EXE-02", p, "%s: save %s: %v", where, name, err)
+		}
+		if c := st.Save[name].Capture; c != "" {
+			if _, err := model.CapturePattern(c); err != nil {
+				r.add(Invalid, "EXE-02", p, "%s: save %s: %v", where, name, err)
+			}
 		}
 	}
 	rules := sortedKeys(st.Waive)
@@ -406,8 +411,8 @@ func (r *Report) checkUnlessPassed(p, where string, st *model.Step, sc *model.Sc
 }
 
 func (r *Report) checkCleanupStep(p, where string, st *model.Step, table bool) {
-	if hasTime(st) {
-		r.add(Invalid, "EXE-14", p, "%s: eventually, consistently and never can't be used in cleanup; a cleanup step acts once, and checks that wait for an outcome belong in steps", where)
+	if st.Consistently != nil || st.Never != nil {
+		r.add(Invalid, "EXE-14", p, "%s: consistently and never can't be used in cleanup; they check that something holds, which belongs in steps, and cleanup only frees what the scenario made (eventually may wait there for that)", where)
 	}
 	if len(st.Save) > 0 {
 		r.add(Invalid, "EXE-14", p, "%s: save can't be used in cleanup; no step runs after cleanup to use the value", where)

@@ -29,6 +29,10 @@ func (p *progressLog) update(ev runner.Progress) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.halt()
+	if ev.Done && ev.Reason != "" {
+		fmt.Fprintf(p.w, "[%d/%d] %-8s %-10s (%s)\n", ev.Index, ev.Total, ev.Result, safe(progressName(ev)), safe(ev.Reason))
+		return
+	}
 	if ev.Done {
 		cleanup := ""
 		if ev.Cleanup != "" {

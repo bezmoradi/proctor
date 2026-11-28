@@ -9,3 +9,18 @@ scenarios:
         do: cli.run
         with: { command: ok }
         expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }
+  - id: V-002
+    name: saves with a capture of two groups and holds a check in cleanup
+    steps:
+      - id: read
+        do: cli.run
+        with: { command: ok }
+        expect: { equal: { $.exit_code: 0, $.stdout_text: "ok\n" } }
+        save:
+          out: { from: $.stdout_text, capture: "(o)(k)" }
+    cleanup:
+      - id: hold
+        do: cli.run
+        with: { command: ok }
+        consistently: { for: 1s }
+        expect: { equal: { $.exit_code: 0 } }

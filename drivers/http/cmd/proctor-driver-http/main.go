@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ var argsSchema = map[string]any{
 		"body_base64": map[string]any{"type": "string"},
 		"body_file":   map[string]any{"type": "string"},
 		"trace":       map[string]any{"type": "boolean"},
+		"host":        map[string]any{"type": "string"},
 		"body_fill": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -74,6 +76,7 @@ var factSchema = map[string]any{
 		"body_truncated": map[string]any{"type": "boolean"},
 		"body_invalid":   map[string]any{"type": "string"},
 		"trace_id":       map[string]any{"type": "string", "pattern": "^[0-9a-f]{32}$"},
+		"set_cookies":    setCookiesSchema,
 	},
 	"required":             []string{"status", "headers", "header_lists"},
 	"additionalProperties": false,
@@ -83,6 +86,7 @@ var openArgsSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"path":    map[string]any{"type": "string"},
+		"host":    map[string]any{"type": "string"},
 		"query":   map[string]any{"type": "object", "additionalProperties": scalar},
 		"headers": map[string]any{"type": "object", "additionalProperties": scalar},
 		"format":  map[string]any{"type": "string", "enum": streamFormats},
@@ -103,6 +107,7 @@ var openFactSchema = map[string]any{
 		"body_text":      map[string]any{"type": "string"},
 		"body_truncated": map[string]any{"type": "boolean"},
 		"body_invalid":   map[string]any{"type": "string"},
+		"set_cookies":    setCookiesSchema,
 	},
 	"required":             []string{"open", "status", "headers", "header_lists"},
 	"additionalProperties": false,
@@ -148,18 +153,20 @@ var framesFactSchema = map[string]any{
 var connectionSchema = map[string]any{
 	"type": []string{"object", "null"},
 	"properties": map[string]any{
-		"base_url":   map[string]any{"type": "string", "pattern": `^https?://`},
-		"user_agent": map[string]any{"type": "string", "pattern": `^[^\r\n]*[^\s][^\r\n]*$`},
-		"ready_path": map[string]any{"type": "string", "pattern": `^/([^/?#][^?#]*)?$`},
+		"base_url":      map[string]any{"type": "string", "pattern": `^https?://`},
+		"user_agent":    map[string]any{"type": "string", "pattern": `^[^\r\n]*[^\s][^\r\n]*$`},
+		"ready_path":    map[string]any{"type": "string", "pattern": `^/([^/?#][^?#]*)?$`},
+		"virtual_hosts": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 	},
 	"required":             []string{"base_url", "user_agent"},
 	"additionalProperties": false,
 }
 
 type connection struct {
-	BaseURL   string `json:"base_url"`
-	UserAgent string `json:"user_agent"`
-	ReadyPath string `json:"ready_path"`
+	BaseURL      string   `json:"base_url"`
+	UserAgent    string   `json:"user_agent"`
+	ReadyPath    string   `json:"ready_path"`
+	VirtualHosts []string `json:"virtual_hosts"`
 }
 
 type driver struct {
@@ -169,6 +176,8 @@ type driver struct {
 	client    *http.Client
 	policy    policy
 	streams   streams
+	jars      jars
+	vhosts    []*regexp.Regexp
 }
 
 func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.HelloResult, error) {
@@ -177,15 +186,18 @@ func (d *driver) Hello(ctx context.Context, p protocol.HelloParams) (protocol.He
 		Version:  Version,
 		Protocol: protocol.Version,
 		Operations: []protocol.Operation{{
-			Name:       opRequest,
-			Kind:       protocol.KindByArgs,
-			ArgsSchema: argsSchema,
-			FactSchema: factSchema,
-			Credential: protocol.CredentialOptional,
-			Escape:     map[string]string{"$.path": protocol.EscapePathSegment},
-			Redact:     []string{"$.headers.set-cookie", "$.header_lists.set-cookie"},
-			Data:       []string{"$.body", "$.body_text"},
-			Files:      []string{bodyFileArg},
+			Name:           opRequest,
+			Kind:           protocol.KindByArgs,
+			OpensHandle:    true,
+			UsesHandle:     true,
+			HandleOptional: true,
+			ArgsSchema:     argsSchema,
+			FactSchema:     factSchema,
+			Credential:     protocol.CredentialOptional,
+			Escape:         map[string]string{"$.path": protocol.EscapePathSegment},
+			Redact:         []string{"$.headers.set-cookie", "$.header_lists.set-cookie"},
+			Data:           []string{"$.body", "$.body_text"},
+			Files:          []string{bodyFileArg},
 		}, {
 			Name:        opOpen,
 			Kind:        protocol.KindAct,
@@ -248,9 +260,29 @@ func (d *driver) Configure(ctx context.Context, p protocol.ConfigureParams) erro
 	if len(msgs) > 0 {
 		return protocol.Lastingf(protocol.CauseInvalidRequest, "%s", strings.Join(msgs, "; "))
 	}
+	var vhosts []*regexp.Regexp
+	for i, p := range c.VirtualHosts {
+		re, err := regexp.Compile(`\A(?:` + p + `)\z`)
+		switch {
+		case p == "":
+			bad("connection: virtual_hosts[%d] is empty", i)
+			continue
+		case err != nil:
+			bad("connection: virtual_hosts[%d] %q isn't a valid RE2 pattern: %v", i, p, err)
+			continue
+		}
+		vhosts = append(vhosts, re)
+	}
+	if len(msgs) > 0 {
+		return protocol.Lastingf(protocol.CauseInvalidRequest, "%s", strings.Join(msgs, "; "))
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DisableCompression = true
+	if len(vhosts) > 0 {
+		transport.DialContext = d.dialBase(base)
+	}
+	d.vhosts = vhosts
 	d.base = base
 	d.userAgent = c.UserAgent
 	d.readyPath = c.ReadyPath
@@ -294,6 +326,9 @@ func (d *driver) Ready(ctx context.Context) (protocol.ReadyResult, error) {
 }
 
 func (d *driver) Close(ctx context.Context, p protocol.CloseParams) error {
+	if d.jars.close(p.Handle) {
+		return nil
+	}
 	return d.streams.close(p.Handle)
 }
 

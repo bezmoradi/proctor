@@ -2,6 +2,7 @@ package mutate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -82,7 +83,7 @@ type Plan struct {
 	KeepGoing   bool
 	Output      *os.File
 	Log         io.Writer
-	Scenarios   func(ctx context.Context, dir string) (*runner.Outcome, error)
+	Scenarios   func(ctx context.Context, dir string, env map[string]string) (*runner.Outcome, error)
 }
 
 func Run(ctx context.Context, p Plan) (*Outcome, error) {
@@ -189,11 +190,33 @@ func (p Plan) one(ctx context.Context, src string, m *model.Mutant, out *Outcome
 			return res
 		}
 	}
-	env := scriptEnv(label, dir)
+	envDir, err := os.MkdirTemp("", "proctor-mutant-env-*")
+	if err != nil {
+		res.Verdict, res.Message = Errored, "cannot create the folder for PROCTOR_ENV_FILE: "+err.Error()
+		res.infraStop = "the PROCTOR_ENV_FILE folder for " + label + " couldn't be created: " + err.Error()
+		return res
+	}
+	defer func() {
+		if err := os.RemoveAll(envDir); err != nil {
+			out.Leftovers = append(out.Leftovers, envDir)
+		}
+	}()
+	envFile := filepath.Join(envDir, "env")
+	if err := os.WriteFile(envFile, nil, 0o600); err != nil {
+		res.Verdict, res.Message = Errored, "cannot create PROCTOR_ENV_FILE: "+err.Error()
+		res.infraStop = "PROCTOR_ENV_FILE for " + label + " couldn't be created: " + err.Error()
+		return res
+	}
+	env := scriptEnv(label, dir, envFile)
 	res.Up = ptr(runScript(ctx, p.Up, p.RepoDir, []string{dir}, env, p.UpTimeout, p.Output))
 	if res.Up.ok() {
-		run, err := p.Scenarios(ctx, dir)
-		judge(&res, run, err, m != nil)
+		vars, err := readEnvFile(envFile)
+		if err != nil {
+			res.Verdict, res.Message = Errored, "PROCTOR_ENV_FILE, as the up script left it: "+err.Error()
+		} else {
+			run, err := p.Scenarios(ctx, dir, vars)
+			judge(&res, run, err, m != nil)
+		}
 	} else {
 		res.Verdict, res.Message = Errored, "the up script "+scriptProblem(res.Up)
 		if m == nil || !p.KeepGoing || res.Up.TimedOut || ctx.Err() != nil {
@@ -316,15 +339,57 @@ func applyEdits(dir string, edits []model.Edit) ([]FileHash, error) {
 	return hashes, nil
 }
 
-func scriptEnv(label, dir string) []string {
+func scriptEnv(label, dir, envFile string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "PROCTOR_MUTANT=") || strings.HasPrefix(kv, "PROCTOR_MUTANT_DIR=") {
+		if strings.HasPrefix(kv, "PROCTOR_MUTANT=") || strings.HasPrefix(kv, "PROCTOR_MUTANT_DIR=") || strings.HasPrefix(kv, EnvFileVar+"=") {
 			continue
 		}
 		env = append(env, kv)
 	}
-	return append(env, "PROCTOR_MUTANT="+label, "PROCTOR_MUTANT_DIR="+dir)
+	return append(env, "PROCTOR_MUTANT="+label, "PROCTOR_MUTANT_DIR="+dir, EnvFileVar+"="+envFile)
+}
+
+const (
+	EnvFileVar   = "PROCTOR_ENV_FILE"
+	maxEnvFile   = 1 << 20
+	envNameChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789"
+)
+
+func readEnvFile(path string) (map[string]string, error) {
+	fi, err := os.Lstat(path)
+	switch {
+	case err != nil:
+		return nil, err
+	case !fi.Mode().IsRegular():
+		return nil, errors.New("it isn't a regular file any more; write NAME=value lines into it, don't replace it")
+	case fi.Size() > maxEnvFile:
+		return nil, fmt.Errorf("it holds %d bytes, more than %d", fi.Size(), maxEnvFile)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	vars := map[string]string{}
+	for i, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("line %d isn't NAME=value", i+1)
+		case name == "" || strings.Trim(name, envNameChars) != "" || name[0] >= '0' && name[0] <= '9':
+			return nil, fmt.Errorf("line %d: the name before = must be letters, digits and _, not starting with a digit", i+1)
+		case strings.ContainsAny(value, "\r\x00"):
+			return nil, fmt.Errorf("line %d: the value of %s holds a carriage return or a NUL byte", i+1, name)
+		}
+		if _, dup := vars[name]; dup {
+			return nil, fmt.Errorf("line %d: %s is set twice", i+1, name)
+		}
+		vars[name] = value
+	}
+	return vars, nil
 }
 
 func ptr[T any](v T) *T { return &v }

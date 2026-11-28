@@ -53,6 +53,16 @@ type host struct {
 	dropped  int64
 	closed   bool
 	dead     bool
+
+	policy, conn   any
+	secrets        protocol.Secrets
+	deadBy         string
+	deadLabel      string
+	deadStep       string
+	stopped        string
+	restarts       []DriverRestart
+	earlierStderr  string
+	earlierDropped int64
 }
 
 type session struct {
@@ -478,6 +488,7 @@ func (sess *session) callCtx(ctx context.Context) (context.Context, context.Canc
 }
 
 func (sess *session) start(ctx context.Context, h *host, policy, conn any, secrets protocol.Secrets, probs *problems) {
+	h.policy, h.conn, h.secrets = policy, conn, secrets
 	c, err := protocol.Start(ctx, h.path, nil, driverEnv())
 	if err != nil && h.program != "" {
 		probs.add(ExitError, "driver %s: cannot start the private copy %s of program %s: %v; it sits under TMPDIR (%s), which must allow running programs", h.name, h.path, h.program, err, os.TempDir())
@@ -617,6 +628,9 @@ func checkHello(h *host) []string {
 		default:
 			msgs = append(msgs, fmt.Sprintf("%s: unknown credential %q", where, op.Credential))
 		}
+		if op.HandleOptional && !op.OpensHandle && !op.UsesHandle {
+			msgs = append(msgs, fmt.Sprintf("%s: handle_optional is only for an operation that opens or uses a handle", where))
+		}
 		if op.Accumulates && op.Kind != protocol.KindObserve {
 			msgs = append(msgs, fmt.Sprintf("%s: accumulates is only for an operation of kind observe", where))
 		}
@@ -694,13 +708,18 @@ func (sess *session) close() {
 		if h.tmp != "" && (h.client == nil || h.closed) {
 			_ = os.RemoveAll(h.tmp)
 		}
-		if h.closed || h.client == nil {
+		if h.closed || h.client == nil && len(h.restarts) == 0 {
 			continue
 		}
 		h.closed = true
-		_ = h.client.Close()
-		raw := sess.scrub.clean(string(h.client.Stderr()))
-		h.dropped = h.client.StderrDropped()
+		raw, dropped := h.earlierStderr, h.earlierDropped
+		if h.client != nil {
+			_ = h.client.Close()
+			raw += string(h.client.Stderr())
+			dropped += h.client.StderrDropped()
+		}
+		raw = sess.scrub.clean(raw)
+		h.dropped = dropped
 		if len(raw) > stderrKeep {
 			cut := len(raw) - stderrKeep
 			if i := strings.IndexByte(raw[cut:], '\n'); i >= 0 {
@@ -720,7 +739,7 @@ func (sess *session) infos() []DriverInfo {
 	var out []DriverInfo
 	for _, h := range sess.ordered() {
 		d := DriverInfo{Name: h.name, Official: h.official, Program: h.program, Platform: h.platform, Version: h.hello.Version, Origin: h.origin, SHA256: h.sha,
-			Proofs: h.proofs, Stderr: h.stderr, StderrDropped: h.dropped}
+			Proofs: h.proofs, Stderr: h.stderr, StderrDropped: h.dropped, Restarts: h.restarts}
 		out = append(out, d)
 	}
 	return out
@@ -813,7 +832,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 		problem("EXE-01", "do", "driver %s has no operation %q (it has %s)", name, opName, strings.Join(sortedKeys(h.ops), ", "))
 		return info, nil
 	}
-	info.OpensHandle, info.UsesHandle = op.OpensHandle, op.UsesHandle
+	info.OpensHandle, info.UsesHandle, info.HandleOptional = op.OpensHandle, op.UsesHandle, op.HandleOptional
 	switch {
 	case st.Variant != "" && st.Identity == "":
 		problem("EXE-01", "variant", "variant %q needs an identity", st.Variant)
@@ -831,7 +850,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 			problem("EXE-01", "with"+strings.TrimPrefix(at, "$"), "%s", msg)
 		}
 	}
-	for _, p := range integrity.FactPaths(st.Do, op.FactSchema, st.Expect, st.Save) {
+	for _, p := range integrity.FactPaths(st.Do, op.FactSchema, st.Expect, model.SavePaths(st.Save)) {
 		problem(p.Rule, p.Path, "%s", p.Message)
 	}
 	if p, found := integrity.ArrivalProblem(st.Do, &st); op.Accumulates && found {
@@ -853,7 +872,7 @@ func (sess *session) validateStep(ctx context.Context, st model.Step, setup bool
 	var res protocol.ValidateResult
 	cctx, cancel := sess.callCtx(ctx)
 	err := h.client.Call(cctx, protocol.MethodValidate, protocol.ValidateParams{Op: opName, Args: st.With, Identity: st.Identity,
-		Variant: st.Variant, Expect: st.Expect, Setup: setup, Save: st.Save, Files: sent}, &res)
+		Variant: st.Variant, Expect: st.Expect, Setup: setup, Save: model.SavePaths(st.Save), Files: sent}, &res)
 	cancel()
 	if err != nil {
 		return info, fmt.Errorf("driver %s: validate failed: %v", name, err)

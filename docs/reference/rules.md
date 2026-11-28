@@ -68,7 +68,7 @@ See [Configuration](configuration.md) for identities, variants and `identity_che
 | Rule | What it refuses or reports | Exit |
 |---|---|---|
 | EXE-01 | A `do` that isn't `<driver>.<operation>` of a declared driver, a variant without an identity, and a header the HTTP client sets itself (`Content-Length`, `Transfer-Encoding`, `Connection`) | 3 |
-| EXE-02 | A malformed `expect`, or a `save` name that isn't a letter or `_` followed by letters, digits or `_` | 3 |
+| EXE-02 | A malformed `expect`, a `save` name that isn't a letter or `_` followed by letters, digits or `_`, and a `save` `capture` that isn't a valid pattern with exactly one group | 3 |
 | EXE-03 | A step without an expectation, and a 2xx http step that asserts only its status | 3 |
 | EXE-07 | A step that changes state without a later state check that reads what it changed; a `no_state_check` without a reason or outside verification; a `waive` naming a rule that can't be waived | 3 |
 | EXE-09 | A destructive request on a fixed target with no earlier guarding read and no waiver | 3 |
@@ -76,11 +76,11 @@ See [Configuration](configuration.md) for identities, variants and `identity_che
 | EXE-11 | A path the operation's fact can't hold, or a matcher on the wrong kind of value (3); at run time, a `none` claim or a zero `count` whose keys no element has (step) | 3 or step |
 | EXE-12 | A `matches` pattern that is invalid, over 1 KiB, matches empty text or holds `${...}`, and an `excludes` with an empty text, an empty list or a repeated text | 3 |
 | EXE-13 | A matcher that names one path twice in two spellings | 3 |
-| EXE-14 | An empty `cleanup`; in cleanup, a step that observes, samples, saves, opens a handle with `as` or has `no_state_check`; and an `unless_passed` that is empty, outside cleanup, names no setup or verification step, or sits on a guarded destructive act on a fixed target | 3 |
+| EXE-14 | An empty `cleanup`; in cleanup, a step that observes without `eventually`, uses `consistently` or `never`, saves, opens a handle with `as` or has `no_state_check`; and an `unless_passed` that is empty, outside cleanup, names no setup or verification step, or sits on a guarded destructive act on a fixed target | 3 |
 | FIX-03 | A read-only check, such as `docker`, `redis`, `otel` or `stub.received`, in setup, which goes through the application | 3 |
 | FIX-05 | A value a scenario writes and later matches that doesn't hold `${run.id}`, unless waived with a reason | 3 |
 | FIX-08 | A setup operation that no verification step exercises with that outcome | 3 |
-| HND-01 to HND-09 | Handles: an invalid name in `as` or `on`, a repeated `as`, an `on` naming no earlier handle or another driver's, a step with both `as` and `on`, a handle on an operation that doesn't open or use one (or a missing one where it does), a handle in a table's setup or cleanup, and `as` with `eventually`, `consistently` or `never` | 3 |
+| HND-01 to HND-09 | Handles: an invalid name in `as` or `on`, a repeated `as`, an `on` naming no earlier handle or another driver's, a step with both `as` and `on`, a handle on an operation that doesn't open or use one (or a missing one where it does, unless the operation makes it optional, as `http.request` does for a cookie jar), a handle in a table's setup or cleanup, and `as` with `eventually`, `consistently` or `never` | 3 |
 
 See [Specification format](specifications.md#validation) and [Writing specifications](../guides/specifications.md).
 
@@ -107,7 +107,7 @@ See [Specification format](specifications.md#validation) and [Writing specificat
 | ALG-01 | An `approved_log` value that isn't `true` or `false`, and `approved_log: true` without `app_logs.approved` in `proctor.yaml` | 3 |
 | ALG-02 | `app_logs.approved.fields` missing or too long | 3 |
 | ALG-03 | An approved log's path outside `proctor/approved/`, or one shared by two scenarios or tables | 3 |
-| MUT-01 | A `mutation` key that is missing or bad, such as a `binding` that isn't an absolute path outside the repository or a script that isn't there, and a mutants file that can't be read or isn't a list of valid mutants | 3 |
+| MUT-01 | A `mutation` key that is missing or bad, such as a `binding` that isn't an absolute path outside the repository or a script that isn't there, a mutants file that can't be read or isn't a list of valid mutants, and a mutant whose edits don't apply to the files as they are (a `find` found another number of times than `count`, not at its `line`, or edits that overlap) | 3 |
 | INV-01 | An invariant that acts, or that uses `save`, `as`, `on`, `variant`, `consistently`, `never`, `no_state_check`, `waive`, `unless_passed`, `${run.id}`, a saved value or `${row.…}` | 3 |
 
 See [Writing specifications](../guides/specifications.md), [Approved transcripts and logs](../guides/approvals.md) and [Mutation testing](../guides/mutation-testing.md).
@@ -120,7 +120,7 @@ Each driver checks its own steps, policy and binding during `validate` and befor
 |---|---|---|
 | HTTP-02 | `${secret...}` or `${fill(N)}` outside an http body or headers or a `browser.fill` value | 3 |
 | HTTP-04 | A binding without `user_agent`, or a specification that sets `User-Agent` | 3 |
-| HTTP-05 | A path that doesn't start with `/` or holds `?`, `#`, `\`, a space or a control character once values are inserted, a specification that sets `Host`, and a request that would leave the target | 3 or step |
+| HTTP-05 | A path that doesn't start with `/` or holds `?`, `#`, `\`, a space or a control character once values are inserted, a specification that sets `Host`, a `host` that isn't a lower-case host name or matches none of the binding's `virtual_hosts`, and a request that would leave the target | 3 or step |
 | HTTP-08 | A header name with capital letters in an expectation, or a header both expected and absent | 3 |
 | HTTP-09 | A list `length` on a request without query parameters, which may count records other runs created, unless waived with a reason | 3 |
 | HTTP-10 | An assertion on `$.body` when the body claims to be JSON but isn't valid JSON | Step |

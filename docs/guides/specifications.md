@@ -55,6 +55,8 @@ time_limits: { max_call: 120s }
 
 `max_call` defaults to 60 s. Validation refuses (exit 3, TIME-13) a step timeout longer than it, zero, negative or without a unit, and `run` refuses a `--call-timeout` longer than it before anything is sent, so the longest wait is always in a protected file. `proctor diff` lists a raised `max_call` as `max_call_longer`, and a step timeout added, raised or removed as `step_timeout_longer`; a lowered one is a changed expectation.
 
+The driver gets the step's timeout as its deadline. One that answers in time with a timeout of its own is ERROR `timeout`, and the run goes on. One that doesn't answer within a second after the deadline, or crashes, is stopped with every process it started, so nothing it began can act later, and the step is ERROR `timeout` or `driver_failed`. Before the next scenario, or before the environment invariants after this one, Proctor starts the driver again with the same policy, connection and secrets, and goes on only if its hello, operations, policy entries and proofs match the first start's and it reports ready; a table's rows share one start, so a driver stopped in a row is started again after the table's last row. The report's `drivers[].restarts` and the end of the terminal output name the step it stopped at and the scenario it was started again before, and that step's message says whether it was started again. When it can't be started again, every later scenario that uses it is NOT_RUN `driver_stopped`, and the terminal says why once.
+
 ## Tables
 
 A table can carry `eventually`, `consistently` or `never`, and `timeout`, as a scenario's step does; each row is sampled on its own (TBL-08):
@@ -153,7 +155,27 @@ A scenario or a table can list `cleanup:` acts, which run after its steps whatev
       expect: { equal: { $.status: 200 } }
 ```
 
-A cleanup step that fails turns a passing scenario into ERROR `cleanup_failed`; a failing scenario stays FAIL, with its `first_failure`, and the cleanup is reported apart (`cleanup` and `cleanup_failure` in the report, a `cleanup <result>` line in the terminal and on the progress line). A cleanup step that needs a value whose step didn't run, or a handle that isn't open, is NOT_RUN with nothing sent. A destructive act on a fixed target that EXE-09 accepts because an earlier step guards it is sent only when every earlier step passed (otherwise NOT_RUN `cleanup_unguarded`), since a guard that failed may have found someone else's data; one that waives EXE-09 is always sent. Cleanup steps only act: a step that observes, `eventually`, `consistently`, `never`, `save`, `no_state_check`, `as` and credential variants are refused there (exit 3), and they need no state check (EXE-07). They run inside the scenario's app-log window and appear in its transcript. After an interrupt the drivers are stopped, so the cleanup is NOT_RUN `aborted`. `proctor diff` lists a removed cleanup step (`cleanup_step_removed`), a verification step moved into cleanup (`step_moved_to_cleanup`) and a loosened cleanup expectation as weakenings.
+A cleanup step that fails turns a passing scenario into ERROR `cleanup_failed`; a failing scenario stays FAIL, with its `first_failure`, and the cleanup is reported apart (`cleanup` and `cleanup_failure` in the report, a `cleanup <result>` line in the terminal and on the progress line). A cleanup step that needs a value whose step didn't run, or a handle that isn't open, is NOT_RUN with nothing sent. A destructive act on a fixed target that EXE-09 accepts because an earlier step guards it is sent only when every earlier step passed (otherwise NOT_RUN `cleanup_unguarded`), since a guard that failed may have found someone else's data; one that waives EXE-09 is always sent. Cleanup steps act, or observe with `eventually` to wait until an act took effect: a step that observes without `eventually`, `consistently`, `never`, `save`, `no_state_check`, `as` and credential variants are refused there (exit 3, EXE-14), an act can't wait (TIME-11), and they need no state check (EXE-07). A waiting step's expectations count only toward the cleanup's result, like any cleanup step's: when they aren't met within `eventually.within` (at most `time_limits.max_window`), a passing scenario becomes ERROR `cleanup_failed` and a failing one stays FAIL. Cleanup steps run inside the scenario's app-log window and appear in its transcript. After an interrupt the drivers are stopped, so the cleanup is NOT_RUN `aborted`. `proctor diff` lists a removed cleanup step (`cleanup_step_removed`), a verification step moved into cleanup (`step_moved_to_cleanup`) and a loosened cleanup expectation as weakenings. With `eventually`, a teardown such as "stop, wait until stopped, delete" fits in cleanup:
+
+```yaml
+  cleanup:
+    - id: stop
+      do: http.request
+      identity: anonymous
+      with: { method: POST, path: "/api/sessions/${session}/stop" }
+      expect: { equal: { $.status: 202 } }
+    - id: stopped
+      do: http.request
+      identity: anonymous
+      with: { method: GET, path: "/api/sessions/${session}" }
+      eventually: { within: 30s, every: 1s }
+      expect: { equal: { $.status: 200, $.body.state: stopped } }
+    - id: delete
+      do: http.request
+      identity: anonymous
+      with: { method: DELETE, path: "/api/sessions/${session}" }
+      expect: { equal: { $.status: 204 }, absent: [$.body, $.body_text] }
+```
 
 A teardown kept as steps is evidence, but it doesn't run once an earlier step fails. To free what the scenario created then, add a fallback cleanup step with `unless_passed`, naming the setup or verification step it stands in for:
 

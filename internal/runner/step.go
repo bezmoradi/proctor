@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,11 +119,16 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		return sr
 	}
 	name, opName, _ := model.SplitDo(st.Do)
+	r.atStep = st.ID
 	sr.Driver = name
 	sr.Action = &Action{Driver: name, Op: opName, Identity: st.Identity, Variant: st.Variant, As: st.As, On: st.On}
 	h := r.sess.hosts[name]
 	if h == nil {
 		return errorf(CauseInvalidRequest, "driver %q isn't declared in proctor.yaml", name)
+	}
+	if h.stopped != "" {
+		sr.Result, sr.Reason, sr.Message = NotRun, ReasonDriverStopped, stoppedMessage(h)
+		return sr
 	}
 	sr.Origin = h.origin
 	op, ok := h.ops[opName]
@@ -180,7 +187,7 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 	var last sampleResult
 	n, k, skipped, lastDue := 0, 0, 0, t.lastDue()
 	for {
-		s, perr := r.sample(ctx, h, op, args, files, cred, handle, checks, callTimeout)
+		s, perr := r.sample(ctx, h, op, args, files, cred, handle, op.HandleOptional && st.As != "", checks, callTimeout)
 		if s.handle != "" {
 			if kerr := hs.keep(st, h, op, s.handle); kerr != nil && perr == nil {
 				perr = kerr
@@ -276,11 +283,19 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 		return sr
 	}
 	for _, name := range sortedKeys(st.Save) {
-		path, err := expr.ParsePath(st.Save[name])
+		path, err := expr.ParsePath(st.Save[name].From)
 		if err != nil {
 			return errorf(CauseInvalidRequest, "%v", err)
 		}
-		a := Assertion{Kind: "save", Target: name + " = " + path.String(), Result: Pass}
+		var capture *regexp.Regexp
+		target := name + " = " + path.String()
+		if c := st.Save[name].Capture; c != "" {
+			if capture, err = model.CapturePattern(c); err != nil {
+				return errorf(CauseInvalidRequest, "save %s: %v", name, err)
+			}
+			target += " capture " + strconv.Quote(c)
+		}
+		a := Assertion{Kind: "save", Target: target, Result: Pass}
 		got, ok := path.Select(last.fact)
 		kept, mark, isCut := truncatedText(check{kind: "equal", target: path.String(), path: path}, last.fact, got)
 		switch {
@@ -291,11 +306,37 @@ func (r *Runner) step(ctx context.Context, st model.Step, sr StepResult, vars ex
 			a.Present, a.CutAt = true, kept
 			a.Result, a.Message = Fail, fmt.Sprintf("can't save %s: it was cut at %d bytes (%s: true), so the saved value wouldn't be the whole text", path.String(), kept, mark)
 			sr.Result = Fail
+		case capture != nil:
+			a.Present = true
+			r.scrubRedacted(path.String(), got, op.Redact)
+			text, isText := got.(string)
+			m := capture.FindStringSubmatchIndex(text)
+			a.Actual = r.redactValue(path.String(), got, op.Redact)
+			switch {
+			case !isText:
+				a.Result, a.Message = Fail, fmt.Sprintf("nothing to save: capture reads text, and %s is %s", path.String(), jsonKind(got))
+				sr.Result = Fail
+			case m == nil || m[2] < 0:
+				a.Result, a.Message = Fail, "nothing to save: the capture pattern doesn't match the text"
+				sr.Result = Fail
+			case m[2] == m[3]:
+				a.Result, a.Message = Fail, "nothing to save: the capture group matched empty text"
+				sr.Result = Fail
+			default:
+				a.Actual = nil
+				part := text[m[2]:m[3]]
+				r.scrubRedacted(path.String(), part, op.Redact)
+				vars[name] = part
+				sr.Saved = append(sr.Saved, name)
+			}
 		default:
 			a.Present = true
 			r.scrubRedacted(path.String(), got, op.Redact)
 			vars[name] = got
 			sr.Saved = append(sr.Saved, name)
+		}
+		if a.Result == Pass && st.Save[name].Secret {
+			r.keepSecret(&a, &sr, vars[name])
 		}
 		sr.Assertions = append(sr.Assertions, a)
 	}
@@ -442,15 +483,15 @@ func (r *Runner) files(op protocol.Operation, with any) (map[string]protocol.Fil
 	return files, nil
 }
 
-func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, files map[string]protocol.File, cred *protocol.Credential, handle string, checks []check, callTimeout time.Duration) (sampleResult, *protocol.Error) {
+func (r *Runner) sample(ctx context.Context, h *host, op protocol.Operation, args any, files map[string]protocol.File, cred *protocol.Credential, handle string, open bool, checks []check, callTimeout time.Duration) (sampleResult, *protocol.Error) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout+callMargin)
 	defer cancel()
 	var res protocol.CallResult
-	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, DeadlineMS: callTimeout.Milliseconds(), Files: files}
+	p := protocol.CallParams{Op: op.Name, Args: args, Credential: cred, Handle: handle, Open: open, DeadlineMS: callTimeout.Milliseconds(), Files: files}
 	err := h.client.Call(cctx, protocol.MethodCall, p, &res)
 	if err != nil {
 		if brokenClient(err) {
-			h.dead = true
+			r.markDead(h)
 		}
 		return sampleResult{}, asProtocolError(err)
 	}
@@ -524,4 +565,30 @@ func escapedValue(path string, t any, vars expr.Vars, escape map[string]string) 
 		return out, nil
 	}
 	return t, nil
+}
+
+func (r *Runner) keepSecret(a *Assertion, sr *StepResult, v any) {
+	var texts []string
+	switch x := v.(type) {
+	case json.Number:
+		texts = []string{x.String()}
+	case bool, nil:
+	default:
+		texts = textLeaves(x)
+	}
+	for _, t := range texts {
+		if len(t) < minScrubbed {
+			a.Result, a.Message = Fail, fmt.Sprintf("can't keep it secret: it holds text of fewer than %d characters, which Proctor can't hide from its output without hiding unrelated text", minScrubbed)
+			sr.Result = Fail
+			return
+		}
+	}
+	if len(texts) == 0 {
+		a.Result, a.Message = Fail, "can't keep it secret: it holds no text or number to hide"
+		sr.Result = Fail
+		return
+	}
+	for _, t := range texts {
+		r.scrub.add(t)
+	}
 }

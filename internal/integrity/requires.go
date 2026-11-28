@@ -169,12 +169,31 @@ func usedFeatures(c *model.Config, specs []SpecFile) map[string]string {
 			if sc.Requires == model.RequiresDisposableEnvironment {
 				note("requires.disposable_environment", where)
 			}
-			for _, part := range [][]model.Step{sc.Setup, sc.Steps, sc.Cleanup} {
+			for k, part := range [][]model.Step{sc.Setup, sc.Steps, sc.Cleanup} {
 				for j := range part {
 					st := &part[j]
 					stepWhere := where + " step " + st.ID
 					if st.HasUnlessPassed() {
 						note("cleanup.unless_passed", stepWhere)
+					}
+					if k == 2 && st.Eventually != nil {
+						note("cleanup.eventually", stepWhere)
+					}
+					for _, sv := range st.Save {
+						if sv.Capture != "" {
+							note("save.capture", stepWhere)
+						}
+						if sv.Secret {
+							note("save.secret", stepWhere)
+						}
+					}
+					if name, op, ok := model.SplitDo(st.Do); ok && c.Drivers[name].Official == "http" {
+						if with, isMap := st.With.(map[string]any); isMap && with["host"] != nil {
+							note("http.virtual_hosts", stepWhere)
+						}
+						if op == "request" && (st.As != "" || st.On != "") {
+							note("http.cookies", stepWhere)
+						}
 					}
 					if st.Timeout != "" {
 						note("step.timeout", stepWhere)

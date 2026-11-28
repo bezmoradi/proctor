@@ -28,7 +28,17 @@ const (
 	TranscriptTooLarge    = "too_large"
 	TranscriptNotWritten  = "not_written"
 	TranscriptUnusable    = "unusable"
+	TranscriptNotCompared = "not_compared"
 )
+
+func notCompared(tr *TranscriptResult, noun string) bool {
+	if tr.Own == Pass {
+		return false
+	}
+	tr.Result = TranscriptNotCompared
+	tr.Message = fmt.Sprintf("not compared or written, since the scenario was %s on its own; the %s of a run that didn't pass can't be approved", tr.Own, noun)
+	return true
+}
 
 type TranscriptResult struct {
 	Result         string   `json:"result"`
@@ -276,6 +286,9 @@ func (r *Runner) compareTranscript(out *Outcome, i int, sc model.Scenario, rec *
 	tr.SpecID, tr.ApprovedPath = a.SpecID, a.Path
 	if a.Found {
 		tr.ApprovedSHA256 = a.SHA256
+	}
+	if notCompared(tr, transcriptKind.noun) {
+		return
 	}
 	if len(probs) > 0 {
 		fail(Error, ReasonTranscriptUnusable, TranscriptUnusable, "transcripts.scrub is invalid: "+strings.Join(probs, "; "))

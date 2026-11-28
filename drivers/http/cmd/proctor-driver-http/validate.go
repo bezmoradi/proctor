@@ -53,6 +53,7 @@ func (e expectation) paths() []string {
 }
 
 type validation struct {
+	d *driver
 	r protocol.ValidateResult
 }
 
@@ -61,7 +62,7 @@ func (v *validation) add(rule, path, format string, args ...any) {
 }
 
 func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (protocol.ValidateResult, error) {
-	v := &validation{r: protocol.ValidateResult{Kind: protocol.KindAct, Problems: []protocol.Problem{}, Refs: []string{}}}
+	v := &validation{d: d, r: protocol.ValidateResult{Kind: protocol.KindAct, Problems: []protocol.Problem{}, Refs: []string{}}}
 	switch p.Op {
 	case opRequest:
 	case opOpen:
@@ -100,13 +101,17 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		v.add("EXE-01", "$.with.method", "unsupported method %s", show(args["method"]))
 	}
 
+	host := v.checkHost(args)
 	if path, ok := args["path"].(string); ok {
 		exact, named := path, refNames(path)
 		if declaredDestructive {
 			exact, named = path+bodyTarget(args)+rawTarget(args, p.Files), refNames([]any{path, args["body"], args["body_text"]})
 		}
+		if host != "" {
+			exact, named = hostTarget(host)+exact, append(named, refNames(host)...)
+		}
 		v.r.FixedTarget = !runScoped(named)
-		v.r.Targets = []string{template(path)}
+		v.r.Targets = []string{template(hostTarget(host) + path)}
 		v.r.ExactTargets = []string{exact}
 		if err := checkRequestPath(path); err != nil {
 			v.add("HTTP-05", "$.with.path", "%v", err)
@@ -122,6 +127,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 	v.checkBodyForms(args, method, headers, p.Files, d.policy.bodyLimit())
 
 	v.onlyInBodyOrHeaders("$.with.method", args["method"])
+	v.onlyInBodyOrHeaders("$.with.host", args[hostArg])
 	v.onlyInBodyOrHeaders("$.with.path", args["path"])
 	v.onlyInBodyOrHeaders("$.with.query", args["query"])
 
@@ -149,7 +155,7 @@ func (d *driver) Validate(ctx context.Context, p protocol.ValidateParams) (proto
 		case declaredRead:
 			v.r.Shows, read = append([]string(nil), readShows...), declared.String()
 		case method == showsMethod && pathIsText:
-			v.r.Shows, read = append([]string(nil), d.policy.shows[template(literalPath)]...), showsMethod+" "+template(literalPath)
+			v.r.Shows, read = append([]string(nil), d.policy.shows[template(hostTarget(host)+literalPath)]...), showsMethod+" "+template(hostTarget(host)+literalPath)
 		}
 		if len(v.r.Shows) > 0 {
 			v.r.ShowsEntries = map[string]string{}
@@ -259,6 +265,40 @@ func (v *validation) checkHeaders(headers map[string]any) {
 			v.add("EXE-01", at, "header %s contains a line break", name)
 		}
 	}
+}
+
+func hostTarget(host string) string {
+	if host == "" {
+		return ""
+	}
+	return "//" + host
+}
+
+func (d *driver) hostProblem(v *validation, host string) {
+	if refNames(host) != nil {
+		return
+	}
+	if err := validHostName(host); err != nil {
+		v.add("HTTP-05", "$.with.host", "%v", err)
+		return
+	}
+	if d.client != nil && !d.allowedHost(host) {
+		v.add("HTTP-05", "$.with.host", "host %q matches none of the binding's virtual_hosts for this driver", host)
+	}
+}
+
+func (v *validation) checkHost(args map[string]any) string {
+	raw, has := args[hostArg]
+	if !has {
+		return ""
+	}
+	host, isText := raw.(string)
+	if !isText || host == "" {
+		v.add("HTTP-05", "$.with.host", "host must be a host name as text, such as \"${box}.localhost\", not %s", show(raw))
+		return ""
+	}
+	v.d.hostProblem(v, host)
+	return host
 }
 
 func (v *validation) onlyInBodyOrHeaders(at string, value any) {

@@ -64,6 +64,20 @@ Without the brackets, `$.body.labels.com.example-shop.environment` reads three n
 
 The http driver keeps the first 64 KiB of a body that isn't JSON as `$.body_text` and says whether it cut it in `$.body_truncated` (the ws driver does the same for a refused handshake's body, cut at 1 KiB). `equal`, `contains`, `matches`, `excludes` and `differs` on a cut `$.body_text` fail, naming the cut and its size (`cut_at` in the report), and so does `save` from it; under `never` they fail the step instead of counting as not holding. `present` and `absent` still work (HTTP-13). The same rule holds for every text a driver marks as cut: any `<x>_text` beside `<x>_truncated: true`, such as the cli driver's `stdout_text` and `stderr_text` or a repository driver's `value_text`, and `text` beside `text_truncated: true`, such as a browser selector's. A claim on such a text fails rather than judge only its start.
 
+## Saving part of a value
+
+`save` keeps the whole value at a path. To keep part of a text, give `from` and `capture`, a pattern with exactly one group; the group's first match is saved:
+
+```yaml
+save:
+  box: $.body.id
+  code: { from: $.body.url, capture: "[?&]code=([0-9a-f]+)" }
+```
+
+The pattern is RE2, searched anywhere in the text (anchor it with `^` and `$` if it must match all of it), at most 1 KiB, and can't hold `${...}`; write `(?:...)` for a group that isn't saved. Validation refuses (exit 3) a pattern that doesn't compile or has no group or more than one (EXE-02), and a mapping without `from`, with neither `capture` nor `secret`, with an empty `capture` or with any other key. At run time a value that isn't text, a pattern that doesn't match and a group that matches empty text fail the step, as a missing value does; a cut text fails as above. When the whole value is redacted, the saved part is scrubbed too. Older Proctor versions refuse the mapping form (feature `save.capture`).
+
+A value that must not appear in the output, such as a one-time code in a field the driver doesn't redact, takes `secret: true`, with or without `capture`: `code: { from: $.body.url, capture: "code=([0-9a-f]+)", secret: true }`. Once saved, it is scrubbed like a credential, `[redacted]` in the terminal, the report and transcripts, wherever it appears, the request that later sends it included. A secret value with text of fewer than 4 characters, or with no text or number, fails the step, since it couldn't be hidden. Older Proctor versions refuse it (feature `save.secret`).
+
 ## References and tables
 
 - References: `${run.id}`, `${<saved>}`, `${<identity>.<key>}`, `${secret.<name>}` and `${fill(N)}` (N `x` characters, at most 16 MiB, in an http body or headers, or a `browser.fill` value up to 1 MiB, only).

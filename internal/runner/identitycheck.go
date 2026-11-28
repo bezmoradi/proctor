@@ -135,7 +135,7 @@ func (r *Runner) checkIdentity(ctx context.Context, h *host, op protocol.Operati
 	}
 	args := map[string]any{"method": "GET", "path": ic.Path}
 	start := time.Now()
-	s, perr := r.sample(ctx, h, op, args, nil, &cred, "", nil, r.opt.CallTimeout)
+	s, perr := r.sample(ctx, h, op, args, nil, &cred, "", false, nil, r.opt.CallTimeout)
 	res.DurationMS = millis(time.Since(start))
 	if perr != nil {
 		res.Cause, res.Message = perr.Data.Cause, perr.Message
